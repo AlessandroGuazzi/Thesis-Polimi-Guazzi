@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Cloud Telemetry</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-dark: #050505;
+            --panel-bg: #0d1117;
+            --border-color: #30363d;
+            --text-muted: #8b949e;
+            --text-bright: #e6edf3;
+            --accent-green: #238636;
+            --accent-red: #da3633;
+            --accent-blue: #58a6ff;
+            --accent-yellow: #d29922;
+        }
+
+        body { 
+            background-color: var(--bg-dark);
+            color: var(--text-bright); 
+            font-family: 'Inter', sans-serif; 
+            display: flex; flex-direction: column; justify-content: center; align-items: center; 
+            height: 100vh; margin: 0; overflow: hidden;
+        }
+
+        .dashboard-wrapper {
+            display: flex; flex-direction: column; gap: 20px; align-items: center; transform: scale(1.1);
+        }
+
+        .main-card {
+            background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 8px;
+            padding: 30px; width: 500px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transition: border-color 0.3s ease;
+        }
+
+        .card-header {
+            display: flex; align-items: center; justify-content: center; border-bottom: 1px solid var(--border-color);
+            padding-bottom: 15px; margin-bottom: 20px;
+        }
+
+        h1 { font-family: 'JetBrains Mono', monospace; font-size: 18px; letter-spacing: 2px; color: var(--text-muted); margin: 0; text-transform: uppercase; }
+
+        .status-led { width: 8px; height: 8px; border-radius: 50%; margin-right: 10px; box-shadow: 0 0 8px currentColor; }
+        .led-green { background-color: var(--accent-green); color: var(--accent-green); }
+        .led-red { background-color: var(--accent-red); color: var(--accent-red); animation: blink 1s infinite; }
+
+        @keyframes blink { 50% { opacity: 0.3; } }
+
+        #counter { font-family: 'JetBrains Mono', monospace; font-size: 80px; font-weight: 700; color: var(--text-bright); line-height: 1; margin: 10px 0; }
+
+        .tech-data {
+            display: flex; justify-content: space-between; background: #161b22;
+            padding: 15px; border-radius: 6px; margin-bottom: 15px; border: 1px solid var(--border-color);
+        }
+
+        .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; font-weight: 600; margin-bottom: 4px; font-family: 'JetBrains Mono', monospace; }
+        .value { font-size: 14px; font-weight: 600; color: var(--accent-blue); }
+        .value.error { color: var(--accent-red); }
+
+        .fleet-grid { display: flex; gap: 15px; width: 560px; }
+
+        .sat-card {
+            background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 6px;
+            padding: 15px; flex: 1; display: flex; flex-direction: column; gap: 8px; opacity: 0.6; transition: all 0.3s ease;
+        }
+
+        .sat-card.active {
+            opacity: 1; border-color: var(--accent-green); background: #10161d; transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        /* Stile per satellite guasto (NotReady) */
+        .sat-card.offline {
+            border-color: var(--accent-red); opacity: 0.8;
+        }
+
+        .sat-row { display: flex; justify-content: space-between; align-items: center; }
+        .sat-name { font-weight: bold; font-size: 13px; color: var(--text-bright); }
+        .sat-icon { font-size: 12px; }
+
+        .badge { font-size: 9px; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-family: 'JetBrains Mono', monospace; }
+        .bg-sun { background: rgba(210, 153, 34, 0.15); color: var(--accent-yellow); border: 1px solid rgba(210, 153, 34, 0.3); }
+        .bg-dark { background: rgba(88, 166, 255, 0.15); color: var(--accent-blue); border: 1px solid rgba(88, 166, 255, 0.3); }
+        
+        /* NUOVO: Badge per Hardware Failure */
+        .bg-danger { background: rgba(218, 54, 51, 0.15); color: var(--accent-red); border: 1px solid rgba(218, 54, 51, 0.3); animation: blink 2s infinite; }
+
+        .batt-track { background: #21262d; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 4px; }
+        .batt-bar { height: 100%; transition: width 0.5s ease; }
+
+    </style>
+</head>
+<body>
+
+    <div class="dashboard-wrapper">
+        <div class="main-card" id="main-card">
+            <div class="card-header">
+                <span class="status-led led-green" id="main-led"></span>
+                <h1>Mission Telemetry</h1>
+            </div>
+            <div class="tech-data">
+                <div class="data-point">
+                    <div class="label">ACTIVE POD</div>
+                    <div class="value" id="pod-name">CONNECTING...</div>
+                </div>
+                <div class="data-point right">
+                    <div class="label">HOST NODE</div>
+                    <div class="value" id="node-name">---</div>
+                </div>
+            </div>
+            <div id="counter">---</div>
+            <div class="label" style="text-align: center; margin-bottom: 0;">PROCESSED DATA POINTS</div>
+        </div>
+
+        <div class="fleet-grid" id="fleet-container"></div>
+    </div>
+
+    <script>
+        const counterEl = document.getElementById('counter');
+        const podNameEl = document.getElementById('pod-name');
+        const nodeNameEl = document.getElementById('node-name');
+        const fleetContainer = document.getElementById('fleet-container');
+        const mainCard = document.getElementById('main-card');
+        const mainLed = document.getElementById('main-led');
+
+        async function update() {
+            try {
+                const res = await fetch('/data');
+                if (!res.ok) throw new Error();
+                const data = await res.json();
+
+                counterEl.innerText = data.count;
+                podNameEl.innerText = data.satellite_pod;
+                nodeNameEl.innerText = data.satellite_node;
+                
+                mainCard.style.borderColor = "#30363d";
+                mainLed.className = "status-led led-green";
+                podNameEl.classList.remove("error");
+
+                fleetContainer.innerHTML = '';
+                const satNames = Object.keys(data.fleet || {}).sort();
+                
+                satNames.forEach(name => {
+                    const sat = data.fleet[name];
+                    const isActiveNode = name === data.satellite_node;
+                    const isOffline = sat.health === "OFFLINE"; // Controllo stato K8s
+
+                    // Logica Colori Batteria
+                    let battColor = "#238636"; 
+                    if (sat.battery < 40) battColor = "#d29922"; 
+                    if (sat.battery < 20) battColor = "#da3633";
+
+                    // Costruzione Badge Stato
+                    let statusBadge = "";
+                    if (isOffline) {
+                        statusBadge = `<span class="badge bg-danger">⚠️ FAULT</span>`;
+                    } else {
+                        statusBadge = `<span class="badge ${sat.phase === 'SUN' ? 'bg-sun' : 'bg-dark'}">
+                                        ${sat.phase === 'SUN' ? '☀ SUN' : '🌑 ECLIPSE'}
+                                       </span>`;
+                    }
+
+                    const html = `
+                        <div class="sat-card ${isActiveNode ? 'active' : ''} ${isOffline ? 'offline' : ''}">
+                            <div class="sat-row">
+                                <span class="sat-name">${name}</span>
+                                <span class="sat-icon">${isActiveNode ? '📡 LINKED' : ''}</span>
+                            </div>
+                            
+                            <div class="sat-row">
+                                ${statusBadge}
+                                <span class="label" style="color:${sat.load === 'WORKING' ? '#e6edf3' : '#484f58'}">
+                                    ${sat.load}
+                                </span>
+                            </div>
+
+                            <div style="margin-top: 8px;">
+                                <div class="sat-row" style="margin-bottom:2px;">
+                                    <span class="label">POWER</span>
+                                    <span class="label" style="color:${isOffline ? '#484f58' : battColor}">
+                                        ${isOffline ? 'ERR' : sat.battery + '%'}
+                                    </span>
+                                </div>
+                                <div class="batt-track">
+                                    <div class="batt-bar" style="width: ${isOffline ? 0 : sat.battery}%; background-color: ${battColor}"></div>
+                                </div>
+                            </div>
+                        </div>`;
+                    fleetContainer.innerHTML += html;
+                });
+
+            } catch (e) {
+                mainCard.style.borderColor = "#da3633";
+                mainLed.className = "status-led led-red";
+                podNameEl.innerText = "SIGNAL LOST";
+                podNameEl.classList.add("error");
+                nodeNameEl.innerText = "---";
+            }
+        }
+        
+        setInterval(update, 1000);
+    </script>
+</body>
+</html>

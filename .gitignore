@@ -1,0 +1,38 @@
+# --- Eseguibili e Binari ---
+# Non committare mai exe o tool scaricati.
+# Chi scarica il progetto deve installarsi Kind per conto suo.
+*.exe
+*.dll
+kind.exe
+
+# --- Python ---
+# Cache e ambienti virtuali non vanno mai committati
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# --- Node.js (per la cartella satellite) ---
+# Le dipendenze si installano con 'npm install', non si committano
+node_modules/
+npm-debug.log
+
+# --- Docker & Kubernetes ---
+# Escludiamo eventuali dump di immagini o config locali temporanee
+*.tar
+.kube/
+config
+admin.conf
+
+# --- IDE e OS ---
+# File di configurazione dell'editor o del sistema operativo
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# --- File di Log ---
+# Se i tuoi script generano log su file
+*.log

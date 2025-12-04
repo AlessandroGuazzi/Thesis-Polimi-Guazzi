@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: missione-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: space-app
+  template:
+    metadata:
+      labels:
+        app: space-app
+    spec:
+      schedulerName: space-scheduler
+
+      terminationGracePeriodSeconds: 0 # Simula il distacco immediato dell'alimentazione (Hard Power Off)
+
+      containers:
+      - name: web-satellite
+        # La tua immagine custom (Backend + Frontend HTML)
+        image: space-satellite:v1
+        imagePullPolicy: Never
+        
+        # INIEZIONE VARIABILI: Il Pod deve sapere chi è e DOVE si trova
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        # NUOVA VARIABILE: Il nome del Nodo ospitante
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
+        ports:
+        - containerPort: 3000
+        
+        # --- LA PARTE MANCANTE (Resource Quotas) ---
+        resources:
+          # REQUESTS: Il "Biglietto d'ingresso".
+          # Il satellite deve avere almeno queste risorse libere per accettare il pod.
+          requests:
+            memory: "64Mi"
+            cpu: "100m"  # 10% di una CPU
+            
+          # LIMITS: Il "Limitatore di velocità".
+          # Se il pod prova a usare più di questo, Kubernetes lo rallenta (Throttling)
+          # o lo uccide (OOM Kill) per salvare il satellite.
+          limits:
+            memory: "128Mi"
+            cpu: "200m"  # Max 20% di una CPU

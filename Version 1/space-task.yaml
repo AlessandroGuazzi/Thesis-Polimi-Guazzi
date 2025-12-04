@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: missione-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: space-app
+  template:
+    metadata:
+      labels:
+        app: space-app
+    spec:
+      # Diciamo anche al Deployment di usare il NOSTRO scheduler
+      schedulerName: space-scheduler
+      containers:
+      - name: ai-container
+        image: nginx
+        resources:
+          # REQUESTS: Il minimo garantito per partire
+          requests:
+            memory: "64Mi"
+            cpu: "100m" # 100 millicores (10% di una CPU)
+          # LIMITS: Il tetto massimo invalicabile (Safety)
+          limits:
+            memory: "128Mi"
+            cpu: "200m" # Non può usare più del 20% della CPU

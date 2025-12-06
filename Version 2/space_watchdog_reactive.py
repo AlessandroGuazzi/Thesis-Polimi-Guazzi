@@ -2,30 +2,45 @@ import time
 from kubernetes import client, config, watch
 
 # =============================================================================
-# CONFIGURAZIONE ORCHESTRATORE (FASE 3 - IBRIDA)
+# CONFIGURAZIONE COMPLETA (BATTERIA + HARDWARE)
 # =============================================================================
 
 DEPLOYMENT_NAME = "missione-web"
 NAMESPACE = "default"
-APP_LABEL = "space-app"  # Etichetta per trovare il Pod
+APP_LABEL = "space-app"
 
 LABEL_BATTERY = "spacecloud.io/battery_level"
 
-# Soglie Globali (Missione ON/OFF)
-THRESHOLD_SHUTDOWN = 20  # Se TUTTI sono sotto 20% -> Spegni missione
-THRESHOLD_RESTART = 40   # Se QUALCUNO è sopra 40% -> Accendi missione
-
-# Soglia Locale (Sfratto Pod)
-THRESHOLD_EVICT = 20     # Se il nodo del pod scende sotto 20% -> Spostalo
+# Soglie Energetiche
+THRESHOLD_SHUTDOWN = 20  # Isteresi OFF
+THRESHOLD_RESTART = 40   # Isteresi ON
+THRESHOLD_EVICT = 20     # Sfratto locale
 
 # =============================================================================
-# FUNZIONI DI SUPPORTO
+# FUNZIONI DI DIAGNOSTICA
 # =============================================================================
+
+def is_node_healthy(node):
+    """
+    Controlla se il nodo è vivo (Ready=True).
+    Restituisce False se è guasto (NotReady) o sconosciuto.
+    """
+    if not node.status.conditions:
+        return False
+    
+    for cond in node.status.conditions:
+        if cond.type == "Ready":
+            return cond.status == "True"
+    return False
 
 def get_node_battery(v1, node_name):
-    """Legge la batteria di un nodo specifico."""
+    """Legge la batteria. Restituisce 0 se il nodo non esiste o è illeggibile."""
     try:
         node = v1.read_node(node_name)
+        # Se il nodo è fisicamente morto, la sua batteria vale 0 per noi
+        if not is_node_healthy(node):
+            return 0
+            
         labels = node.metadata.labels
         if labels and LABEL_BATTERY in labels:
             return int(labels[LABEL_BATTERY])
@@ -34,14 +49,26 @@ def get_node_battery(v1, node_name):
     return 0
 
 def get_max_fleet_battery(v1):
-    """Trova la batteria massima nella costellazione."""
+    """
+    Trova la batteria massima SOLO tra i nodi SANI.
+    Se un nodo è al 100% ma è guasto (NotReady), viene ignorato.
+    """
     nodes = v1.list_node().items
     max_batt = 0
+    healthy_nodes_count = 0
+
     for node in nodes:
         if "control-plane" in node.metadata.name: continue
+        
+        # Ignora nodi guasti per il calcolo della capacità della flotta
+        if not is_node_healthy(node):
+            continue
+
+        healthy_nodes_count += 1
         val = int(node.metadata.labels.get(LABEL_BATTERY, 0))
         if val > max_batt: max_batt = val
-    return max_batt
+        
+    return max_batt, healthy_nodes_count
 
 def get_current_replicas(apps_v1):
     try:
@@ -50,31 +77,35 @@ def get_current_replicas(apps_v1):
     except:
         return -1
 
-def scale_mission(apps_v1, replicas):
-    """Accende o Spegne l'intera missione (Deployment)."""
+# =============================================================================
+# FUNZIONI DI AZIONE
+# =============================================================================
+
+def scale_mission(apps_v1, replicas, reason):
+    """Accende/Spegne la missione."""
     body = {"spec": {"replicas": replicas}}
     try:
-        print(f"\n⚙️  GLOBAL: Cambio stato missione -> {replicas} repliche...")
+        print(f"\n⚙️  GLOBAL ({reason}): Scale -> {replicas} repliche.")
         apps_v1.patch_namespaced_deployment_scale(DEPLOYMENT_NAME, NAMESPACE, body)
     except Exception as e:
         print(f"❌ Errore Scaling: {e}")
 
-def evict_pod(v1, pod_name, node_name):
-    """Uccide un pod specifico per forzare lo spostamento (Reschedule)."""
+def evict_pod(v1, pod_name, node_name, reason):
+    """Sfratta un pod (Reschedule)."""
     try:
-        print(f"\n♻️  LOCAL: Sfratto Pod {pod_name} da {node_name} (Batteria Bassa)...")
+        print(f"\n🚑 LOCAL ({reason}): Sfratto Pod {pod_name} da {node_name}.")
         v1.delete_namespaced_pod(pod_name, NAMESPACE, grace_period_seconds=0)
     except Exception as e:
         print(f"❌ Errore Eviction: {e}")
 
 # =============================================================================
-# CICLO PRINCIPALE
+# MAIN LOOP
 # =============================================================================
 
 def main():
-    print("--- Space Cloud WATCHDOG ---")
-    print("   1. GLOBAL: Gestisce ON/OFF missione in base alla flotta.")
-    print("   2. LOCAL:  Sposta il pod se il singolo satellite si scarica.")
+    print("--- Space Cloud WATCHDOG v2.2 (Hardware Aware) ---")
+    print("   1. Monitors Battery Levels")
+    print("   2. Monitors Hardware Health (Ready/NotReady)")
 
     config.load_kube_config()
     v1 = client.CoreV1Api()
@@ -83,53 +114,61 @@ def main():
 
     while True:
         try:
-            # Ascoltiamo eventi (ogni 5 secondi resetto per fare check ciclici)
-            for event in w.stream(v1.list_node, timeout_seconds=5):
-                if event['type'] != "MODIFIED": continue
-                
-                # --- 1. ANALISI GLOBALE (FLOTTA) ---
-                best_battery = get_max_fleet_battery(v1)
-                replicas = get_current_replicas(apps_v1)
+            # Check ciclico ogni 3 secondi (più veloce per rilevare guasti)
+            for event in w.stream(v1.list_node, timeout_seconds=3):
+                pass # Consumiamo lo stream solo per il timeout (loop ciclico)
 
-                # LOGICA ISTERESI (Missione ON/OFF)
-                if best_battery < THRESHOLD_SHUTDOWN and replicas > 0:
-                    print(f"📉 BLACKOUT FLOTTA (Max: {best_battery}%). Spegnimento missione.")
-                    scale_mission(apps_v1, 0)
-                    continue # Se spengo, non serve controllare altro
-                
-                elif best_battery > THRESHOLD_RESTART and replicas == 0:
-                    print(f"📈 ENERGIA RECUPERATA (Max: {best_battery}%). Riavvio missione.")
-                    scale_mission(apps_v1, 1)
-                    continue
+            # --- 1. ANALISI GLOBALE (FLOTTA) ---
+            best_battery, healthy_count = get_max_fleet_battery(v1)
+            replicas = get_current_replicas(apps_v1)
 
-                # --- 2. ANALISI LOCALE (POD) ---
-                # Se la missione è ACCESA, controlliamo se il pod è sul satellite giusto.
-                if replicas > 0:
-                    # Troviamo il pod attivo
-                    pods = v1.list_namespaced_pod(NAMESPACE, label_selector=f"app={APP_LABEL}").items
+            # Se non ci sono nodi sani, spegni tutto (Safety)
+            if healthy_count == 0 and replicas > 0:
+                scale_mission(apps_v1, 0, "CRITICAL: NO HEALTHY SATELLITES")
+                continue
+
+            # ISTERESI BATTERIA
+            if best_battery < THRESHOLD_SHUTDOWN and replicas > 0:
+                scale_mission(apps_v1, 0, f"Low Energy Max={best_battery}%")
+                continue
+            elif best_battery > THRESHOLD_RESTART and replicas == 0:
+                scale_mission(apps_v1, 1, f"Energy Recovered Max={best_battery}%")
+                continue
+
+            # --- 2. ANALISI LOCALE (POD & HARDWARE) ---
+            if replicas > 0:
+                pods = v1.list_namespaced_pod(NAMESPACE, label_selector=f"app={APP_LABEL}").items
+                
+                for pod in pods:
+                    if pod.metadata.deletion_timestamp or pod.status.phase == "Pending":
+                        continue
+                        
+                    node_name = pod.spec.node_name
+                    if not node_name: continue
                     
-                    for pod in pods:
-                        # Ignoriamo pod che si stanno già spegnendo o sono pending
-                        if pod.metadata.deletion_timestamp or pod.status.phase == "Pending":
-                            continue
-                            
-                        node_name = pod.spec.node_name
-                        if not node_name: continue
-                        
-                        # Controlliamo la batteria del nodo OSPITE
-                        node_batt = get_node_battery(v1, node_name)
-                        
-                        # SE IL NODO OSPITE È SCARICO (ma la flotta ha energia altrove)
-                        if node_batt < THRESHOLD_EVICT:
-                            print(f"⚠️  Pod su {node_name} con {node_batt}% (Critico).")
-                            evict_pod(v1, pod.metadata.name, node_name)
-                            # Nota: Il Deployment ne creerà uno nuovo.
-                            # Lo Scheduler (space_scheduler.py) lo metterà sul nodo carico (best_battery).
+                    # Recuperiamo l'oggetto nodo per controllarne la salute
+                    try:
+                        node_obj = v1.read_node(node_name)
+                        is_healthy = is_node_healthy(node_obj)
+                        node_batt = int(node_obj.metadata.labels.get(LABEL_BATTERY, 0))
+                    except:
+                        # Se non riusciamo a leggere il nodo, assumiamo sia morto
+                        is_healthy = False
+                        node_batt = 0
+
+                    # CASO A: GUASTO HARDWARE (Priorità Massima)
+                    if not is_healthy:
+                        evict_pod(v1, pod.metadata.name, node_name, "HARDWARE FAILURE")
+                        continue # Passa al prossimo pod
+
+                    # CASO B: BATTERIA LOCALE BASSA
+                    if node_batt < THRESHOLD_EVICT:
+                        evict_pod(v1, pod.metadata.name, node_name, f"Battery Low {node_batt}%")
 
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print(f"Errore stream: {e}")
+            print(f"Errore ciclo: {e}")
             time.sleep(2)
 
 if __name__ == "__main__":

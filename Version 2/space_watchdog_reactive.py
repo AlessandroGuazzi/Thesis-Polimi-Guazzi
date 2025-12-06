@@ -1,4 +1,5 @@
 import time
+import redis
 from kubernetes import client, config, watch
 
 # =============================================================================
@@ -15,6 +16,22 @@ LABEL_BATTERY = "spacecloud.io/battery_level"
 THRESHOLD_SHUTDOWN = 20  # Isteresi OFF
 THRESHOLD_RESTART = 40   # Isteresi ON
 THRESHOLD_EVICT = 20     # Sfratto locale
+
+# Setup Redis Client
+try:
+    r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+except:
+    r = None
+    print("⚠️ Redis non disponibile per il Watchdog")
+
+def update_dashboard_status(replicas, status_msg):
+    """Scrive lo stato della missione su Redis per la GUI"""
+    if r:
+        try:
+            r.set("mission_replicas", replicas)
+            r.set("mission_status_text", status_msg)
+        except:
+            pass
 
 # =============================================================================
 # FUNZIONI DI DIAGNOSTICA
@@ -114,6 +131,10 @@ def main():
 
     while True:
         try:
+            # Check Redis Connection
+            try: r.ping() 
+            except: pass
+
             # Check ciclico ogni 3 secondi (più veloce per rilevare guasti)
             for event in w.stream(v1.list_node, timeout_seconds=3):
                 pass # Consumiamo lo stream solo per il timeout (loop ciclico)
@@ -121,6 +142,11 @@ def main():
             # --- 1. ANALISI GLOBALE (FLOTTA) ---
             best_battery, healthy_count = get_max_fleet_battery(v1)
             replicas = get_current_replicas(apps_v1)
+
+            # Sync continuo con la Dashboard (per sicurezza)
+            status_text = "NOMINAL"
+            if replicas == 0: status_text = "HIBERNATED (Low Power)"
+            update_dashboard_status(replicas, status_text)
 
             # Se non ci sono nodi sani, spegni tutto (Safety)
             if healthy_count == 0 and replicas > 0:

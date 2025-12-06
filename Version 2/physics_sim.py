@@ -13,7 +13,7 @@ LABEL_STATUS = "spacecloud.io/power_status"
 # Parametri Simulazione
 ORBIT_DURATION = 60
 SUN_DURATION = 30
-UPDATE_INTERVAL = 2
+UPDATE_INTERVAL = 1.0
 
 # Tassi Energetici
 CHARGE_RATE_IDLE = 5.0
@@ -26,31 +26,43 @@ THRESH_RECOVERY = 40
 
 satellites_state = {}
 
-def get_orbital_phase(timestamp, offset):
+def get_orbital_data(timestamp, offset):
+    """Calcola fase e progresso orbitale (0.0 - 1.0)"""
     cycle_time = (timestamp + offset) % ORBIT_DURATION
-    return "SUN" if cycle_time < SUN_DURATION else "ECLIPSE"
+    progress = cycle_time / ORBIT_DURATION
+    phase = "SUN" if cycle_time < SUN_DURATION else "ECLIPSE"
+    return phase, progress
+
+# def get_orbital_phase(timestamp, offset):
+#     cycle_time = (timestamp + offset) % ORBIT_DURATION
+#     return "SUN" if cycle_time < SUN_DURATION else "ECLIPSE"
 
 def is_node_working(v1, node_name):
     try:
+        # Ottimizzazione: Usiamo _preload_content=False per non parsare tutto l'oggetto
         field_selector = f"spec.nodeName={node_name}"
-        pods = v1.list_namespaced_pod(namespace="default", field_selector=field_selector).items
-        active_pods = [p for p in pods if not p.metadata.deletion_timestamp and p.metadata.labels.get("app") == "space-app"]
-        return len(active_pods) > 0
+        pods = v1.list_namespaced_pod(namespace="default", field_selector=field_selector, _preload_content=False)
+        data = json.loads(pods.data)
+        
+        for item in data.get('items', []):
+            labels = item.get('metadata', {}).get('labels', {})
+            # Se c'è un pod space-app e non sta morendo
+            if labels.get('app') == "space-app" and not item.get('metadata', {}).get('deletionTimestamp'):
+                return True
+        return False
     except:
         return False
 
-def get_node_health(node):
+def get_real_node_health(node_json):
     """
-    Controlla le condizioni del nodo (Ready/NotReady).
-    Restituisce 'ONLINE' se Ready=True, altrimenti 'OFFLINE'.
+    Estrae lo stato di salute direttamente dal JSON grezzo di Kubernetes.
+    Molto più veloce che istanziare oggetti Python.
     """
-    if not node.status.conditions:
-        return "UNKNOWN"
-    
-    for condition in node.status.conditions:
-        if condition.type == "Ready":
-            return "ONLINE" if condition.status == "True" else "OFFLINE"
-            
+    conditions = node_json.get('status', {}).get('conditions', [])
+    for cond in conditions:
+        if cond.get('type') == "Ready":
+            # Se Ready è True -> ONLINE, altrimenti OFFLINE (Fault)
+            return "ONLINE" if cond.get('status') == "True" else "OFFLINE"
     return "UNKNOWN"
 
 def update_satellite_physics(node_name, current_time, is_active):
@@ -59,7 +71,7 @@ def update_satellite_physics(node_name, current_time, is_active):
         satellites_state[node_name] = { "battery": 50.0, "status": "OPERATIONAL", "offset": offset }
 
     sat = satellites_state[node_name]
-    phase = get_orbital_phase(current_time, sat['offset'])
+    phase, progress = get_orbital_data(current_time, sat['offset'])
     
     delta = 0.0
     if phase == "SUN":
@@ -74,7 +86,7 @@ def update_satellite_physics(node_name, current_time, is_active):
     elif sat['status'] == "CRITICAL" and sat['battery'] > THRESH_RECOVERY:
         sat['status'] = "OPERATIONAL"
 
-    return int(sat['battery']), sat['status'], phase
+    return int(sat['battery']), sat['status'], phase, progress
 
 def main():
     print("--- 🌍 Simulatore Orbitale + Telemetria Redis ---")
@@ -92,46 +104,54 @@ def main():
         return
 
     while True:
+        loop_start = time.time()
         try:
-            current_time = time.time()
-            nodes = v1.list_node().items
+            nodes = v1.list_node(_preload_content=False)
+            nodes_data = json.loads(nodes.data)
             
             # Dizionario per raccogliere tutti i dati da mandare alla GUI
             fleet_telemetry = {}
 
-            print(f"\n⏱️  Ciclo: {int(current_time % ORBIT_DURATION)}/{ORBIT_DURATION}s")
+            if int(loop_start) % 5 == 0:
+                print(f"⏱️  Ciclo: {int(loop_start % ORBIT_DURATION)}s")
 
-            for node in nodes:
-                node_name = node.metadata.name
+            for item in nodes_data['items']:
+                node_name = item['metadata']['name']
                 if "control-plane" in node_name: continue
                 
-                is_working = is_node_working(v1, node_name)
-                batt, status, phase = update_satellite_physics(node_name, current_time, is_working)
-
-                health = get_node_health(node)
+                # Check Hardware Reale (JSON parsing)
+                health = get_real_node_health(item)
                 
-                # Icone Terminale
-                weather_icon = "☀️" if phase == "SUN" else "🌑"
-                load_icon = "⚙️" if is_working else "💤"
-                print(f"   🛰️  {node_name}: {weather_icon} | {load_icon} | 🔋 {batt}%")
+                is_working = is_node_working(v1, node_name)
+                batt, status, phase, progress = update_satellite_physics(node_name, loop_start, is_working)
+                
+                # Se il nodo è morto, forziamo lo status a CRITICAL per coerenza
+                if health == "OFFLINE":
+                    status = "HARDWARE_FAILURE"
 
-                # 1. Aggiorna Kubernetes (Labels)
-                body = { "metadata": { "labels": { LABEL_BATTERY: str(batt), LABEL_STATUS: status } } }
-                v1.patch_node(node_name, body)
+                # Patch K8s (Solo se il nodo è vivo proviamo a patcharlo, altrimenti errore)
+                if health == "ONLINE":
+                    try:
+                        body = { "metadata": { "labels": { LABEL_BATTERY: str(batt), LABEL_STATUS: status } } }
+                        v1.patch_node(node_name, body)
+                    except:
+                        pass # Se fallisce la patch, probabilmente il nodo sta morendo
 
-                # 2. Prepara dati per la Dashboard
                 fleet_telemetry[node_name] = {
                     "battery": batt,
-                    "phase": phase,      # SUN / ECLIPSE
+                    "phase": phase,
+                    "orbit_pos": progress,
                     "load": "WORKING" if is_working else "IDLE",
-                    "status": status,    # OPERATIONAL / CRITICAL
-                    "health": health
+                    "status": status,
+                    "health": health # ORA è il valore vero (OFFLINE/ONLINE)
                 }
 
-            # 3. Scrivi Telemetria Completa su Redis
             r.set("constellation_telemetry", json.dumps(fleet_telemetry))
             
-            time.sleep(UPDATE_INTERVAL)
+            # 2. DRIFT CORRECTION
+            elapsed = time.time() - loop_start
+            sleep_time = max(0, UPDATE_INTERVAL - elapsed)
+            time.sleep(sleep_time)
             
         except KeyboardInterrupt:
             break

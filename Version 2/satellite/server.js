@@ -2,13 +2,11 @@ const http = require('http');
 const fs = require('fs');
 const { createClient } = require('redis');
 
-// Configurazione da Variabili d'Ambiente (Iniettate da K8s)
 const redisHost = process.env.REDIS_HOST || 'redis-sat';
 const port = 3000;
 const podName = process.env.POD_NAME || 'Unknown-Pod';
 const nodeName = process.env.NODE_NAME || 'Unknown-Node';
 
-// Connessione al Database Persistente
 const client = createClient({ url: `redis://${redisHost}:6379` });
 client.on('error', (err) => console.log('Redis Client Error', err));
 
@@ -20,35 +18,37 @@ client.on('error', (err) => console.log('Redis Client Error', err));
 const requestListener = async (req, res) => {
   if (req.url === '/data') {
     try {
-      // 1. Incrementa il contatore atomico (sopravvive al riavvio)
       const count = await client.incr('mission_step');
-      
-      // 2. Legge la telemetria della flotta (scritta da physics_sim.py)
       const telemetryRaw = await client.get('constellation_telemetry');
+      
+      // NUOVO: Leggi info dal Watchdog
+      const replicas = await client.get('mission_replicas') || "1";
+      const missionMsg = await client.get('mission_status_text') || "NOMINAL";
+
       const telemetry = telemetryRaw ? JSON.parse(telemetryRaw) : {};
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      
-      // Risposta JSON completa
       res.end(JSON.stringify({ 
         satellite_pod: podName, 
         satellite_node: nodeName,
         count: count,
         fleet: telemetry,
-        status: "OPERATIONAL"
+        status: "OPERATIONAL",
+        // NUOVO: Dati per la GUI
+        mission_control: {
+            replicas: replicas,
+            message: missionMsg
+        }
       }));
-      
-      console.log(`📡 Dato #${count} elaborato da ${podName} @ ${nodeName}`);
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ error: e.message }));
     }
   } else {
-    // Serve l'interfaccia grafica
     fs.readFile(__dirname + "/index.html", (err, data) => {
       if (err) {
         res.writeHead(500);
-        res.end("Errore critico: index.html non trovato nel container.");
+        res.end("Errore: index.html mancante.");
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/html' });

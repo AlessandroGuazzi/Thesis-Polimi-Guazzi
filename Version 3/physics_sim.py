@@ -26,15 +26,19 @@ satellites_state = {}
 
 def get_redis_role(v1, pod_name):
     try:
+        # Aggiungiamo il parametro 'container="redis"'
         resp = stream.stream(v1.connect_get_namespaced_pod_exec,
             name=pod_name,
             namespace="default",
+            container="redis",  # <--- FIX CRITICO: Specifica il container target
             command=["redis-cli", "role"],
             stderr=True, stdin=False, stdout=True, tty=False
         )
         if "master" in resp: return "MASTER"
         if "slave" in resp: return "REPLICA"
-    except:
+    except Exception as e:
+        # Lasciamo il print dell'errore per sicurezza, ma ora dovrebbe funzionare
+        print(f"DEBUG: Errore su {pod_name}: {e}") 
         pass
     return "UNKNOWN"
 

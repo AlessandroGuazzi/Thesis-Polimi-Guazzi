@@ -1,182 +1,108 @@
 import time
 import logging
-from kubernetes import client, config
+from kubernetes import client, config, watch
 
 # =============================================================================
-# CONFIGURAZIONE WATCHDOG REATTIVO (BMS - Battery Management System)
+# CONFIGURAZIONE WATCHDOG DISTRIBUTO (V3)
 # =============================================================================
 
-# Configurazione Logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - [SPACE-BMS] - %(message)s',
+    format='%(asctime)s - [SPACE-FDIR] - %(message)s',
     datefmt='%H:%M:%S'
 )
 
-# SOGLIE ENERGETICHE (Isteresi)
-# Sotto il 20%: Entra in Safe Mode (Spegne carichi, mantiene API Server)
-# Sopra il 40%: Esce da Safe Mode (Ripristina carichi)
-BATTERY_CRITICAL_THRESHOLD = 20.0  
-BATTERY_RECOVERY_THRESHOLD = 40.0  
+# Soglie Energetiche
+THRESH_EVICT = 20    # Sotto questa soglia, il satellite scarica il barile (Sfratto)
+LABEL_BATTERY = "spacecloud.io/battery_level"
 
-# ETICHETTA DA MONITORARE
-LABEL_ENERGY = "satellite.energy"
-
-# CARICHI SACRIFICABILI (Payload Utente)
-# Questi servizi verranno spenti (replicas=0) in Safe Mode per salvare il Master.
-SACRIFICIAL_WORKLOADS = [
-    {"ns": "default", "name": "redis-leader", "replicas": 1},
-    {"ns": "default", "name": "redis-follower", "replicas": 2},
-    # Nota: Assicurati che i nomi dei deployment della dashboard siano corretti per la tua installazione
-    {"ns": "kubernetes-dashboard", "name": "kubernetes-dashboard", "replicas": 1},
-    {"ns": "kubernetes-dashboard", "name": "dashboard-metrics-scraper", "replicas": 1}
+# Carichi da Monitorare e Migrare
+# 'label': l'etichetta usata nel deployment/statefulset
+MONITORED_APPS = [
+    {"name": "Dashboard", "label": "app=space-app"},  # La tua UI
+    {"name": "Redis",     "label": "app=redis"}       # Il Database Distribuito
 ]
 
-class SpaceWatchdogReactive:
+class SpaceWatchdogDistributed:
     def __init__(self):
-        # Connessione al Cluster (simula il bus dati interno del satellite)
         try:
             config.load_kube_config()
             self.v1 = client.CoreV1Api()
-            self.apps_v1 = client.AppsV1Api()
-            logging.info("✅ BMS Connesso al Control Plane del Satellite.")
+            logging.info("✅ FDIR Watchdog Connesso al Cluster.")
         except Exception as e:
-            logging.error(f"❌ Errore critico di connessione K8s: {e}")
+            logging.error(f"❌ Errore connessione K8s: {e}")
             exit(1)
 
-        self.safe_mode_active = False
-        self.master_node_name = None
-
-    def get_master_node_name(self):
-        """Trova il nome del nodo master/control-plane."""
+    def get_node_battery(self, node_name):
+        """Legge la batteria di uno specifico satellite."""
         try:
-            # Cerca nodi con label control-plane (standard k8s)
-            nodes = self.v1.list_node(label_selector="node-role.kubernetes.io/control-plane")
-            if not nodes.items:
-                # Fallback per Minikube (spesso non ha la label standard su versioni vecchie)
-                nodes = self.v1.list_node()
-                # Prendiamo il primo nodo (in minikube è unico)
-            
-            if nodes.items:
-                return nodes.items[0].metadata.name
+            node = self.v1.read_node(node_name)
+            # Verifica salute hardware
+            conditions = node.status.conditions
+            for cond in conditions:
+                if cond.type == "Ready" and cond.status != "True":
+                    return 0 # Nodo guasto = Batteria 0 virtuale
+
+            # Lettura etichetta
+            labels = node.metadata.labels
+            if labels and LABEL_BATTERY in labels:
+                return int(labels[LABEL_BATTERY])
         except Exception as e:
-            logging.error(f"Errore ricerca nodo master: {e}")
-        return None
+            logging.warning(f"Impossibile leggere nodo {node_name}: {e}")
+        return 0
 
-    def get_battery_level(self):
-        """Legge il livello di batteria dall'etichetta del Nodo Master."""
-        if not self.master_node_name:
-            self.master_node_name = self.get_master_node_name()
-            if not self.master_node_name:
-                return 100.0 # Fallback safe
-
+    def evict_pod(self, pod_name, namespace, node_name, reason):
+        """
+        Sfratta il pod. Questo innesca la MIGRAZIONE.
+        Il Pod muore -> K8s ne crea uno nuovo -> SpaceScheduler sceglie il nodo migliore.
+        """
         try:
-            node = self.v1.read_node(self.master_node_name)
-            battery_str = node.metadata.labels.get(LABEL_ENERGY, "100")
-            return float(battery_str)
+            logging.warning(f"🚀 MIGRAZIONE AVVIATA: {pod_name} abbandona {node_name} ({reason})")
+            self.v1.delete_namespaced_pod(pod_name, namespace, grace_period_seconds=0)
         except Exception as e:
-            logging.warning(f"Impossibile leggere telemetria da {self.master_node_name}: {e}")
-            return 100.0
-
-    def enter_safe_mode(self):
-        """
-        SOFT-KILL: Attiva la modalità sopravvivenza.
-        Obiettivo: Ridurre il consumo CPU/RAM a zero, mantenendo vivo l'API Server.
-        """
-        if self.safe_mode_active:
-            return
-
-        logging.warning(f"⚠️  BATTERIA CRITICA (<{BATTERY_CRITICAL_THRESHOLD}%)! ATTIVAZIONE SAFE MODE.")
-        logging.warning("   -> Priorità: Salvare il Control Plane. Spegnimento Payload...")
-        
-        # 1. Cordoning del Nodo (Impedisce nuovi pod)
-        self._set_unschedulable(True)
-
-        # 2. Scaling a 0 dei deployment (Ibernazione)
-        for workload in SACRIFICIAL_WORKLOADS:
-            self._scale_deployment(workload['ns'], workload['name'], 0)
-
-        self.safe_mode_active = True
-        logging.info("🛡️  Safe Mode Attiva. Payload Ibernati.")
-
-    def exit_safe_mode(self):
-        """
-        RIPRISTINO: La batteria è sufficiente per riprendere le operazioni.
-        """
-        if not self.safe_mode_active:
-            return
-
-        logging.info(f"🔋 BATTERIA RECUPERATA (>{BATTERY_RECOVERY_THRESHOLD}%). RIPRISTINO OPERAZIONI.")
-
-        # 1. Uncordoning del Nodo
-        self._set_unschedulable(False)
-
-        # 2. Ripristino dei deployment
-        for workload in SACRIFICIAL_WORKLOADS:
-            self._scale_deployment(workload['ns'], workload['name'], workload['replicas'])
-
-        self.safe_mode_active = False
-        logging.info("✅ Operazioni Nominali Ripristinate.")
-
-    def _scale_deployment(self, namespace, name, replicas):
-        """Helper per scalare i deployment."""
-        try:
-            # Verifica esistenza deployment per evitare errori 404 nei log
-            self.apps_v1.read_namespaced_deployment(name, namespace)
-            
-            patch = {"spec": {"replicas": replicas}}
-            self.apps_v1.patch_namespaced_deployment(name, namespace, patch)
-            logging.info(f"   -> [SCALING] {namespace}/{name} impostato a {replicas} repliche.")
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                logging.debug(f"   -> Deployment {name} non trovato. Ignorato.")
-            else:
-                logging.error(f"   -> Errore scaling {name}: {e}")
-
-    def _set_unschedulable(self, unschedulable: bool):
-        """Helper per Cordon/Uncordon del nodo Master."""
-        if not self.master_node_name: return
-
-        try:
-            body = {"spec": {"unschedulable": unschedulable}}
-            self.v1.patch_node(self.master_node_name, body)
-            state = "ISOLATO (Cordoned)" if unschedulable else "ATTIVO (Uncordoned)"
-            logging.info(f"   -> [NODO] {self.master_node_name} è ora {state}.")
-        except Exception as e:
-            logging.error(f"Failed to patch node: {e}")
+            logging.error(f"Errore durante lo sfratto di {pod_name}: {e}")
 
     def run(self):
-        logging.info("🛰️  Space BMS Online. Monitoraggio EPS avviato...")
+        logging.info("🛰️  Monitoraggio Flotta Attivo. In attesa di anomalie...")
         
-        # Identifica subito il nodo
-        self.master_node_name = self.get_master_node_name()
-        logging.info(f"   -> Nodo Master identificato: {self.master_node_name}")
-
         while True:
             try:
-                battery = self.get_battery_level()
-                
-                # Logica di controllo Isteresi
-                if battery < BATTERY_CRITICAL_THRESHOLD:
-                    self.enter_safe_mode()
-                elif battery > BATTERY_RECOVERY_THRESHOLD:
-                    self.exit_safe_mode()
-                
-                # Telemetry heartbeat (meno frequente per non intasare i log)
-                status_icon = "🟢" if not self.safe_mode_active else "🔴"
-                mode_text = "NOMINALE" if not self.safe_mode_active else "SAFE MODE"
-                # Stampa lo stato ogni ciclo (o riduci la frequenza se vuoi)
-                logging.info(f"Telemetria: Batteria={battery:.1f}% | Stato={status_icon} {mode_text}")
-                
-                time.sleep(5) # Controllo ogni 5 secondi
+                # Ciclo su tutte le app critiche (Dashboard e Redis)
+                for app in MONITORED_APPS:
+                    # Troviamo tutti i pod di quel tipo
+                    pods = self.v1.list_namespaced_pod("default", label_selector=app['label'])
+                    
+                    for pod in pods.items:
+                        # Ignoriamo pod che stanno già morendo o non sono schedulati
+                        if pod.metadata.deletion_timestamp or pod.status.phase == "Pending":
+                            continue
+                            
+                        pod_name = pod.metadata.name
+                        node_name = pod.spec.node_name
+                        
+                        if not node_name: continue
+
+                        # 1. Controllo Batteria del Nodo Ospitante
+                        battery = self.get_node_battery(node_name)
+                        
+                        # LOGICA DI MIGRAZIONE
+                        if battery < THRESH_EVICT:
+                            logging.warning(f"⚠️  ALLARME NODO {node_name}: Batteria Critica ({battery}%)")
+                            self.evict_pod(pod_name, "default", node_name, f"Low Battery < {THRESH_EVICT}%")
+                        else:
+                            # Log di debug opzionale (verboso)
+                            # logging.info(f"   OK: {pod_name} su {node_name} (Batt: {battery}%)")
+                            pass
+
+                time.sleep(2) # Controllo rapido ogni 2 secondi
 
             except KeyboardInterrupt:
-                logging.info("Spegnimento Watchdog richiesto.")
+                logging.info("🛑 Watchdog terminato.")
                 break
             except Exception as e:
-                logging.error(f"Errore nel main loop: {e}")
-                time.sleep(5)
+                logging.error(f"Errore ciclo Watchdog: {e}")
+                time.sleep(2)
 
 if __name__ == "__main__":
-    bms = SpaceWatchdogReactive()
-    bms.run()
+    w = SpaceWatchdogDistributed()
+    w.run()

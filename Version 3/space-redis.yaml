@@ -19,7 +19,6 @@ kind: ConfigMap
 metadata:
   name: redis-config
 data:
-  # Configurazione Base di Redis
   redis.conf: |
     bind 0.0.0.0
     protected-mode no
@@ -27,38 +26,30 @@ data:
     dir /data
     appendonly yes
     
-  # Configurazione Base di Sentinel
   sentinel.conf: |
     bind 0.0.0.0
     port 26379
     sentinel resolve-hostnames yes
     sentinel announce-hostnames yes
-    # Monitora il master iniziale (satellite-memory-0). 
-    # '2' è il Quorum: servono 2 voti per cambiare leader.
     sentinel monitor mymaster satellite-memory-0.redis-sat.default.svc.cluster.local 6379 2
     sentinel down-after-milliseconds mymaster 5000
     sentinel failover-timeout mymaster 10000
     sentinel parallel-syncs mymaster 1
 
-  # Script intelligente di avvio (Bootstrap)
   init-redis.sh: |
     #!/bin/sh
     echo ">>> Inizializzazione Satellite Memoria: $HOSTNAME"
     
-    # Copiamo i file di config in una zona scrivibile (necessario per Sentinel)
+    # Copia configurazioni
     cp /config-ro/redis.conf /data/redis.conf
     cp /config-ro/sentinel.conf /data/sentinel.conf
-
-    # Logica di Auto-Discovery basata sul nome del Pod (StatefulSet)
-    # I pod si chiamano satellite-memory-0, -1, -2...
-    # L'indice è il numero finale.
+    
+    # Setup Replica/Master
     INDEX=${HOSTNAME##*-}
-
     if [ "$INDEX" = "0" ]; then
-      echo ">>> Sono il nodo 0. Mi autoproclamo MASTER iniziale."
-      # Non aggiungo 'replicaof', quindi resto Master.
+      echo ">>> Sono il nodo 0. MASTER iniziale."
     else
-      echo ">>> Sono il nodo $INDEX. Mi configuro come REPLICA del nodo 0."
+      echo ">>> Sono il nodo $INDEX. REPLICA di nodo 0."
       echo "replicaof satellite-memory-0.redis-sat.default.svc.cluster.local 6379" >> /data/redis.conf
     fi
 
@@ -78,7 +69,9 @@ spec:
       labels:
         app: redis
     spec:
-      # Distribuzione del rischio (Anti-Affinity)
+      schedulerName: space-scheduler
+
+      # Anti-Affinity: Distribuzione su nodi diversi
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -90,7 +83,6 @@ spec:
                 - redis
             topologyKey: "kubernetes.io/hostname"
 
-      # InitContainer: Prepara i file di configurazione
       initContainers:
       - name: init-satellite
         image: redis:alpine
@@ -107,7 +99,6 @@ spec:
           mountPath: /data
 
       containers:
-      # CONTAINER 1: REDIS (Il Database)
       - name: redis
         image: redis:alpine
         command: ["redis-server", "/data/redis.conf"]
@@ -118,7 +109,6 @@ spec:
         - name: redis-data
           mountPath: /data
 
-      # CONTAINER 2: SENTINEL (L'Arbitro/Voto)
       - name: sentinel
         image: redis:alpine
         command: ["redis-sentinel", "/data/sentinel.conf"]
@@ -134,12 +124,7 @@ spec:
         configMap:
           name: redis-config
           defaultMode: 0755
-
-  volumeClaimTemplates:
-  - metadata:
-      name: redis-data
-    spec:
-      accessModes: [ "ReadWriteOnce" ]
-      resources:
-        requests:
-          storage: 1Gi
+      
+      # STORAGE VOLATILE (Stabile per simulazioni)
+      - name: redis-data
+        emptyDir: {}

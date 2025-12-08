@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sat
+  labels:
+    app: redis
+spec:
+  ports:
+  - port: 6379
+    name: redis
+  clusterIP: None
+  selector:
+    app: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: satellite-memory
+spec:
+  serviceName: "redis-sat"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      # NOTA: Rimuoviamo lo scheduler custom per Redis, 
+      # perché vogliamo forzarlo manualmente su un nodo specifico.
+      # schedulerName: space-scheduler 
+      
+      # --- FORZATURA SUL NODO MASTER ---
+      nodeSelector:
+        kubernetes.io/hostname: space-cloud-control-plane
+      
+      # --- PERMESSO SPECIALE (TOLERATION) ---
+      # Il control-plane è "tainted" per non accettare pod comuni.
+      # Questo è il passpartout per entrare.
+      tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+
+      containers:
+      - name: redis
+        image: redis:alpine
+        command: ["redis-server", "--appendonly", "yes"]
+        ports:
+        - containerPort: 6379
+          name: redis
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi

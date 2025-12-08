@@ -1,10 +1,23 @@
-Write-Host ">>> Inizializzazione Space Cloud Ground Segment (Auto-Deploy)..." -ForegroundColor Cyan
+Write-Host ">>> Inizializzazione Space Cloud Segmento Orbitale Distribuito (v3)..." -ForegroundColor Cyan
 
 # Assicuriamoci di essere nella cartella dello script
 Set-Location $PSScriptRoot
 
 # ----------------------------------------------------------------
-# 0. APERTURA CANALE DATI (REDIS - Auto-Reconnect)
+# FASE 0: DEMOCRATIZZAZIONE DELLA FLOTTA (Imperativa)
+# ----------------------------------------------------------------
+Write-Host "   - Configurazione Nodi: Rimozione vincoli Control-Plane..."
+
+# Rimuoviamo il cartello "Divieto di Accesso" (Taint) dal nodo master.
+# Il '-' finale significa "rimuovi". Usiamo 2>$null per ignorare errori se è già sbloccato.
+kubectl taint nodes --all node-role.kubernetes.io/control-plane- 2>$null
+kubectl taint nodes --all node-role.kubernetes.io/master- 2>$null
+
+Write-Host "     [OK] Il Satellite Comandante è ora operativo per i carichi di lavoro." -ForegroundColor Green
+Start-Sleep -Seconds 2
+
+# ----------------------------------------------------------------
+# 1. APERTURA CANALE DATI (REDIS - Auto-Reconnect)
 # ----------------------------------------------------------------
 Write-Host "   - Apertura Tunnel Telemetria (Redis)..."
 
@@ -33,13 +46,18 @@ Write-Host "     (Attesa stabilizzazione Link...)" -ForegroundColor Gray
 Start-Sleep -Seconds 3
 
 # ----------------------------------------------------------------
-# NOVITÀ: DEPLOY AUTOMATICO MISSIONE
+# 2. DEPLOY AUTOMATICO MISSIONE
 # ----------------------------------------------------------------
 Write-Host "   - INIEZIONE MISSIONE (Deploy Dashboard)..." -ForegroundColor Magenta
-kubectl apply -f space-dashboard.yaml
+# Controlliamo che il file esista per sicurezza
+if (Test-Path "space-dashboard.yaml") {
+    kubectl apply -f space-dashboard.yaml
+} else {
+    Write-Host "     [ERR] File space-dashboard.yaml non trovato!" -ForegroundColor Red
+}
 
 # ----------------------------------------------------------------
-# 1. SIMULATORE FISICO
+# 3. SIMULATORE FISICO
 # ----------------------------------------------------------------
 Write-Host "   - Avvio Simulatore Fisico (EPS)..."
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "& { `$Host.UI.RawUI.WindowTitle = 'TERM 1: FISICA (Batterie)'; python physics_sim.py }"
@@ -47,7 +65,7 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "& { `$Host.UI.Raw
 Start-Sleep -Seconds 1
 
 # ----------------------------------------------------------------
-# 2. SCHEDULER (Decision Maker)
+# 4. SCHEDULER (Decision Maker)
 # ----------------------------------------------------------------
 Write-Host "   - Avvio Space Scheduler..."
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "& { `$Host.UI.RawUI.WindowTitle = 'TERM 2: SCHEDULER (Decision Maker)'; python space_scheduler.py }"
@@ -55,7 +73,7 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "& { `$Host.UI.Raw
 Start-Sleep -Seconds 1
 
 # ----------------------------------------------------------------
-# 3. WATCHDOG (Safety System)
+# 5. WATCHDOG (Safety System)
 # ----------------------------------------------------------------
 Write-Host "   - Avvio Watchdog (FDIR)..."
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "& { `$Host.UI.RawUI.WindowTitle = 'TERM 3: WATCHDOG (Safety)'; python space_watchdog_reactive.py }"
@@ -63,7 +81,7 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "& { `$Host.UI.Raw
 Start-Sleep -Seconds 1
 
 # ----------------------------------------------------------------
-# 4. INTERFACCIA GRAFICA (FAST RECONNECT)
+# 6. INTERFACCIA GRAFICA (FAST RECONNECT)
 # ----------------------------------------------------------------
 Write-Host "   - Avvio Interfaccia Grafica (UI Link Aggressivo)..."
 
@@ -101,5 +119,5 @@ $uiCommand = "& {
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $uiCommand
 
 
-Write-Host "`n[OK] SISTEMA ONLINE." -ForegroundColor Green
-Write-Host "[!] NOTA: Se il TERM 0 da errore, assicurati di aver lanciato 'kubectl apply -f space-redis.yaml'" -ForegroundColor Yellow
+Write-Host "`n[OK] SISTEMA V3 ONLINE." -ForegroundColor Green
+Write-Host "[!] NOTA: Il Control-Plane è ora sbloccato, ma la fisica lo ignora ancora." -ForegroundColor Yellow

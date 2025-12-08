@@ -7,10 +7,61 @@ metadata:
 spec:
   ports:
   - port: 6379
-    name: redis
+    name: redis-client
+  - port: 26379
+    name: redis-sentinel
   clusterIP: None
   selector:
     app: redis
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+data:
+  # Configurazione Base di Redis
+  redis.conf: |
+    bind 0.0.0.0
+    protected-mode no
+    port 6379
+    dir /data
+    appendonly yes
+    
+  # Configurazione Base di Sentinel
+  sentinel.conf: |
+    bind 0.0.0.0
+    port 26379
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    # Monitora il master iniziale (satellite-memory-0). 
+    # '2' è il Quorum: servono 2 voti per cambiare leader.
+    sentinel monitor mymaster satellite-memory-0.redis-sat.default.svc.cluster.local 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 10000
+    sentinel parallel-syncs mymaster 1
+
+  # Script intelligente di avvio (Bootstrap)
+  init-redis.sh: |
+    #!/bin/sh
+    echo ">>> Inizializzazione Satellite Memoria: $HOSTNAME"
+    
+    # Copiamo i file di config in una zona scrivibile (necessario per Sentinel)
+    cp /config-ro/redis.conf /data/redis.conf
+    cp /config-ro/sentinel.conf /data/sentinel.conf
+
+    # Logica di Auto-Discovery basata sul nome del Pod (StatefulSet)
+    # I pod si chiamano satellite-memory-0, -1, -2...
+    # L'indice è il numero finale.
+    INDEX=${HOSTNAME##*-}
+
+    if [ "$INDEX" = "0" ]; then
+      echo ">>> Sono il nodo 0. Mi autoproclamo MASTER iniziale."
+      # Non aggiungo 'replicaof', quindi resto Master.
+    else
+      echo ">>> Sono il nodo $INDEX. Mi configuro come REPLICA del nodo 0."
+      echo "replicaof satellite-memory-0.redis-sat.default.svc.cluster.local 6379" >> /data/redis.conf
+    fi
+
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -18,7 +69,7 @@ metadata:
   name: satellite-memory
 spec:
   serviceName: "redis-sat"
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: redis
@@ -27,32 +78,63 @@ spec:
       labels:
         app: redis
     spec:
-      # NOTA: Rimuoviamo lo scheduler custom per Redis, 
-      # perché vogliamo forzarlo manualmente su un nodo specifico.
-      # schedulerName: space-scheduler 
-      
-      # --- FORZATURA SUL NODO MASTER ---
-      nodeSelector:
-        kubernetes.io/hostname: space-cloud-control-plane
-      
-      # --- PERMESSO SPECIALE (TOLERATION) ---
-      # Il control-plane è "tainted" per non accettare pod comuni.
-      # Questo è il passpartout per entrare.
-      tolerations:
-      - key: "node-role.kubernetes.io/control-plane"
-        operator: "Exists"
-        effect: "NoSchedule"
+      # Distribuzione del rischio (Anti-Affinity)
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - redis
+            topologyKey: "kubernetes.io/hostname"
+
+      # InitContainer: Prepara i file di configurazione
+      initContainers:
+      - name: init-satellite
+        image: redis:alpine
+        command: ["/bin/sh", "/config-ro/init-redis.sh"]
+        env:
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: config-ro
+          mountPath: /config-ro
+        - name: redis-data
+          mountPath: /data
 
       containers:
+      # CONTAINER 1: REDIS (Il Database)
       - name: redis
         image: redis:alpine
-        command: ["redis-server", "--appendonly", "yes"]
+        command: ["redis-server", "/data/redis.conf"]
         ports:
         - containerPort: 6379
           name: redis
         volumeMounts:
         - name: redis-data
           mountPath: /data
+
+      # CONTAINER 2: SENTINEL (L'Arbitro/Voto)
+      - name: sentinel
+        image: redis:alpine
+        command: ["redis-sentinel", "/data/sentinel.conf"]
+        ports:
+        - containerPort: 26379
+          name: sentinel
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+
+      volumes:
+      - name: config-ro
+        configMap:
+          name: redis-config
+          defaultMode: 0755
+
   volumeClaimTemplates:
   - metadata:
       name: redis-data

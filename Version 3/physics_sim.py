@@ -82,6 +82,7 @@ def get_node_load_info(v1, node_name):
         has_dashboard = False
         redis_role = None
         redis_ip = None
+        found_pod_name = None  # <--- NUOVO: Salviamo il nome del pod
 
         for item in pods.items:
             if item.metadata.deletion_timestamp: continue
@@ -91,23 +92,25 @@ def get_node_load_info(v1, node_name):
             if app == "space-app":
                 has_dashboard = True
             elif app == "redis":
+                # Salviamo il nome del pod Redis se lo troviamo
+                found_pod_name = item.metadata.name 
                 role = get_redis_role(item.metadata.name)
                 if role != "UNKNOWN":
                     redis_role = role
-                    redis_ip = item.status.pod_ip # Salviamo l'IP per il confronto col Consensus
+                    redis_ip = item.status.pod_ip 
 
         # Logica di Priorità
         if redis_role == "MASTER":
-            return "MEMORY", "MASTER", redis_ip
+            return "MEMORY", "MASTER", redis_ip, found_pod_name # <--- RITORNA POD NAME
         elif has_dashboard:
-            return "COMPUTE", "DASHBOARD", None
+            return "COMPUTE", "DASHBOARD", None, None
         elif redis_role == "REPLICA":
-            return "MEMORY", "REPLICA", redis_ip
+            return "MEMORY", "REPLICA", redis_ip, found_pod_name # <--- RITORNA POD NAME
         else:
-            return "IDLE", "STANDBY", None
+            return "IDLE", "STANDBY", None, None
             
     except Exception as e:
-        return "IDLE", "UNKNOWN", None
+        return "IDLE", "UNKNOWN", None, None
 
 def update_satellite_physics(node_name, current_time, load_type, load_role):
     if node_name not in satellites_state:
@@ -137,6 +140,38 @@ def update_satellite_physics(node_name, current_time, load_type, load_role):
     
     return int(sat['battery']), sat['status'], phase, progress
 
+def inject_telemetry_to_master(master_pod, telemetry_data):
+    """
+    Scrive nel Master Pod usando PIPE (stdin).
+    Molto più sicuro per evitare problemi di virgolette col JSON su Windows.
+    """
+    if not master_pod or master_pod == "Searching..." or master_pod == "ELECTION...":
+        return
+
+    try:
+        # Prepariamo il comando per leggere da stdin (-x in redis-cli legge il valore da stdin)
+        # Nota: usiamo '-i' in kubectl per abilitare stdin
+        cmd = f"kubectl exec -i {master_pod} -c redis -- redis-cli -x set constellation_telemetry"
+        
+        # Avviamo il processo aprendo una 'pipe' per passargli i dati
+        process = subprocess.Popen(
+            cmd, 
+            shell=True, 
+            stdin=subprocess.PIPE, 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.PIPE
+        )
+        
+        # Inviamo il JSON puro (senza escape manuali!)
+        json_bytes = json.dumps(telemetry_data).encode('utf-8')
+        stdout, stderr = process.communicate(input=json_bytes)
+        
+        if process.returncode != 0:
+             print(f"⚠️ Errore PIPE Redis: {stderr.decode()}")
+
+    except Exception as e:
+        print(f"⚠️ Exception scrittura DB: {e}")
+
 def main():
     print("--- 🌍 Physics Engine V3.6 (Consensus Aware) ---")
     
@@ -159,14 +194,20 @@ def main():
             master_candidates = [] # Lista di nodi che dicono "Sono Master"
             node_redis_ips = {}    # Mappa NomeNodo -> IP Redis
 
+            # Mappa per ricordarci "NomeNodo" -> "NomePod"
+            master_pod_map = {}
+
             for node in nodes:
                 name = node.metadata.name
                 
                 # 1. Rilevamento Ruolo (Locale al nodo)
-                load_type, load_role, pod_ip = get_node_load_info(v1, name)
+                load_type, load_role, pod_ip, pod_name = get_node_load_info(v1, name)
                 
                 if load_role == "MASTER":
                     master_candidates.append(name)
+                    # Se è master, salviamo il nome del suo pod (es. satellite-memory-0)
+                    if pod_name:
+                        master_pod_map[name] = pod_name
                 
                 if pod_ip:
                     node_redis_ips[name] = pod_ip
@@ -216,14 +257,27 @@ def main():
             elif len(master_candidates) == 1:
                 final_master = master_candidates[0]
 
-            # 5. Invio dati corretti alla UI
-            if r:
-                try: r.set("constellation_telemetry", json.dumps(fleet_telemetry))
-                except: pass
-            
-            print(f"⏱️  Sync OK. Master DB: {final_master}")
+            # DEBUG: Vediamo quanti nodi stiamo provando a inviare
+            node_count = len(fleet_telemetry)
+            print(f"DEBUG: Trovati {node_count} nodi in telemetria.")
 
+            # 5. Invio dati corretti alla UI
+            # Iniettiamo i dati direttamente nel pod che abbiamo identificato come Master.
+            if final_master not in ["Searching...", "ELECTION...", None]:
+                target_pod = master_pod_map.get(final_master)
+                
+                if target_pod:
+                    inject_telemetry_to_master(target_pod, fleet_telemetry)
+                    final_master_display = f"{final_master} ({target_pod})" # Solo per log
+                else:
+                    print(f"⚠️ Trovato master node {final_master} ma nessun pod name!")
+            
             elapsed = time.time() - loop_start
+            
+            # Feedback visuale dello stato
+            status_symbol = "🟢" if final_master not in ["Searching...", "ELECTION..."] else "🔴"
+            print(f"{status_symbol} Sync OK. Master DB: {final_master} | Cycle: {elapsed:.2f}s")
+
             time.sleep(max(0, UPDATE_INTERVAL - elapsed))
             
         except KeyboardInterrupt:

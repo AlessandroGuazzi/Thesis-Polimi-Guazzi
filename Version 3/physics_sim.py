@@ -3,8 +3,6 @@ import json
 import redis
 import subprocess
 import shutil
-import os
-import sys
 from kubernetes import client, config
 
 # =============================================================================
@@ -27,33 +25,6 @@ DISCHARGE_RATE_DB_REPLICA = 1.0
 DISCHARGE_RATE_DB_MASTER = 2.5 
 
 satellites_state = {}
-
-# --- UTILS GRAFICHE ---
-class Colors:
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-
-def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-def draw_battery_bar(percentage):
-    bar_len = 10
-    filled_len = int(round(bar_len * percentage / 100))
-    
-    # Colore in base alla carica
-    color = Colors.GREEN
-    if percentage < 40: color = Colors.WARNING
-    if percentage < 20: color = Colors.FAIL
-    
-    bar = '█' * filled_len + '░' * (bar_len - filled_len)
-    return f"{color}[{bar}] {percentage:>3}%{Colors.ENDC}"
 
 def check_requirements():
     path = shutil.which("kubectl")
@@ -83,10 +54,16 @@ def get_sentinel_consensus():
     for i in range(3):
         pod = f"satellite-memory-{i}"
         try:
+            # Chiediamo a Sentinel l'IP del master attuale
             cmd = f"kubectl exec {pod} -c sentinel -- redis-cli -p 26379 sentinel get-master-addr-by-name mymaster"
             out = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, timeout=2).decode()
-            if "10." in out: 
+            
+            # Sentinel risponde con:
+            # 1) "10.244.X.X"
+            # 2) "6379"
+            if "10." in out: # Controllo grezzo se c'è un IP
                 lines = out.replace('\r', '').split('\n')
+                # Puliamo l'output per trovare l'IP
                 for line in lines:
                     if "10." in line:
                         return line.strip().replace('"', '')
@@ -105,7 +82,7 @@ def get_node_load_info(v1, node_name):
         has_dashboard = False
         redis_role = None
         redis_ip = None
-        found_pod_name = None 
+        found_pod_name = None  # <--- NUOVO: Salviamo il nome del pod
 
         for item in pods.items:
             if item.metadata.deletion_timestamp: continue
@@ -115,18 +92,20 @@ def get_node_load_info(v1, node_name):
             if app == "space-app":
                 has_dashboard = True
             elif app == "redis":
+                # Salviamo il nome del pod Redis se lo troviamo
                 found_pod_name = item.metadata.name 
                 role = get_redis_role(item.metadata.name)
                 if role != "UNKNOWN":
                     redis_role = role
                     redis_ip = item.status.pod_ip 
 
+        # Logica di Priorità
         if redis_role == "MASTER":
-            return "MEMORY", "MASTER", redis_ip, found_pod_name 
+            return "MEMORY", "MASTER", redis_ip, found_pod_name # <--- RITORNA POD NAME
         elif has_dashboard:
             return "COMPUTE", "DASHBOARD", None, None
         elif redis_role == "REPLICA":
-            return "MEMORY", "REPLICA", redis_ip, found_pod_name 
+            return "MEMORY", "REPLICA", redis_ip, found_pod_name # <--- RITORNA POD NAME
         else:
             return "IDLE", "STANDBY", None, None
             
@@ -164,112 +143,85 @@ def update_satellite_physics(node_name, current_time, load_type, load_role):
 def inject_telemetry_to_master(master_pod, telemetry_data):
     """
     Scrive nel Master Pod usando PIPE (stdin).
+    Molto più sicuro per evitare problemi di virgolette col JSON su Windows.
     """
     if not master_pod or master_pod == "Searching..." or master_pod == "ELECTION...":
         return
 
     try:
+        # Prepariamo il comando per leggere da stdin (-x in redis-cli legge il valore da stdin)
+        # Nota: usiamo '-i' in kubectl per abilitare stdin
         cmd = f"kubectl exec -i {master_pod} -c redis -- redis-cli -x set constellation_telemetry"
+        
+        # Avviamo il processo aprendo una 'pipe' per passargli i dati
         process = subprocess.Popen(
-            cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            cmd, 
+            shell=True, 
+            stdin=subprocess.PIPE, 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.PIPE
         )
+        
+        # Inviamo il JSON puro (senza escape manuali!)
         json_bytes = json.dumps(telemetry_data).encode('utf-8')
         stdout, stderr = process.communicate(input=json_bytes)
         
-        # Gestione errori silenziosa per non sporcare la UI
         if process.returncode != 0:
-             pass # Gli errori verranno catturati dal watchdog o dalla logica di retry
+             print(f"⚠️ Errore PIPE Redis: {stderr.decode()}")
 
     except Exception as e:
-        pass
-
-def print_dashboard(telemetry, final_master, master_pod_name, elapsed_time, system_msg=""):
-    clear_screen()
-    print(f"{Colors.HEADER}================================================================{Colors.ENDC}")
-    print(f"{Colors.HEADER}   🌍  SPACE CLOUD PHYSICS ENGINE v3.6 - ORBITAL TELEMETRY   {Colors.ENDC}")
-    print(f"{Colors.HEADER}================================================================{Colors.ENDC}")
-    print("")
-    
-    # STATUS HEADER
-    master_display = f"{Colors.GREEN}{final_master} ({master_pod_name}){Colors.ENDC}" if master_pod_name else f"{Colors.WARNING}{final_master}{Colors.ENDC}"
-    if final_master == "Searching..." or final_master == "ELECTION...":
-        master_display = f"{Colors.FAIL}⚠️  ELECTION IN PROGRESS{Colors.ENDC}"
-
-    print(f"   👑  {Colors.BOLD}DB MASTER NODE:{Colors.ENDC}   {master_display}")
-    print(f"   ⏱️  {Colors.BOLD}SIMULATION CYCLE:{Colors.ENDC} {elapsed_time:.2f}s")
-    print("")
-
-    # TABLE HEADER
-    print(f"{Colors.CYAN}{'NODE NAME':<25} {'BATTERY':<20} {'PHASE':<10} {'LOAD':<10} {'ROLE':<10}{Colors.ENDC}")
-    print(f"{Colors.BLUE}{'-'*80}{Colors.ENDC}")
-
-    # TABLE ROWS
-    sorted_nodes = sorted(telemetry.keys())
-    for node in sorted_nodes:
-        data = telemetry[node]
-        
-        # Icone Phase
-        phase_icon = "☀️ SUN" if data['phase'] == "SUN" else "🌑 ECLIPSE"
-        phase_str = f"{Colors.WARNING if data['phase'] == 'SUN' else Colors.BLUE}{phase_icon:<10}{Colors.ENDC}"
-        
-        # Load Color
-        load_color = Colors.ENDC
-        if data['load'] == "COMPUTE": load_color = Colors.CYAN
-        elif data['load'] == "MEMORY": load_color = Colors.HEADER
-        
-        # Role Color
-        role_str = data['role']
-        if data['role'] == "MASTER": role_str = f"{Colors.BOLD}{Colors.WARNING}👑 MASTER{Colors.ENDC}"
-        elif data['role'] == "REPLICA": role_str = f"{Colors.BLUE}🔹 REPLICA{Colors.ENDC}"
-        elif data['role'] == "DASHBOARD": role_str = f"{Colors.GREEN}💻 DASHBOARD{Colors.ENDC}"
-        
-        batt_bar = draw_battery_bar(data['battery'])
-        
-        print(f"{node:<25} {batt_bar:<20} {phase_str} {load_color}{data['load']:<10}{Colors.ENDC} {role_str}")
-
-    print(f"{Colors.BLUE}{'-'*80}{Colors.ENDC}")
-    
-    # SYSTEM LOG
-    if system_msg:
-        print(f"\n[SYSTEM EVENT]: {system_msg}")
-    else:
-        print(f"\n{Colors.GREEN}[SYSTEM]: Nominal Operation.{Colors.ENDC}")
+        print(f"⚠️ Exception scrittura DB: {e}")
 
 def main():
+    print("--- 🌍 Physics Engine V3.6 (Consensus Aware) ---")
+    
     if not check_requirements(): return
     config.load_kube_config()
     v1 = client.CoreV1Api()
     
-    last_system_msg = ""
-    system_msg_timer = 0
+    try: r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+    except: r = None
+
+    print("\n[INFO] Simulazione avviata. Protocollo anti-Split-Brain attivo.\n")
 
     while True:
         loop_start = time.time()
         try:
             nodes = v1.list_node().items
             fleet_telemetry = {}
-            master_candidates = [] 
-            node_redis_ips = {}    
+            
+            # Strutture temporanee per il Consensus Check
+            master_candidates = [] # Lista di nodi che dicono "Sono Master"
+            node_redis_ips = {}    # Mappa NomeNodo -> IP Redis
+
+            # Mappa per ricordarci "NomeNodo" -> "NomePod"
             master_pod_map = {}
 
-            # --- RACCOLTA DATI ---
             for node in nodes:
                 name = node.metadata.name
+                
+                # 1. Rilevamento Ruolo (Locale al nodo)
                 load_type, load_role, pod_ip, pod_name = get_node_load_info(v1, name)
                 
                 if load_role == "MASTER":
                     master_candidates.append(name)
-                    if pod_name: master_pod_map[name] = pod_name
+                    # Se è master, salviamo il nome del suo pod (es. satellite-memory-0)
+                    if pod_name:
+                        master_pod_map[name] = pod_name
                 
-                if pod_ip: node_redis_ips[name] = pod_ip
+                if pod_ip:
+                    node_redis_ips[name] = pod_ip
 
+                # 2. Aggiornamento Fisica
                 batt, status, phase, progress = update_satellite_physics(name, loop_start, load_type, load_role)
                 
+                # 3. Patch Kubernetes (Silenziosa)
                 try:
                     body = {"metadata": {"labels": {LABEL_BATTERY: str(batt), LABEL_STATUS: status}}}
                     v1.patch_node(name, body)
                 except: pass
 
+                # 4. Costruzione Dati UI (Provvisori)
                 fleet_telemetry[name] = {
                     "battery": batt,
                     "phase": phase,
@@ -280,21 +232,24 @@ def main():
                     "health": "ONLINE"
                 }
 
-            # --- CONSENSUS CHECK ---
+            # --- CONSENSUS CHECK (Anti Split-Brain) ---
+            # Se più di un nodo si crede Master, chiediamo a Sentinel chi ha ragione
             final_master = "Searching..."
-            current_msg = ""
-
+            
             if len(master_candidates) > 1:
-                current_msg = f"{Colors.FAIL}⚠️  SPLIT BRAIN DETECTED: {master_candidates}{Colors.ENDC}"
+                print(f"⚠️  SPLIT BRAIN RILEVATO: {master_candidates} dicono di essere Master.")
                 true_master_ip = get_sentinel_consensus()
                 
                 if true_master_ip:
-                    current_msg = f"{Colors.WARNING}⚖️  SENTINEL RESOLUTION: True Master is {true_master_ip}{Colors.ENDC}"
+                    print(f"⚖️  SENTINEL HA PARLATO: Il vero master è IP {true_master_ip}")
+                    # Correggiamo la telemetria
                     for node in master_candidates:
                         node_ip = node_redis_ips.get(node)
                         if node_ip == true_master_ip:
-                            final_master = node 
+                            final_master = node # Lui è il vero Re
                         else:
+                            # Lui è un usurpatore (o un vecchio master morente)
+                            # Lo declassiamo visivamente per l'utente
                             fleet_telemetry[node]['role'] = 'REPLICA'
                             fleet_telemetry[node]['status'] = 'SYNCING' 
                 else:
@@ -302,35 +257,32 @@ def main():
             elif len(master_candidates) == 1:
                 final_master = master_candidates[0]
 
-            # Gestione persistenza messaggi di errore
-            if current_msg:
-                last_system_msg = current_msg
-                system_msg_timer = 5 # Mostra il messaggio per 5 cicli
-            elif system_msg_timer > 0:
-                system_msg_timer -= 1
-            else:
-                last_system_msg = ""
+            # DEBUG: Vediamo quanti nodi stiamo provando a inviare
+            node_count = len(fleet_telemetry)
+            print(f"DEBUG: Trovati {node_count} nodi in telemetria.")
 
-            # --- INIEZIONE DATI ---
-            target_pod_display = None
+            # 5. Invio dati corretti alla UI
+            # Iniettiamo i dati direttamente nel pod che abbiamo identificato come Master.
             if final_master not in ["Searching...", "ELECTION...", None]:
                 target_pod = master_pod_map.get(final_master)
-                target_pod_display = target_pod
+                
                 if target_pod:
                     inject_telemetry_to_master(target_pod, fleet_telemetry)
+                    final_master_display = f"{final_master} ({target_pod})" # Solo per log
+                else:
+                    print(f"⚠️ Trovato master node {final_master} ma nessun pod name!")
             
             elapsed = time.time() - loop_start
             
-            # --- VISUALIZZAZIONE ---
-            print_dashboard(fleet_telemetry, final_master, target_pod_display, elapsed, last_system_msg)
+            # Feedback visuale dello stato
+            status_symbol = "🟢" if final_master not in ["Searching...", "ELECTION..."] else "🔴"
+            print(f"{status_symbol} Sync OK. Master DB: {final_master} | Cycle: {elapsed:.2f}s")
 
             time.sleep(max(0, UPDATE_INTERVAL - elapsed))
             
         except KeyboardInterrupt:
-            print("\n🛑 Simulazione terminata.")
             break
         except Exception as e:
-            # In caso di crash, stampiamo l'errore senza pulire lo schermo per poterlo leggere
             print(f"❌ Errore ciclo: {e}")
             time.sleep(UPDATE_INTERVAL)
 

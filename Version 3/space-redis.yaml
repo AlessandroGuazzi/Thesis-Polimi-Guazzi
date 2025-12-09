@@ -40,29 +40,30 @@ data:
     #!/bin/sh
     echo ">>> Init Satellite: $HOSTNAME"
     
-    # 1. Copia i file (come root)
+    # 1. Preparazione Config
     cp /config-ro/redis.conf /data/redis.conf
     cp /config-ro/sentinel.conf /data/sentinel.conf
     
-    # 2. Configura Master/Replica
+    # 2. LOGICA DI CONSENSO AL BOOT
+    # Chiediamo a Sentinel chi è il master attuale
+    MASTER_IP=$(redis-cli -h redis-sat -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1)
+    
     INDEX=${HOSTNAME##*-}
-    if [ "$INDEX" = "0" ]; then
-      echo ">>> Nodo 0: Configurazione Master."
+    
+    if [ -n "$MASTER_IP" ]; then
+      echo ">>> Trovato Master esistente ($MASTER_IP). Mi unisco come Replica."
+      echo "replicaof $MASTER_IP 6379" >> /data/redis.conf
+    elif [ "$INDEX" = "0" ]; then
+      echo ">>> Nessun Master attivo trovato. Sono il Nodo 0. Prendo il comando."
+      # Nessun comando replicaof = Diventa Master
     else
-      echo ">>> Nodo $INDEX: Configurazione Replica."
+      echo ">>> Nessun Master e non sono il Nodo 0. Attendo in standby (Replica di default del nodo 0)."
       echo "replicaof satellite-memory-0.redis-sat.default.svc.cluster.local 6379" >> /data/redis.conf
     fi
     
-    # 3. FIX PERMESSI "BRUTALE" (Funziona sempre)
-    # Diamo tutto all'utente redis (999)
-    echo ">>> Applicazione permessi (chown 999)..."
+    # 3. Permessi
     chown -R 999:999 /data
-    
-    # 4. FIX SENTINEL
-    # Sentinel ha bisogno di scrivere il suo file di config. 
-    # Assicuriamoci che i permessi siano 644 o 666
-    chmod 666 /data/sentinel.conf
-    chmod 666 /data/redis.conf
+    chmod 666 /data/sentinel.conf /data/redis.conf
 
 ---
 apiVersion: apps/v1

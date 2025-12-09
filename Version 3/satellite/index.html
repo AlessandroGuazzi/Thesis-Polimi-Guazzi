@@ -3,454 +3,258 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Space Cloud V3 | Mesh Network</title>
-    <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@300;400;500;600&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+    <title>Space Cloud V3 | Mission Control</title>
+    <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@300;400;500&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
     
     <style>
         :root {
-            /* Palette V3 - Deep Space Mesh Refined */
-            --bg-deep: #050a14;
-            --glass-bg: rgba(12, 24, 40, 0.65);
-            --glass-border: rgba(0, 243, 255, 0.15);
-            --glass-highlight: rgba(255, 255, 255, 0.05);
+            --bg-deep: #050a10;
+            --panel-bg: rgba(13, 20, 35, 0.85);
+            --panel-border: rgba(0, 243, 255, 0.15);
             
-            --primary: #00f3ff;       /* Ciano - Compute/Link */
-            --primary-glow: rgba(0, 243, 255, 0.4);
+            --primary: #00f3ff;       
+            --master: #ffd700;        
+            --replica: #a855f7;       
+            --danger: #ff2a6d;        
             
-            --memory: #bd00ff;        /* Viola - Memory/Redis */
-            --memory-glow: rgba(189, 0, 255, 0.4);
-            
-            --success: #00ff9d;       /* Verde - Healthy */
-            --warning: #ffb800;       /* Giallo - Low Batt/Sun */
-            --danger: #ff0055;        /* Rosso - Critical/Fault */
-            
-            --text-main: #ffffff;
-            --text-dim: #8a9bb0;
-            
-            --font-tech: 'Rajdhani', sans-serif;
-            --font-ui: 'Barlow', sans-serif;
+            --sun-color: #ffb800;
+            --eclipse-color: #1e293b;
+
+            --font-head: 'Rajdhani', sans-serif;
+            --font-body: 'Barlow', sans-serif;
         }
+
+        * { box-sizing: border-box; }
 
         body { 
             background-color: var(--bg-deep);
-            color: var(--text-main);
-            font-family: var(--font-ui);
-            margin: 0; height: 100vh; 
-            display: flex; justify-content: center; align-items: center; 
-            overflow: hidden;
-            
-            /* Background sofisticato */
-            background-image: 
-                radial-gradient(circle at 50% 50%, rgba(0, 243, 255, 0.05) 0%, transparent 60%),
-                linear-gradient(rgba(0, 243, 255, 0.02) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(0, 243, 255, 0.02) 1px, transparent 1px);
-            background-size: 100% 100%, 40px 40px, 40px 40px;
+            color: #fff;
+            font-family: var(--font-body);
+            margin: 0; height: 100vh; overflow: hidden;
+            display: flex; align-items: center; justify-content: center;
+            background-image: radial-gradient(circle at 50% 50%, rgba(0, 40, 80, 0.2) 0%, transparent 70%);
         }
 
-        .dashboard-wrapper { 
-            display: flex; gap: 24px; z-index: 10; padding: 30px; 
-            width: 100%; max-width: 1100px; height: 85vh;
-            box-sizing: border-box;
-        }
-
-        .col { 
-            display: flex; flex-direction: column; gap: 24px; flex: 1; 
-            height: 100%;
-        }
-
-        /* --- GLASSMORMISM CARD --- */
-        .card {
-            background: var(--glass-bg);
-            border: 1px solid var(--glass-border);
-            border-top: 1px solid rgba(0, 243, 255, 0.3); /* Top highlight */
-            border-radius: 16px;
-            padding: 25px; 
-            position: relative;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.5), inset 0 0 20px rgba(0,0,0,0.2);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            display: flex; flex-direction: column;
-            overflow: hidden;
-        }
-
-        /* Angoli tech decorativi */
-        .card::after {
-            content: ""; position: absolute; bottom: 0; right: 0; 
-            width: 20px; height: 20px;
-            border-bottom: 2px solid var(--primary);
-            border-right: 2px solid var(--primary);
-            border-radius: 0 0 16px 0;
-            opacity: 0.5;
-        }
-
-        h1 { 
-            font-family: var(--font-tech); 
-            font-size: 18px; 
-            font-weight: 600;
-            letter-spacing: 2px; 
-            color: var(--text-dim); 
-            margin: 0 0 25px 0; 
-            text-transform: uppercase; 
-            display: flex; align-items: center; justify-content: space-between;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            padding-bottom: 10px;
-        }
-
-        .live-dot {
-            height: 8px; width: 8px; background-color: var(--success);
-            border-radius: 50%; display: inline-block; margin-right: 6px;
-            box-shadow: 0 0 8px var(--success);
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
-        
-        /* --- METRICS & DATA --- */
-        .metric-row { display: flex; justify-content: space-between; margin-bottom: 25px; align-items: flex-end; }
-
-        .metric-big { 
-            font-family: var(--font-tech); 
-            font-size: 64px; line-height: 1; font-weight: 600; 
-            color: var(--text-main); 
-            text-shadow: 0 0 20px var(--primary-glow);
-        }
-        
-        .label { 
-            font-size: 11px; color: var(--text-dim); letter-spacing: 1px; 
-            text-transform: uppercase; font-weight: 600; margin-bottom: 6px;
-            display: block;
-        }
-
-        .connection-box {
-            background: rgba(0,0,0,0.2);
-            border-radius: 8px;
-            padding: 15px;
-            border-left: 3px solid var(--text-dim);
-            transition: all 0.3s ease;
-        }
-
-        /* --- ORBIT VISUALIZATION (RADAR) --- */
-        .orbit-wrapper {
-            flex: 1; display: flex; flex-direction: column; 
-            justify-content: center; align-items: center;
+        .hud-container {
+            width: 1400px; height: 800px;
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            gap: 40px;
             position: relative;
         }
 
-        .orbit-container {
-            width: 280px; height: 280px; position: relative;
-            border-radius: 50%; 
-            /* Radar Rings Look */
-            background: 
-                radial-gradient(circle, transparent 69%, rgba(0, 243, 255, 0.1) 70%, transparent 71%),
-                radial-gradient(circle, transparent 49%, rgba(0, 243, 255, 0.05) 50%, transparent 51%),
-                radial-gradient(circle, rgba(0, 243, 255, 0.02) 0%, transparent 70%);
-            border: 1px solid rgba(0, 243, 255, 0.1);
-            box-shadow: 0 0 30px rgba(0,0,0,0.3);
+        /* --- ORBITA (Sinistra) --- */
+        .orbit-section {
+            display: flex; align-items: center; justify-content: center;
+            position: relative;
         }
 
-        /* Earth Planet */
+        .orbit-system {
+            width: 650px; height: 650px;
+            position: relative;
+            border-radius: 50%;
+            background: conic-gradient(
+                from 0deg,
+                rgba(255, 215, 0, 0.1) 0deg, 
+                rgba(255, 215, 0, 0.1) 180deg, 
+                rgba(0, 5, 20, 0.8) 180deg, 
+                rgba(0, 5, 20, 0.8) 360deg
+            );
+            border: 1px dashed rgba(255,255,255,0.15);
+            box-shadow: 0 0 100px rgba(0, 243, 255, 0.03);
+        }
+
         .earth {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 90px; height: 90px; border-radius: 50%;
-            background: radial-gradient(circle at 30% 30%, #1a2a40, #050a14);
-            border: 1px solid rgba(0, 243, 255, 0.3);
+            width: 200px; height: 200px; border-radius: 50%;
+            background: radial-gradient(circle at 40% 40%, #2563eb, #0f172a);
+            box-shadow: inset -40px -40px 80px rgba(0,0,0,0.8), 0 0 40px rgba(37, 99, 235, 0.2);
+            z-index: 10;
             display: flex; align-items: center; justify-content: center;
-            z-index: 1; 
-            box-shadow: 0 0 25px rgba(0, 243, 255, 0.15), inset 0 0 10px rgba(0,0,0,0.8);
+            border: 1px solid rgba(255,255,255,0.1);
         }
-        .earth::after { 
-            content: "EARTH"; font-family: var(--font-tech); 
-            font-size: 12px; color: var(--text-dim); letter-spacing: 2px; font-weight: bold;
+        .earth::after { content: "EARTH"; font-family: var(--font-head); font-size: 14px; letter-spacing: 3px; color: rgba(255,255,255,0.5); font-weight: 700; }
+
+        .zone-label {
+            position: absolute; font-family: var(--font-head); font-weight: 700; letter-spacing: 2px; font-size: 14px;
         }
+        .lbl-sun { top: 50%; right: -80px; transform: translateY(-50%) rotate(90deg); color: var(--sun-color); text-shadow: 0 0 15px var(--sun-color); }
+        .lbl-ecl { top: 50%; left: -80px; transform: translateY(-50%) rotate(-90deg); color: #475569; }
 
-        /* Scanning Line */
-        .orbit-shadow {
-            position: absolute; top: 0; left: 50%; width: 50%; height: 100%;
-            background: linear-gradient(90deg, rgba(0, 243, 255, 0) 0%, rgba(0, 243, 255, 0.1) 100%);
-            border-radius: 0 140px 140px 0; 
-            transform-origin: 0 50%;
-            animation: radar-scan 4s linear infinite;
-            z-index: 0; pointer-events: none;
+        /* Satelliti */
+        .sat-marker-container {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            transition: transform 1s linear; 
         }
-
-        @keyframes radar-scan { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-        .sat-dot {
-            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-            transition: transform 1.2s cubic-bezier(0.23, 1, 0.32, 1); z-index: 2;
-        }
-
-        .dot-body {
-            width: 14px; height: 14px; background: #fff; border-radius: 50%;
-            margin: -7px auto 0; position: relative;
-            box-shadow: 0 0 10px currentColor;
-            border: 2px solid var(--bg-deep); /* "Cutout" effect */
+        .sat-marker {
+            width: 18px; height: 18px; border-radius: 50%;
+            margin: -9px auto 0; 
+            position: relative; z-index: 20;
+            border: 2px solid var(--bg-deep);
+            box-shadow: 0 0 15px currentColor;
         }
 
-        /* --- FLEET LIST (SCROLLABLE) --- */
-        .fleet-wrapper {
-            flex: 1; overflow-y: auto; padding-right: 5px;
-            /* Scrollbar styling */
-            scrollbar-width: thin; scrollbar-color: var(--primary) transparent;
-        }
-        .fleet-wrapper::-webkit-scrollbar { width: 4px; }
-        .fleet-wrapper::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        /* --- SIDEBAR (Destra) --- */
+        .sidebar { display: flex; flex-direction: column; gap: 20px; height: 100%; }
 
-        .fleet-container { display: flex; flex-direction: column; gap: 10px; }
+        .panel {
+            background: var(--panel-bg); border: 1px solid var(--panel-border);
+            border-radius: 8px; padding: 20px; display: flex; flex-direction: column;
+            backdrop-filter: blur(10px);
+        }
+
+        .panel-header {
+            font-family: var(--font-head); font-size: 14px; letter-spacing: 2px; color: var(--primary);
+            text-transform: uppercase; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px; margin-bottom: 15px;
+            display: flex; justify-content: space-between;
+        }
+
+        .stat-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .stat-val { font-family: var(--font-head); font-size: 42px; font-weight: 700; color: #fff; line-height: 1; }
+        .stat-lbl { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
+
+        .fleet-list { flex: 1; overflow-y: auto; padding-right: 5px; display: flex; flex-direction: column; gap: 10px; }
         
-        .sat-row { 
-            display: flex; justify-content: space-between; align-items: center; 
-            padding: 15px; border-radius: 8px;
-            background: rgba(255,255,255,0.02); 
-            border: 1px solid transparent;
-            border-left: 3px solid transparent;
-            transition: all 0.2s ease;
+        .node-card {
+            background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05);
+            padding: 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;
+            transition: transform 0.2s;
         }
-
-        .sat-row:hover { background: rgba(255,255,255,0.05); transform: translateX(2px); }
         
-        /* Highlighting Logic */
-        .sat-row.is-compute { border-left-color: var(--primary); box-shadow: inset 10px 0 20px -10px rgba(0, 243, 255, 0.1); }
-        .sat-row.is-memory { border-left-color: var(--memory); box-shadow: inset 10px 0 20px -10px rgba(189, 0, 255, 0.1); }
-        .sat-row.is-fault { border-left-color: var(--danger); background: rgba(255, 0, 85, 0.05); }
-        .sat-row.is-master { border-left-color: #ffd700; border-top: 1px solid rgba(255, 215, 0, 0.2); border-bottom: 1px solid rgba(255, 215, 0, 0.2); }
+        .role-master { border-left: 3px solid var(--master); }
+        .role-dash { border-left: 3px solid var(--primary); }
+        .role-replica { border-left: 3px solid var(--replica); }
+        .role-off { border-left: 3px solid var(--danger); opacity: 0.5; }
 
-        .sat-name { font-family: var(--font-tech); font-weight: 700; font-size: 16px; color: #fff; margin-right: 8px; }
-
-        .badge { 
-            font-size: 9px; padding: 4px 8px; border-radius: 4px; 
-            font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin-right: 5px;
-            display: inline-block; vertical-align: middle;
-        }
-        .bg-sun { color: var(--bg-deep); background: var(--warning); box-shadow: 0 0 10px rgba(255, 184, 0, 0.4); }
-        .bg-ecl { color: var(--text-dim); border: 1px solid var(--text-dim); background: transparent; }
-        
-        .badge-role { color: var(--bg-deep); font-weight: 800; border: none; }
-        .role-compute { background: var(--primary); color: var(--bg-deep); }
-        .role-memory { background: var(--memory); color: #fff; }
-        .role-idle { background: rgba(255,255,255,0.1); color: var(--text-dim); }
-        .role-master { background: #ffd700; color: #000; box-shadow: 0 0 15px rgba(255, 215, 0, 0.4); }
-
-        .batt-val { font-family: var(--font-tech); font-size: 18px; font-weight: 700; text-align: right; }
-        
-        /* --- DB INFO --- */
-        .db-info {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-top: auto; /* Push to bottom */
-            padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.05);
-        }
-        .db-status { 
-            font-family: var(--font-tech); color: var(--success); 
-            font-weight: 700; letter-spacing: 1px; font-size: 14px;
-            text-shadow: 0 0 10px rgba(0, 255, 157, 0.4);
-        }
+        .node-name { font-family: var(--font-head); font-weight: 700; font-size: 15px; display: block; }
+        .node-meta { font-size: 10px; color: #94a3b8; display: flex; gap: 6px; margin-top: 4px; }
+        .badge { padding: 1px 5px; border-radius: 3px; font-weight: 700; text-transform: uppercase; }
+        .bg-sun { background: var(--sun-color); color: #000; }
+        .bg-ecl { border: 1px solid #475569; color: #94a3b8; }
 
     </style>
 </head>
 <body>
 
-    <div class="dashboard-wrapper">
+    <div class="hud-container">
         
-        <div class="col" style="flex: 0 0 35%;">
-            
-            <div class="card">
-                <h1>
-                    <span>Mission Control</span>
-                    <span style="display:flex; align-items:center; font-size:11px; color:var(--success);">
-                        <span class="live-dot"></span> LIVE
-                    </span>
-                </h1>
-                
-                <div class="metric-row">
-                    <div>
-                        <span class="label">GLOBAL COUNTER</span>
-                        <div class="metric-big" id="data-counter" style="color:var(--primary)">---</div>
-                    </div>
-                    <div style="text-align:right">
-                        <span class="label">ACTIVE REPLICAS</span>
-                        <div class="metric-big" id="replica-count" style="font-size:42px;">1</div>
-                    </div>
-                </div>
-
-                <div class="connection-box">
-                    <span class="label">CURRENT UPLINK</span>
-                    <div id="pod-name" style="font-family:var(--font-tech); font-size:20px; color:var(--text-main); margin-bottom:4px; font-weight:600;">
-                        SCANNING...
-                    </div>
-                    <div id="memory-mode" style="font-size:12px; color:var(--text-dim);">
-                        Protocol: WAIT
-                    </div>
-                </div>
-            </div>
-
-            <div class="card" style="flex:1;">
-                <h1>Orbital Topology</h1>
-                <div class="orbit-wrapper">
-                    <div class="orbit-container">
-                        <div class="orbit-shadow"></div>
-                        <div class="earth"></div>
-                        <div id="orbit-layer"></div>
-                    </div>
-                    <div style="text-align: center; margin-top:20px; font-size:11px; color:var(--text-dim); letter-spacing: 1px;">
-                        PHYSICS ENGINE V3.2 <span style="color:var(--primary)">[ACTIVE]</span>
-                    </div>
-                </div>
+        <div class="orbit-section">
+            <div class="orbit-system">
+                <div class="zone-label lbl-sun">SUNLIGHT</div>
+                <div class="zone-label lbl-ecl">ECLIPSE</div>
+                <div class="earth"></div>
+                <div id="orbit-layer"></div>
             </div>
         </div>
 
-        <div class="col">
-            <div class="card" style="height: 100%;">
-                <h1>
-                    <span>Fleet Telemetry</span>
-                    <span id="fleet-count" style="font-size:13px; color:var(--primary); background:rgba(0, 243, 255, 0.1); padding:4px 8px; border-radius:4px;">0 NODES</span>
-                </h1>
-                
-                <div class="fleet-wrapper">
-                    <div class="fleet-container" id="fleet-list">
-                        </div>
+        <div class="sidebar">
+            <div class="panel">
+                <div class="panel-header"><span>Mission Control</span> <span style="color:var(--success)">LIVE</span></div>
+                <div class="stat-row">
+                    <div><span class="stat-lbl">Ops / Cycle</span><div class="stat-val" id="data-counter" style="color:var(--primary)">---</div></div>
+                    <div style="text-align:right"><span class="stat-lbl">Consensus</span><div class="stat-val" id="replica-count" style="color:var(--master)">1</div></div>
                 </div>
-
-                <div class="db-info">
-                    <div>
-                        <span class="label">MEMORY GRID</span>
-                        <div class="db-status">REDIS MESH ACTIVE</div>
-                    </div>
-                    <div style="text-align:right">
-                        <span class="label">CONSENSUS</span>
-                        <div style="color:var(--text-main); font-size:13px; font-weight:500;">SENTINEL QUORUM</div>
-                    </div>
+                <div style="background:rgba(0,243,255,0.05); padding:10px; border-left:2px solid var(--primary); border-radius:4px;">
+                    <div class="stat-lbl" style="color:var(--primary)">UPLINK HOST</div>
+                    <div id="pod-name" style="font-family:var(--font-head); font-weight:700; margin-top:2px;">SCANNING...</div>
                 </div>
             </div>
+
+            <div class="panel" style="flex:1; overflow:hidden;">
+                <div class="panel-header"><span>Fleet Status</span> <span id="fleet-count">0 NODES</span></div>
+                <div class="fleet-list" id="fleet-list"></div>
+                <div style="text-align:center; font-size:10px; color:var(--master); margin-top:10px; opacity:0.7; letter-spacing:1px;">REDIS MESH ACTIVE</div>
+            </div>
         </div>
+
     </div>
 
     <script>
-        // Logica JS mantenuta intatta al 100%, solo aggiornati gli stili visuali generati
-        const counterEl = document.getElementById('data-counter');
-        const replicaEl = document.getElementById('replica-count');
-        const podEl = document.getElementById('pod-name');
-        const memModeEl = document.getElementById('memory-mode');
-        const fleetList = document.getElementById('fleet-list');
-        const fleetCount = document.getElementById('fleet-count');
-        const orbitLayer = document.getElementById('orbit-layer');
+        const els = {
+            cnt: document.getElementById('data-counter'),
+            rep: document.getElementById('replica-count'),
+            pod: document.getElementById('pod-name'),
+            list: document.getElementById('fleet-list'),
+            orb: document.getElementById('orbit-layer'),
+            fc: document.getElementById('fleet-count')
+        };
 
-        async function updateTelemetry() {
+        async function update() {
             try {
                 const res = await fetch('/data');
                 const data = await res.json();
 
-                // 1. Aggiorna Dati Generali
-                counterEl.innerText = data.count;
-                
-                if (data.mission_control) {
-                    replicaEl.innerText = data.mission_control.replicas;
-                    if(data.mission_control.replicas == "0") replicaEl.style.color = "var(--danger)";
-                    else replicaEl.style.color = "var(--text-main)";
-                }
+                els.cnt.innerText = data.count;
+                if(data.mission_control) els.rep.innerText = data.mission_control.replicas;
+                els.pod.innerText = data.satellite_pod;
 
-                podEl.innerText = `${data.satellite_pod}`;
-                // Coloriamo dinamicamente il pod name se connesso
-                podEl.style.textShadow = "0 0 10px rgba(255,255,255,0.3)";
+                els.list.innerHTML = '';
+                els.orb.innerHTML = '';
                 
-                memModeEl.innerText = `Protocol: ${data.memory_mode || 'DIRECT'}`;
+                const names = Object.keys(data.fleet || {}).sort();
+                els.fc.innerText = `${names.length} TRACKING`;
 
-                // 2. Render Flotta (Satelliti)
-                fleetList.innerHTML = '';
-                orbitLayer.innerHTML = '';
-                
-                const satNames = Object.keys(data.fleet || {}).sort();
-                fleetCount.innerText = `${satNames.length} NODES ONLINE`;
-
-                satNames.forEach((name, index) => {
+                names.forEach(name => {
                     const sat = data.fleet[name];
                     const isMyHost = (name === data.satellite_node);
-                    const isFaulty = (sat.health === 'OFFLINE');
                     
-                    let roleClass = 'role-idle';
-                    let roleLabel = 'IDLE';
-                    let rowClass = '';
-                    let dotColor = '#647b94'; 
+                    // --- MODIFICA LOGICA COLORI ---
+                    let rClass='role-off', rTxt='OFF', color='var(--danger)', z=10;
 
-                    if (sat.load === 'COMPUTE') {
-                        roleClass = 'role-compute';
-                        roleLabel = 'DASHBOARD';
-                        rowClass = 'is-compute';
-                        dotColor = 'var(--primary)'; 
-                    } else if (sat.load === 'MEMORY') {
-                        if (sat.role === 'MASTER') {
-                            roleClass = 'role-master'; 
-                            roleLabel = 'DB MASTER';   
-                            rowClass = 'is-master';    
-                            dotColor = '#ffd700';      
-                        } else {
-                            roleClass = 'role-memory'; 
-                            roleLabel = 'DB REPLICA';
-                            rowClass = 'is-memory';
-                            dotColor = 'var(--memory)'; 
+                    if (sat.health !== 'OFFLINE') {
+                        // Priorità 1: MASTER (Giallo)
+                        if (sat.role === 'MASTER') { 
+                            rClass='role-master'; rTxt='MASTER'; color='var(--master)'; z=50; 
+                        }
+                        // Priorità 2: REPLICA (Viola) - Ora viene prima della Dashboard
+                        else if (sat.role === 'REPLICA') { 
+                            rClass='role-replica'; rTxt='REPLICA'; color='var(--replica)'; z=30;
+                        }
+                        // Priorità 3: DASHBOARD (Blu) - Solo se non è né Master né Replica
+                        else if (sat.load === 'COMPUTE') { 
+                            rClass='role-dash'; rTxt='DASHBOARD'; color='var(--primary)'; z=40; 
                         }
                     }
 
-                    if (isFaulty) {
-                        rowClass = 'is-fault';
-                        dotColor = 'var(--danger)';
-                        roleLabel = 'OFFLINE';
-                    }
+                    const isSun = sat.phase === 'SUN';
+                    const badge = isSun ? `<span class="badge bg-sun">SUN</span>` : `<span class="badge bg-ecl">ECL</span>`;
+                    
+                    // Se sono io, aggiungo (YOU) indipendentemente dal colore
+                    const youTag = isMyHost ? ' <span style="color:var(--primary); font-size:12px;">(YOU)</span>' : '';
 
-                    // --- HTML LISTA (Migliorato Layout Flexbox interno) ---
-                    const rowHtml = `
-                        <div class="sat-row ${rowClass}">
-                            <div style="display:flex; flex-direction:column; gap:4px;">
-                                <div style="display:flex; align-items:center;">
-                                    <div class="sat-name">
-                                        ${name.replace('space-cloud-', '').toUpperCase()}
-                                    </div>
-                                    ${isMyHost ? '<span style="font-size:9px; color:var(--primary); border:1px solid var(--primary); padding:1px 4px; border-radius:3px; font-weight:bold;">YOU</span>' : ''}
-                                </div>
-                                <div style="display:flex;">
-                                    <span class="badge ${roleClass}">${roleLabel}</span>
-                                    <span class="badge ${sat.phase === 'SUN' ? 'bg-sun' : 'bg-ecl'}">${sat.phase}</span>
-                                </div>
+                    // Card
+                    els.list.innerHTML += `
+                        <div class="node-card ${rClass}">
+                            <div>
+                                <span class="node-name">${name.replace('space-cloud-','').toUpperCase()} ${youTag}</span>
+                                <div class="node-meta">${badge} <span>${rTxt}</span></div>
                             </div>
-                            <div style="text-align:right;">
-                                <div class="batt-val" style="color: ${getBatteryColor(sat.battery)}">
-                                    ${sat.battery.toFixed(1)}%
-                                </div>
-                                <div class="label" style="margin-top:2px;">${sat.status}</div>
+                            <div style="font-family:var(--font-head); font-weight:700; font-size:18px; color:${sat.battery<30?'var(--danger)':'#fff'}">
+                                ${sat.battery.toFixed(0)}%
                             </div>
                         </div>`;
-                    fleetList.innerHTML += rowHtml;
 
-                    // --- ORBIT VISUALIZATION ---
-                    const rotation = (sat.orbit_pos * 360) + 180; 
+                    // Orbit Marker
+                    const rot = sat.orbit_pos * 360;
+                    const mkBox = document.createElement('div');
+                    mkBox.className = 'sat-marker-container';
+                    mkBox.style.transform = `rotate(${rot}deg)`;
+                    mkBox.style.zIndex = z;
                     
-                    const dot = document.createElement('div');
-                    dot.className = 'sat-dot';
-                    dot.style.transform = `rotate(${rotation}deg)`;
+                    const mk = document.createElement('div');
+                    mk.className = 'sat-marker';
+                    mk.style.backgroundColor = color;
+                    if(isMyHost) mk.style.boxShadow = `0 0 20px ${color}`;
                     
-                    let pulseEffect = isMyHost ? `box-shadow: 0 0 15px ${dotColor}, 0 0 30px ${dotColor}; border: 2px solid #fff; z-index:10; width:16px; height:16px; margin:-8px auto 0;` : `background-color: ${dotColor}`;
-
-                    dot.innerHTML = `
-                        <div class="dot-body" style="${pulseEffect}; background-color: ${isMyHost ? dotColor : dotColor};"></div>
-                    `;
-                    orbitLayer.appendChild(dot);
+                    mkBox.appendChild(mk);
+                    els.orb.appendChild(mkBox);
                 });
 
-            } catch (e) {
-                console.error(e);
-                podEl.innerText = "SIGNAL LOST...";
-                podEl.style.color = "var(--danger)";
-                document.querySelector('.connection-box').style.borderLeftColor = "var(--danger)";
-            }
+            } catch(e) { console.log(e); }
         }
-
-        function getBatteryColor(val) {
-            if (val < 20) return "var(--danger)";
-            if (val < 40) return "var(--warning)";
-            return "var(--success)";
-        }
-
-        setInterval(updateTelemetry, 1000);
-        updateTelemetry();
+        setInterval(update, 1000);
+        update();
     </script>
 </body>
 </html>

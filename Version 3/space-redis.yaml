@@ -32,26 +32,37 @@ data:
     sentinel resolve-hostnames yes
     sentinel announce-hostnames yes
     sentinel monitor mymaster satellite-memory-0.redis-sat.default.svc.cluster.local 6379 2
-    sentinel down-after-milliseconds mymaster 5000
-    sentinel failover-timeout mymaster 10000
+    sentinel down-after-milliseconds mymaster 2000
+    sentinel failover-timeout mymaster 3000
     sentinel parallel-syncs mymaster 1
 
   init-redis.sh: |
     #!/bin/sh
-    echo ">>> Inizializzazione Satellite Memoria: $HOSTNAME"
+    echo ">>> Init Satellite: $HOSTNAME"
     
-    # Copia configurazioni
+    # 1. Copia i file (come root)
     cp /config-ro/redis.conf /data/redis.conf
     cp /config-ro/sentinel.conf /data/sentinel.conf
     
-    # Setup Replica/Master
+    # 2. Configura Master/Replica
     INDEX=${HOSTNAME##*-}
     if [ "$INDEX" = "0" ]; then
-      echo ">>> Sono il nodo 0. MASTER iniziale."
+      echo ">>> Nodo 0: Configurazione Master."
     else
-      echo ">>> Sono il nodo $INDEX. REPLICA di nodo 0."
+      echo ">>> Nodo $INDEX: Configurazione Replica."
       echo "replicaof satellite-memory-0.redis-sat.default.svc.cluster.local 6379" >> /data/redis.conf
     fi
+    
+    # 3. FIX PERMESSI "BRUTALE" (Funziona sempre)
+    # Diamo tutto all'utente redis (999)
+    echo ">>> Applicazione permessi (chown 999)..."
+    chown -R 999:999 /data
+    
+    # 4. FIX SENTINEL
+    # Sentinel ha bisogno di scrivere il suo file di config. 
+    # Assicuriamoci che i permessi siano 644 o 666
+    chmod 666 /data/sentinel.conf
+    chmod 666 /data/redis.conf
 
 ---
 apiVersion: apps/v1
@@ -60,6 +71,9 @@ metadata:
   name: satellite-memory
 spec:
   serviceName: "redis-sat"
+  # Parallel: Avvia tutti i pod insieme senza aspettare il precedente.
+  # Questo sblocca lo scheduler anche se un nodo fallisce!
+  podManagementPolicy: Parallel 
   replicas: 3
   selector:
     matchLabels:
@@ -70,8 +84,7 @@ spec:
         app: redis
     spec:
       schedulerName: space-scheduler
-
-      # Anti-Affinity: Distribuzione su nodi diversi
+      
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -97,6 +110,9 @@ spec:
           mountPath: /config-ro
         - name: redis-data
           mountPath: /data
+        # Init gira come ROOT per poter fare chown
+        securityContext:
+          runAsUser: 0 
 
       containers:
       - name: redis
@@ -108,6 +124,9 @@ spec:
         volumeMounts:
         - name: redis-data
           mountPath: /data
+        # Redis gira come utente redis (999)
+        securityContext:
+          runAsUser: 999
 
       - name: sentinel
         image: redis:alpine
@@ -118,13 +137,15 @@ spec:
         volumeMounts:
         - name: redis-data
           mountPath: /data
+        # Sentinel gira come utente redis (999)
+        securityContext:
+          runAsUser: 999
 
       volumes:
       - name: config-ro
         configMap:
           name: redis-config
-          defaultMode: 0755
+          defaultMode: 0777 # Permessi larghi alla sorgente
       
-      # STORAGE VOLATILE (Stabile per simulazioni)
       - name: redis-data
         emptyDir: {}

@@ -40,28 +40,45 @@ data:
     #!/bin/sh
     echo ">>> Init Satellite: $HOSTNAME"
     
-    # 1. Preparazione Config
+    # Copia config base
     cp /config-ro/redis.conf /data/redis.conf
     cp /config-ro/sentinel.conf /data/sentinel.conf
     
-    # 2. LOGICA DI CONSENSO AL BOOT
-    # Chiediamo a Sentinel chi è il master attuale
-    MASTER_IP=$(redis-cli -h redis-sat -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1)
+    # --- LOGICA ROBUSTA V3.7 ---
+    # 1. Chi sono io? (Risolvo il mio IP per confrontarlo)
+    MY_IP=$(hostname -i)
     
-    INDEX=${HOSTNAME##*-}
+    # 2. Chi è il Master secondo Sentinel?
+    MASTER_INFO=$(redis-cli -h redis-sat -p 26379 sentinel get-master-addr-by-name mymaster)
+    MASTER_HOST=$(echo "$MASTER_INFO" | head -n 1)
     
-    if [ -n "$MASTER_IP" ]; then
-      echo ">>> Trovato Master esistente ($MASTER_IP). Mi unisco come Replica."
-      echo "replicaof $MASTER_IP 6379" >> /data/redis.conf
-    elif [ "$INDEX" = "0" ]; then
-      echo ">>> Nessun Master attivo trovato. Sono il Nodo 0. Prendo il comando."
-      # Nessun comando replicaof = Diventa Master
+    echo ">>> Io sono: $MY_IP ($HOSTNAME)"
+    echo ">>> Sentinel dice che il Master è: $MASTER_HOST"
+
+    # 3. Decisione:
+    if [ -z "$MASTER_HOST" ]; then
+        # Caso A: Sentinel non sa nulla (Cluster vergine o Sentinel morti)
+        INDEX=${HOSTNAME##*-}
+        if [ "$INDEX" = "0" ]; then
+            echo ">>> Nessun Master noto. Sono il Nodo 0. Prendo il comando."
+            # Divento Master (nessuna istruzione replicaof)
+        else
+            echo ">>> Nessun Master noto. Attendo il Nodo 0."
+            echo "replicaof satellite-memory-0.redis-sat.default.svc.cluster.local 6379" >> /data/redis.conf
+        fi
+        
+    elif [ "$MASTER_HOST" = "$MY_IP" ] || [ "$MASTER_HOST" = "127.0.0.1" ]; then
+        # Caso B: Sentinel dice che SONO IO il master! (Il caso che ti ha bloccato)
+        echo ">>> Sentinel dice che sono IO il Master. Prendo il comando!"
+        # Divento Master (nessuna istruzione replicaof)
+        
     else
-      echo ">>> Nessun Master e non sono il Nodo 0. Attendo in standby (Replica di default del nodo 0)."
-      echo "replicaof satellite-memory-0.redis-sat.default.svc.cluster.local 6379" >> /data/redis.conf
+        # Caso C: C'è un Master valido ed è qualcun altro.
+        echo ">>> Mi unisco come Replica di $MASTER_HOST"
+        echo "replicaof $MASTER_HOST 6379" >> /data/redis.conf
     fi
     
-    # 3. Permessi
+    # Permessi e avvio
     chown -R 999:999 /data
     chmod 666 /data/sentinel.conf /data/redis.conf
 

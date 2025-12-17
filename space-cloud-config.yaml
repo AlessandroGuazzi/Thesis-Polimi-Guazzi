@@ -1,38 +1,45 @@
-# kind: Cluster
-# apiVersion: kind.x-k8s.io/v1alpha4
-# nodes:
-#   - role: control-plane   # Satellite Master (Gestione)
-#   - role: worker          # Satellite Operativo 1
-#   - role: worker          # Satellite Operativo 2
-
-
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+
+# Configurazione della rete del cluster simulato
+networking:
+  disableDefaultCNI: false # Usa la rete standard bridge
+
+# Definizione dei Nodi (I nostri Satelliti)
 nodes:
-  # --- IL NODO DI CONTROLLO ---
+  # --- SATELLITE 0: Control Plane (Il Comandante) ---
   - role: control-plane
+    image: kindest/node:v1.30.0  # Versione K8s recente per supporto Checkpoint
     kubeadmConfigPatches:
-      # Patch 1: Diciamo al Controller di dichiarare morto un nodo dopo soli 10 secondi (invece di 40)
+    # ABILITAZIONE CHECKPOINTING: Permette di estrarre lo stato della RAM dei container tramite API e SIMULAZIONE ACCELERATA
+      - |
+        kind: KubeletConfiguration
+        featureGates:
+          ContainerCheckpoint: true 
+        nodeStatusUpdateFrequency: "2s"
+    # Se un nodo non risponde per 10s, è considerato "disperso" nello spazio
       - |
         kind: ClusterConfiguration
         controllerManager:
           extraArgs:
             node-monitor-grace-period: "10s"
-      # Patch 2: Diciamo al Kubelet di questo nodo di aggiornare lo stato ogni 2 secondi
+
+  # --- SATELLITE 1: Worker (Operativo) ---
+  - role: worker
+    image: kindest/node:v1.30.0
+    kubeadmConfigPatches:
       - |
         kind: KubeletConfiguration
+        featureGates:
+          ContainerCheckpoint: true
         nodeStatusUpdateFrequency: "2s"
 
-  # --- I SATELLITI OPERATIVI ---
+  # --- SATELLITE 2: Worker (Operativo) ---
   - role: worker
-    kubeadmConfigPatches:
-      # Patch: I worker devono urlare "Sono vivo" molto spesso (ogni 2s invece di 10s)
-      - |
-        kind: KubeletConfiguration
-        nodeStatusUpdateFrequency: "2s"
-        
-  - role: worker
+    image: kindest/node:v1.30.0
     kubeadmConfigPatches:
       - |
         kind: KubeletConfiguration
+        featureGates:
+          ContainerCheckpoint: true
         nodeStatusUpdateFrequency: "2s"

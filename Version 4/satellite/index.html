@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Cloud v2 | Mission Control</title>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0b0d17;
+            --panel: rgba(20, 30, 48, 0.8);
+            --neon-blue: #00f3ff;
+            --neon-red: #ff0055;
+            --neon-green: #00ff9d;
+            --neon-yellow: #ffcc00;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: #fff;
+            font-family: 'Rajdhani', sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* HEADER */
+        header {
+            width: 100%;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            background: linear-gradient(90deg, transparent, var(--panel), transparent);
+            border-bottom: 1px solid rgba(0, 243, 255, 0.3);
+        }
+        h1 { margin: 0; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0 0 10px var(--neon-blue); }
+
+        /* MAIN LAYOUT */
+        .container {
+            display: flex;
+            width: 90%;
+            height: 80%;
+            margin-top: 20px;
+            gap: 20px;
+        }
+
+        /* ORBIT VISUALIZATION (LEFT) */
+        .orbit-panel {
+            flex: 1;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: var(--panel);
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        /* La Terra */
+        .earth {
+            width: 100px;
+            height: 100px;
+            background: radial-gradient(circle at 30% 30%, #4facfe, #00f2fe);
+            border-radius: 50%;
+            box-shadow: 0 0 30px #4facfe;
+            z-index: 2;
+            position: absolute;
+        }
+
+        /* L'Orbita (Traccia) */
+        .orbit-track {
+            width: 400px;
+            height: 400px;
+            border: 2px dashed rgba(255,255,255,0.2);
+            border-radius: 50%;
+            position: absolute;
+        }
+
+        /* Zona Eclissi (Arco scuro) */
+        .eclipse-zone {
+            position: absolute;
+            width: 420px;
+            height: 420px;
+            border-radius: 50%;
+            /* Un gradiente conico per mostrare l'ombra tra 180 e 240 gradi */
+            background: conic-gradient(
+                transparent 180deg, 
+                rgba(0,0,0,0.8) 180deg, 
+                rgba(0,0,0,0.8) 240deg, 
+                transparent 240deg
+            );
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* I Satelliti (Markers) */
+        .sat-marker-container {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0; left: 0;
+            pointer-events: none;
+            transition: transform 1s linear; /* Movimento fluido */
+        }
+        .sat-marker {
+            width: 20px;
+            height: 20px;
+            background: var(--neon-blue);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--neon-blue);
+            position: absolute;
+            top: -10px; /* Posiziona sul bordo del cerchio (raggio) */
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        
+        /* DATA PANELS (RIGHT) */
+        .data-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow-y: auto;
+        }
+
+        .node-card {
+            background: rgba(0,0,0,0.4);
+            border-left: 4px solid var(--neon-blue);
+            padding: 15px;
+            border-radius: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s;
+        }
+        
+        .node-card.active-pod {
+            border-left: 4px solid var(--neon-green);
+            background: rgba(0, 255, 157, 0.1);
+            box-shadow: 0 0 15px rgba(0, 255, 157, 0.2);
+        }
+
+        .node-card.danger {
+            border-left: 4px solid var(--neon-red);
+        }
+
+        .metric { font-size: 1.2rem; font-weight: bold; }
+        .label { font-size: 0.8rem; color: #aaa; text-transform: uppercase; }
+
+        /* Termometro */
+        .temp-bar {
+            width: 100px;
+            height: 6px;
+            background: #333;
+            margin-top: 5px;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .temp-fill { height: 100%; background: var(--neon-blue); transition: width 0.5s; }
+        
+        /* Status Badge */
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: bold;
+        }
+        .bg-green { background: rgba(0,255,157,0.2); color: var(--neon-green); }
+        .bg-red { background: rgba(255,0,85,0.2); color: var(--neon-red); }
+        .bg-yellow { background: rgba(255,204,0,0.2); color: var(--neon-yellow); }
+
+        #current-host { font-size: 1.2em; color: var(--neon-green); font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div>
+            <h1>Space Cloud v2.0</h1>
+            <span style="color: #aaa;">MPC & Thermal Aware Orchestration</span>
+        </div>
+        <div style="text-align: right;">
+            <div class="label">Connesso al Satellite</div>
+            <div id="current-host">Ricerca segnale...</div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="orbit-panel">
+            <div class="orbit-track">
+                </div>
+            <div class="eclipse-zone"></div> <div class="earth"></div>
+            
+            <div style="position: absolute; bottom: 20px; color: #aaa; font-size: 0.8rem;">
+                <span style="color: #000; background: #fff; padding: 2px 5px;">SOLE</span> 
+                <span style="color: #fff; background: #333; padding: 2px 5px; margin-left:10px;">ECLISSI (180°-240°)</span>
+            </div>
+        </div>
+
+        <div class="data-panel" id="fleet-list">
+            </div>
+    </div>
+
+    <script>
+        // Configurazione
+        const ORBIT_RADIUS = 200; // Pixel (metà del width della track)
+
+        async function updateDashboard() {
+            try {
+                const res = await fetch('/api/telemetry');
+                const data = await res.json();
+
+                // 1. Aggiorna Header (Dove sono io?)
+                const hostEl = document.getElementById('current-host');
+                if (data.pod_info && data.pod_info.node) {
+                    hostEl.textContent = data.pod_info.node.toUpperCase();
+                }
+
+                // 2. Aggiorna Nodi e Mappa
+                const listEl = document.getElementById('fleet-list');
+                const trackEl = document.querySelector('.orbit-track');
+                
+                // Pulizia veloce (in produzione si farebbe diffing, ma qui va bene)
+                listEl.innerHTML = '';
+                // Rimuoviamo vecchi marker ma lasciamo earth/eclipse
+                Array.from(trackEl.children).forEach(c => {
+                    if(c.classList.contains('sat-marker-container')) c.remove();
+                });
+
+                // Ordina i nodi per nome
+                const nodes = Object.keys(data.fleet).sort();
+
+                nodes.forEach(nodeName => {
+                    const sat = data.fleet[nodeName];
+                    const isMyHost = (data.pod_info.node === nodeName);
+
+                    // --- A. CARD LATERALE ---
+                    const card = document.createElement('div');
+                    
+                    // Colore temperatura
+                    let tempColor = 'var(--neon-blue)';
+                    if(sat.temp > 50) tempColor = 'var(--neon-yellow)';
+                    if(sat.temp > 75) tempColor = 'var(--neon-red)';
+
+                    // Classe CSS dinamica
+                    let cardClass = 'node-card';
+                    if (isMyHost) cardClass += ' active-pod';
+                    if (sat.eclipse) cardClass += ' danger';
+
+                    const shortName = nodeName.replace('space-cloud-', '').toUpperCase();
+                    const statusBadge = sat.status.includes('PROCESSING') ? 
+                        '<span class="badge bg-green">ACTIVE</span>' : 
+                        '<span class="badge bg-yellow">IDLE</span>';
+
+                    card.className = cardClass;
+                    card.innerHTML = `
+                        <div>
+                            <div style="font-size: 1.1em; font-weight:bold; margin-bottom:5px;">${shortName}</div>
+                            ${statusBadge}
+                            ${sat.eclipse ? '<span class="badge bg-red">ECLIPSE</span>' : '<span class="badge bg-yellow">SUN</span>'}
+                        </div>
+                        <div style="text-align: right; min-width: 100px;">
+                            <div class="label">BATTERY</div>
+                            <div class="metric" style="color: ${sat.battery < 30 ? 'var(--neon-red)' : 'white'}">${sat.battery.toFixed(0)}%</div>
+                            
+                            <div class="label" style="margin-top:5px;">TEMP ${sat.temp.toFixed(1)}°C</div>
+                            <div class="temp-bar">
+                                <div class="temp-fill" style="width: ${Math.min(sat.temp, 100)}%; background: ${tempColor}"></div>
+                            </div>
+                        </div>
+                    `;
+                    listEl.appendChild(card);
+
+                    // --- B. MAPPA ORBITALE ---
+                    // Creiamo un container ruotato dell'angolo giusto
+                    const markerContainer = document.createElement('div');
+                    markerContainer.className = 'sat-marker-container';
+                    markerContainer.style.transform = `rotate(${sat.angle}deg)`;
+                    
+                    const marker = document.createElement('div');
+                    marker.className = 'sat-marker';
+                    
+                    // Se questo è il nodo che ospita ME (la dashboard), fallo brillare
+                    if (isMyHost) {
+                        marker.style.backgroundColor = 'var(--neon-green)';
+                        marker.style.boxShadow = '0 0 20px var(--neon-green)';
+                        marker.style.width = '25px';
+                        marker.style.height = '25px';
+                        marker.style.top = '-12px';
+                    } else if (sat.eclipse) {
+                        marker.style.backgroundColor = '#555'; // Spento in eclissi
+                    }
+
+                    markerContainer.appendChild(marker);
+                    trackEl.appendChild(markerContainer);
+                });
+
+            } catch (e) {
+                console.error("Errore update:", e);
+            }
+        }
+
+        // Aggiornamento ogni secondo (come la fisica)
+        setInterval(updateDashboard, 1000);
+        updateDashboard();
+    </script>
+</body>
+</html>

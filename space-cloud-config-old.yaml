@@ -1,0 +1,38 @@
+# kind: Cluster
+# apiVersion: kind.x-k8s.io/v1alpha4
+# nodes:
+#   - role: control-plane   # Satellite Master (Gestione)
+#   - role: worker          # Satellite Operativo 1
+#   - role: worker          # Satellite Operativo 2
+
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  # --- IL NODO DI CONTROLLO ---
+  - role: control-plane
+    kubeadmConfigPatches:
+      # Patch 1: Diciamo al Controller di dichiarare morto un nodo dopo soli 10 secondi (invece di 40)
+      - |
+        kind: ClusterConfiguration
+        controllerManager:
+          extraArgs:
+            node-monitor-grace-period: "10s"
+      # Patch 2: Diciamo al Kubelet di questo nodo di aggiornare lo stato ogni 2 secondi
+      - |
+        kind: KubeletConfiguration
+        nodeStatusUpdateFrequency: "2s"
+
+  # --- I SATELLITI OPERATIVI ---
+  - role: worker
+    kubeadmConfigPatches:
+      # Patch: I worker devono urlare "Sono vivo" molto spesso (ogni 2s invece di 10s)
+      - |
+        kind: KubeletConfiguration
+        nodeStatusUpdateFrequency: "2s"
+        
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        nodeStatusUpdateFrequency: "2s"

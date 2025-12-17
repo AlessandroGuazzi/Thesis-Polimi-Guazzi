@@ -25,12 +25,13 @@ spec:
     metadata:
       labels:
         app: space-app 
-        mission: v2-full-ai
+        mission: v2-mpc
+        # IMPORTANTE PER LO SCRIPT PYTHON
         scheduler: space-scheduler
     spec:
-      # --- QUESTA RIGA BLOCCA KUBERNETES STANDARD ---
+      # --- PUNTO CRITICO: STOP ALLO SCHEDULER DEFAULT ---
       schedulerName: space-scheduler
-      # ----------------------------------------------
+      # --------------------------------------------------
 
       tolerations:
       - key: "node-role.kubernetes.io/control-plane"
@@ -38,13 +39,12 @@ spec:
         effect: "NoSchedule"
 
       containers:
-      # 1. APP (Dashboard)
       - name: main-app
         image: space-dashboard:v2
         imagePullPolicy: Never
         env:
         - name: REDIS_HOST
-          value: "localhost" # Sidecar interno
+          value: "localhost"
         - name: POD_NAME
           valueFrom:
             fieldRef:
@@ -59,7 +59,6 @@ spec:
           requests: { memory: "64Mi", cpu: "100m" }
           limits: { memory: "128Mi", cpu: "200m" }
 
-      # 2. MEMORIA (Redis Sidecar)
       - name: memory-unit
         image: redis:alpine
         ports:

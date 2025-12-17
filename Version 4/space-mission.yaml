@@ -5,7 +5,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app: space-mission
+    app: space-app
   ports:
     - port: 80
       targetPort: 3000
@@ -15,24 +15,22 @@ kind: Deployment
 metadata:
   name: space-mission
   labels:
-    app: space-mission
+    app: space-app
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: space-mission
+      app: space-app
   template:
     metadata:
       labels:
         app: space-app 
-        mission: v2-monolith
-        # Aggiungiamo una label per aiutare lo scheduler Python a filtrare meglio
+        mission: v2-full-ai
         scheduler: space-scheduler
     spec:
-      # --- MODIFICA FONDAMENTALE ---
-      # Questo dice a K8s: "Non toccare questo pod, aspetta che lo faccia lo script Python"
+      # --- QUESTA RIGA BLOCCA KUBERNETES STANDARD ---
       schedulerName: space-scheduler
-      # -----------------------------
+      # ----------------------------------------------
 
       tolerations:
       - key: "node-role.kubernetes.io/control-plane"
@@ -40,14 +38,13 @@ spec:
         effect: "NoSchedule"
 
       containers:
-      # --- CONTAINER 1: IL CERVELLO (DASHBOARD) ---
+      # 1. APP (Dashboard)
       - name: main-app
         image: space-dashboard:v2
         imagePullPolicy: Never
-        
         env:
         - name: REDIS_HOST
-          value: "localhost"
+          value: "localhost" # Sidecar interno
         - name: POD_NAME
           valueFrom:
             fieldRef:
@@ -56,29 +53,17 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-              
         ports:
         - containerPort: 3000
-        
         resources:
-          requests:
-            memory: "64Mi"
-            cpu: "100m"
-          limits:
-            memory: "128Mi"
-            cpu: "200m"
+          requests: { memory: "64Mi", cpu: "100m" }
+          limits: { memory: "128Mi", cpu: "200m" }
 
-      # --- CONTAINER 2: LA MEMORIA (REDIS SIDECAR) ---
+      # 2. MEMORIA (Redis Sidecar)
       - name: memory-unit
         image: redis:alpine
-        
         ports:
         - containerPort: 6379
-        
         resources:
-          requests:
-            memory: "32Mi"
-            cpu: "50m"
-          limits:
-            memory: "64Mi"
-            cpu: "100m"
+          requests: { memory: "32Mi", cpu: "50m" }
+          limits: { memory: "64Mi", cpu: "100m" }

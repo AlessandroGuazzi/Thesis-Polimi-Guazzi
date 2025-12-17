@@ -1,47 +1,97 @@
 const express = require('express');
 const Redis = require('ioredis');
-const fs = require('fs');
 const path = require('path');
-
 const app = express();
 const port = 3000;
 
-// Connessione a Redis (dove il Python scrive la fisica)
-// Nel cluster Kubernetes, l'host sarà 'redis-service' o 'localhost' se testato con port-forward
-const redis = new Redis({
-    host: process.env.REDIS_HOST || 'localhost', 
+// =========================================================
+// 1. CONNESSIONE AL SYSTEM BUS (Per la Mappa Globale)
+// =========================================================
+// Questo Redis contiene la telemetria scritta da physics_sim.py
+// Il nome host 'system-redis' è risolto dal DNS di Kubernetes
+const systemRedis = new Redis({
+    host: 'system-redis', 
     port: 6379,
     connectTimeout: 2000,
-    lazyConnect: true
+    lazyConnect: true,
+    retryStrategy: (times) => Math.min(times * 100, 3000) // Riprova senza crashare
 });
 
-// Serve la pagina HTML
+systemRedis.on('error', (err) => {
+    console.error("⚠️  System Redis (Telemetry) non raggiungibile:", err.message);
+});
+
+// =========================================================
+// 2. CONNESSIONE AL SIDECAR (Memoria Locale)
+// =========================================================
+// Questo Redis viaggia col pod (localhost). Serve per provare che il sidecar è vivo.
+const sidecarRedis = new Redis({
+    host: 'localhost',
+    port: 6379,
+    connectTimeout: 1000,
+    lazyConnect: true,
+    retryStrategy: (times) => Math.min(times * 100, 3000)
+});
+
+sidecarRedis.on('error', (err) => {
+    console.error("⚠️  Sidecar Redis (Local Memory) non raggiungibile:", err.message);
+});
+
+// =========================================================
+// 3. SERVER WEB & API
+// =========================================================
+
+// Serve l'interfaccia grafica (index.html)
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// API per il Frontend: Restituisce lo stato della flotta
+// API per il Frontend: Restituisce TUTTO lo stato
 app.get('/api/telemetry', async (req, res) => {
     try {
-        // Legge la stringa JSON scritta da physics_sim.py
-        const data = await redis.get('fleet_telemetry');
-        
-        // Info su dove sta girando QUESTA dashboard (il Pod attivo)
-        const myPodName = process.env.POD_NAME || 'Unknown';
-        const myNodeName = process.env.NODE_NAME || 'Unknown';
+        // A. Leggiamo la telemetria globale dal System Bus
+        let fleetData = {};
+        try {
+            const rawData = await systemRedis.get('fleet_telemetry');
+            if (rawData) fleetData = JSON.parse(rawData);
+        } catch (e) {
+            // Se system-redis fallisce, mandiamo dati vuoti ma non crashiamo
+            console.warn("Lettura telemetria fallita");
+        }
 
+        // B. Verifichiamo se il Sidecar è vivo (Healthcheck locale)
+        let sidecarStatus = "OFFLINE";
+        try {
+            await sidecarRedis.ping();
+            sidecarStatus = "ONLINE (Low Latency)";
+        } catch (e) {
+            sidecarStatus = "ERROR";
+        }
+
+        // C. Chi sono io? (Info dal Downward API di K8s)
+        const myPodName = process.env.POD_NAME || 'Unknown-Pod';
+        const myNodeName = process.env.NODE_NAME || 'Unknown-Orbit';
+
+        // D. Costruiamo la risposta JSON per la Dashboard
         res.json({
             timestamp: Date.now(),
-            pod_info: { pod: myPodName, node: myNodeName },
-            fleet: data ? JSON.parse(data) : {}
+            pod_info: { 
+                pod: myPodName, 
+                node: myNodeName,
+                memory_status: sidecarStatus
+            },
+            fleet: fleetData
         });
+
     } catch (error) {
-        console.error("Redis Error:", error);
-        res.status(500).json({ error: "Errore recupero telemetria" });
+        console.error("Server Error:", error);
+        res.status(500).json({ error: "Internal System Error" });
     }
 });
 
-// Avvio server
+// Avvio Server
 app.listen(port, () => {
-    console.log(`🚀 Space Cloud Dashboard v2 attiva su porta ${port}`);
+    console.log(`🚀 Space Cloud Mission Control v2.3 running on port ${port}`);
+    console.log(`   👉 Connected to System Bus: system-redis:6379`);
+    console.log(`   👉 Connected to Sidecar: localhost:6379`);
 });

@@ -1,97 +1,80 @@
 const express = require('express');
 const Redis = require('ioredis');
-const path = require('path');
 const app = express();
 const port = 3000;
 
-// =========================================================
-// 1. CONNESSIONE AL SYSTEM BUS (Per la Mappa Globale)
-// =========================================================
-// Questo Redis contiene la telemetria scritta da physics_sim.py
-// Il nome host 'system-redis' è risolto dal DNS di Kubernetes
-const systemRedis = new Redis({
-    host: 'system-redis', 
-    port: 6379,
-    connectTimeout: 2000,
-    lazyConnect: true,
-    retryStrategy: (times) => Math.min(times * 100, 3000) // Riprova senza crashare
-});
-
-systemRedis.on('error', (err) => {
-    console.error("⚠️  System Redis (Telemetry) non raggiungibile:", err.message);
-});
-
-// =========================================================
-// 2. CONNESSIONE AL SIDECAR (Memoria Locale)
-// =========================================================
-// Questo Redis viaggia col pod (localhost). Serve per provare che il sidecar è vivo.
-const sidecarRedis = new Redis({
+// 1. MEMORIA LOCALE (SIDECAR) - Qui vive lo stato reale
+const localMemory = new Redis({
     host: 'localhost',
     port: 6379,
-    connectTimeout: 1000,
-    lazyConnect: true,
-    retryStrategy: (times) => Math.min(times * 100, 3000)
+    retryStrategy: times => Math.min(times * 50, 2000)
 });
 
-sidecarRedis.on('error', (err) => {
-    console.error("⚠️  Sidecar Redis (Local Memory) non raggiungibile:", err.message);
+// 2. BUS DI TRASFERIMENTO (Simula la rete per CRIU)
+const transferBus = new Redis({
+    host: 'system-redis',
+    port: 6379,
+    lazyConnect: true
 });
 
-// =========================================================
-// 3. SERVER WEB & API
-// =========================================================
+// --- FASE DI RESTORE (Simulazione CRIU Restore) ---
+async function restoreMemoryState() {
+    try {
+        // Controlliamo se c'è un pacchetto di memoria in transito per me
+        // Usiamo il nome del deployment (o un ID condiviso) per trovare il checkpoint
+        const checkpoint = await transferBus.get('criu_checkpoint_mission_step');
+        
+        if (checkpoint) {
+            console.log(`♻️  CRIU RESTORE: Trovato stato precedente (${checkpoint}). Caricamento in RAM...`);
+            await localMemory.set('mission_step', checkpoint);
+            // Opzionale: Puliamo il checkpoint per evitare reload doppi
+            // await transferBus.del('criu_checkpoint_mission_step'); 
+        } else {
+            console.log("🆕  COLD START: Nessun checkpoint trovato. Inizio da zero.");
+        }
+    } catch (e) {
+        console.warn("⚠️  Errore durante il Restore CRIU:", e.message);
+    }
+}
 
-// Serve l'interfaccia grafica (index.html)
+// Avvio Restore
+restoreMemoryState();
+
+// --- API ---
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(__dirname + '/index.html');
 });
 
-// API per il Frontend: Restituisce TUTTO lo stato
 app.get('/api/telemetry', async (req, res) => {
     try {
-        // A. Leggiamo la telemetria globale dal System Bus
-        let fleetData = {};
+        // A. Incremento su REDIS LOCALE (Sidecar)
+        let step = 0;
         try {
-            const rawData = await systemRedis.get('fleet_telemetry');
-            if (rawData) fleetData = JSON.parse(rawData);
-        } catch (e) {
-            // Se system-redis fallisce, mandiamo dati vuoti ma non crashiamo
-            console.warn("Lettura telemetria fallita");
-        }
+            step = await localMemory.incr('mission_step');
+        } catch (e) { step = -1; }
 
-        // B. Verifichiamo se il Sidecar è vivo (Healthcheck locale)
-        let sidecarStatus = "OFFLINE";
+        // B. Lettura Telemetria Globale (Solo lettura)
+        let fleet = {};
         try {
-            await sidecarRedis.ping();
-            sidecarStatus = "ONLINE (Low Latency)";
-        } catch (e) {
-            sidecarStatus = "ERROR";
-        }
+            const raw = await transferBus.get('fleet_telemetry');
+            if (raw) fleet = JSON.parse(raw);
+        } catch (e) {}
 
-        // C. Chi sono io? (Info dal Downward API di K8s)
-        const myPodName = process.env.POD_NAME || 'Unknown-Pod';
-        const myNodeName = process.env.NODE_NAME || 'Unknown-Orbit';
-
-        // D. Costruiamo la risposta JSON per la Dashboard
+        // C. Info Pod
+        const myNode = process.env.NODE_NAME || 'Unknown';
+        
         res.json({
-            timestamp: Date.now(),
+            mission_step: step,
             pod_info: { 
-                pod: myPodName, 
-                node: myNodeName,
-                memory_status: sidecarStatus
+                node: myNode,
+                memory_status: step > 0 ? "ONLINE (Local)" : "OFFLINE"
             },
-            fleet: fleetData
+            fleet: fleet
         });
 
-    } catch (error) {
-        console.error("Server Error:", error);
-        res.status(500).json({ error: "Internal System Error" });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
-// Avvio Server
-app.listen(port, () => {
-    console.log(`🚀 Space Cloud Mission Control v2.3 running on port ${port}`);
-    console.log(`   👉 Connected to System Bus: system-redis:6379`);
-    console.log(`   👉 Connected to Sidecar: localhost:6379`);
-});
+app.listen(port, () => console.log(`🚀 App listening on port ${port}`));

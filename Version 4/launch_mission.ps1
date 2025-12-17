@@ -1,22 +1,16 @@
 <#
     ================================================================
-    SPACE CLOUD V2.3 - LAUNCH CONTROL CENTER
+    SPACE CLOUD V2.4 - LAUNCH CONTROL CENTER (CLEAN UI)
     ================================================================
     Architecture: Sidecar Pattern + MPC Scheduler + System Bus
-    
-    Sequence:
-    1. Infra Check (Kind)
-    2. Build & Deploy (Docker -> K8s)
-    3. Start System Bus (Redis Tunnel -> 6379)
-    4. Start UI Link (Pod Tunnel -> 8080)
-    5. Start Physics & AI Brains
+    Updates: Clean Logging for Port-Forwarding
 #>
 
 # Imposta la directory di lavoro alla cartella dello script corrente
 $ScriptPath = $PSScriptRoot
 Set-Location $ScriptPath
 
-Write-Host ">>> SPACE CLOUD MISSION V2.3: INITIALIZING..." -ForegroundColor Cyan
+Write-Host ">>> SPACE CLOUD MISSION V2.4: INITIALIZING..." -ForegroundColor Cyan
 Write-Host "    Working Directory: $ScriptPath" -ForegroundColor DarkGray
 
 # ----------------------------------------------------------------
@@ -26,7 +20,6 @@ $clusterName = "space-cloud"
 
 if (-not (kind get clusters | Select-String $clusterName)) {
     Write-Host "   [INFRA] Creazione Cluster '$clusterName'..." -ForegroundColor Yellow
-    # Se non hai il file config specifico, usa quello default, ma meglio averlo
     if (Test-Path "space-cloud-config.yaml") {
         kind create cluster --config space-cloud-config.yaml --name $clusterName
     } else {
@@ -45,7 +38,7 @@ Write-Host "   [DEPLOY] Applicazione Manifesti..." -ForegroundColor Yellow
 if (Test-Path "system-redis.yaml") {
     kubectl apply -f system-redis.yaml
 } else {
-    Write-Error "MANCA IL FILE system-redis.yaml! Crealo prima di lanciare."
+    Write-Error "MANCA IL FILE system-redis.yaml!"
     exit
 }
 
@@ -61,19 +54,18 @@ if (Test-Path "space-mission.yaml") {
 }
 
 # ----------------------------------------------------------------
-# FASE 3: RETE E TUNNELS
+# FASE 3: RETE E TUNNELS (SILENT MODE)
 # ----------------------------------------------------------------
 Write-Host "   [NETWORK] Stabilizzazione Uplink..." -ForegroundColor Cyan
 
-# A. SYSTEM BUS TUNNEL (Critico per Python)
-# Connette localhost:6379 -> Service system-redis:6379
+# A. SYSTEM BUS TUNNEL
 $sysCmd = "& { 
     `$Host.UI.RawUI.WindowTitle = 'SYSTEM BUS (Telemetry)'; 
     Write-Host 'Target: svc/system-redis' -ForegroundColor Cyan;
     while (`$true) {
         try {
-            # Questo tunnel non cade mai perché il Service è stabile
-            kubectl port-forward svc/system-redis 6379:6379;
+            # Silenziamo errori anche qui
+            kubectl port-forward svc/system-redis 6379:6379 2>`$null;
         } catch { 
             Write-Host 'Retrying connection to System Redis...' -ForegroundColor Yellow; 
             Start-Sleep -Seconds 2 
@@ -82,8 +74,7 @@ $sysCmd = "& {
 }"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $sysCmd
 
-# B. UI TUNNEL (Dinamico per la Migrazione)
-# Connette localhost:8080 -> Pod Attivo:3000
+# B. UI TUNNEL (CLEAN LOGGING FIX)
 $uiCmd = "& { 
     `$Host.UI.RawUI.WindowTitle = 'USER INTERFACE (Browser)'; 
     Write-Host 'Scanning for Active Mission Pod...' -ForegroundColor Cyan;
@@ -95,9 +86,12 @@ $uiCmd = "& {
             if (`$pod) {
                 Write-Host ('[LOCKED] Signal acquired: ' + `$pod) -ForegroundColor Green;
                 Write-Host 'Dashboard: http://localhost:8080' -ForegroundColor White;
-                # Il port-forward si chiuderà se il pod muore (migrazione)
-                kubectl port-forward `$pod 8080:3000;
-                Write-Host '[WARN] Signal Lost (Migration?). Re-scanning...' -ForegroundColor Yellow;
+                
+                # --- FIX: AGGIUNTO '2>$null' PER NASCONDERE L'ERRORE ROSSO ---
+                kubectl port-forward `$pod 8080:3000 2>`$null; 
+                # -------------------------------------------------------------
+                
+                Write-Host '[WARN] Signal Lost (Migration). Re-scanning...' -ForegroundColor Yellow;
             } else {
                 Write-Host 'Waiting for Scheduler assignment...' -ForegroundColor DarkGray;
             }

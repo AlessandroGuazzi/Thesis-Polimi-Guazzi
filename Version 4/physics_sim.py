@@ -9,7 +9,7 @@ from kubernetes import client, config
 # =============================================================================
 
 # --- 1. PARAMETRI ORBITALI ---
-ORBIT_PERIOD = 60.0       
+ORBIT_PERIOD = 120.0       
 ECLIPSE_START = 180       
 ECLIPSE_END = 240         
 

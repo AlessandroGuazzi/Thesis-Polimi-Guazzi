@@ -28,3 +28,12 @@ spec:
           image: redis:alpine
           ports:
             - containerPort: 6379
+          resources:
+            requests:
+              # Risorse minime garantite (è molto leggero)
+              memory: "32Mi"
+              cpu: "50m"  # 5% di una CPU
+            limits:
+              # Tetto massimo (se supera questo, Kubernetes lo riavvia)
+              memory: "64Mi"
+              cpu: "100m" # 10% di una CPU

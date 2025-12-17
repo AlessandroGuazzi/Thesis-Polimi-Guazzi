@@ -3,24 +3,39 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Space Cloud v2.3 | Mission Control</title>
-    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+    <title>Space Cloud v3.0 | CRIU Mission Control</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    
     <style>
         :root {
-            --bg-space: #080a10;
-            --panel-bg: rgba(20, 25, 40, 0.9);
+            --bg-deep: #030508;
+            --bg-panel: rgba(10, 15, 30, 0.6);
+            --border-color: rgba(0, 243, 255, 0.15);
+            
             --neon-blue: #00f3ff;
             --neon-green: #00ff9d;
-            --neon-red: #ff0055;
+            --neon-red: #ff2a6d;
             --neon-yellow: #ffcc00;
-            --text-muted: #8a9bb8;
-            --orbit-path: rgba(0, 243, 255, 0.15);
+            --neon-purple: #bc13fe;
+            
+            --text-main: #e0f7ff;
+            --text-muted: #5d7c8a;
+            
+            --orbit-radius: 275px; /* Raggio dell'orbita per calcoli CSS */
         }
 
+        * { box-sizing: border-box; }
+
         body {
-            background: radial-gradient(circle at center, #1a1f35 0%, var(--bg-space) 100%);
-            color: #fff;
-            font-family: 'Rajdhani', sans-serif;
+            background-color: var(--bg-deep);
+            background-image: 
+                radial-gradient(circle at 50% 50%, #0f182b 0%, #030508 100%),
+                linear-gradient(rgba(0, 243, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 243, 255, 0.03) 1px, transparent 1px);
+            background-size: 100% 100%, 40px 40px, 40px 40px;
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
             margin: 0;
             height: 100vh;
             display: flex;
@@ -30,137 +45,232 @@
 
         /* --- HEADER --- */
         header {
-            padding: 15px 30px;
-            background: linear-gradient(90deg, rgba(0,243,255,0.1) 0%, transparent 100%);
-            border-bottom: 1px solid rgba(0, 243, 255, 0.2);
-            display: flex;
-            justify-content: space-between;
+            height: 110px;
+            background: linear-gradient(180deg, rgba(0,0,0,0.8) 0%, rgba(0, 243, 255, 0.02) 100%);
+            border-bottom: 1px solid var(--border-color);
+            display: grid;
+            grid-template-columns: 300px 1fr 300px;
             align-items: center;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            padding: 0 40px;
+            position: relative;
+            z-index: 10;
+            backdrop-filter: blur(10px);
         }
 
-        h1 {
-            margin: 0;
-            font-weight: 700;
-            letter-spacing: 3px;
+        /* Logo Area */
+        .brand { display: flex; flex-direction: column; }
+        .brand h1 { 
+            font-family: 'Orbitron', sans-serif; 
+            font-size: 1.8rem; 
+            margin: 0; 
+            letter-spacing: 2px;
             text-transform: uppercase;
-            font-size: 1.8rem;
+            text-shadow: 0 0 10px rgba(0, 243, 255, 0.3);
         }
-        h1 span { color: var(--neon-blue); }
-        .subtitle { color: var(--text-muted); font-size: 0.9rem; letter-spacing: 1px; }
-
-        .connection-info {
-            text-align: right;
-            font-size: 0.9rem;
+        .brand h1 span { color: var(--neon-blue); }
+        .brand .sub { 
+            font-family: 'Share Tech Mono', monospace; 
+            color: var(--text-muted); 
+            font-size: 0.8rem; 
+            letter-spacing: 1px; 
+            margin-top: 5px;
         }
-        .info-label { color: var(--text-muted); text-transform: uppercase; font-size: 0.75rem; }
-        .info-value { font-weight: 700; color: var(--neon-blue); letter-spacing: 1px; }
-        .sidecar-status { color: var(--neon-green); font-weight: 600; }
-        .sidecar-error { color: var(--neon-red); }
 
-        /* --- MAIN LAYOUT --- */
-        .main-container {
-            flex: 1;
+        /* Central HUD (Counter) */
+        .hud-container {
             display: flex;
-            padding: 30px;
-            gap: 30px;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
             position: relative;
         }
 
-        /* LEFT PANEL: ORBIT VISUALIZER */
-        .orbit-panel {
+        .hud-display {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 10px 60px;
+            position: relative;
+            box-shadow: 0 0 20px rgba(0, 243, 255, 0.05), inset 0 0 20px rgba(0,0,0,0.8);
+        }
+
+        /* Decorative brackets for HUD */
+        .hud-display::before, .hud-display::after {
+            content: ''; position: absolute; top: 0; bottom: 0; width: 4px;
+            background: var(--neon-blue); opacity: 0.5;
+        }
+        .hud-display::before { left: 0; border-radius: 4px 0 0 4px; }
+        .hud-display::after { right: 0; border-radius: 0 4px 4px 0; }
+
+        .hud-label {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.7rem;
+            color: var(--neon-blue);
+            letter-spacing: 2px;
+            text-align: center;
+            margin-bottom: 5px;
+            opacity: 0.8;
+        }
+
+        .counter-val {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 3.2rem;
+            line-height: 1;
+            color: var(--neon-green);
+            text-shadow: 0 0 15px rgba(0, 255, 157, 0.5);
+        }
+
+        .counter-val.offline {
+            color: var(--neon-red);
+            text-shadow: 0 0 20px rgba(255, 42, 109, 0.8);
+            animation: glitch 0.3s infinite;
+        }
+
+        .system-status {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 0.85rem;
+            margin-top: 8px;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+        }
+
+        /* Info Box Right */
+        .info-box { text-align: right; }
+        .info-row { 
+            display: flex; 
+            justify-content: flex-end; 
+            align-items: baseline; 
+            gap: 10px; 
+            margin-bottom: 6px; 
+            font-family: 'Share Tech Mono', monospace;
+        }
+        .info-lbl { color: var(--text-muted); font-size: 0.75rem; }
+        .info-val { font-size: 1rem; color: var(--neon-blue); font-weight: bold; }
+        .mem-ok { color: var(--neon-green); }
+        .mem-err { color: var(--neon-red); }
+
+
+        /* --- MAIN LAYOUT --- */
+        .layout {
+            flex: 1;
+            display: flex;
+            padding: 20px 40px;
+            gap: 40px;
+            overflow: hidden;
+        }
+
+        /* --- ORBIT PANEL (LEFT) --- */
+        .orbit-view {
             flex: 2;
-            background: var(--panel-bg);
-            border-radius: 20px;
-            border: 1px solid rgba(0, 243, 255, 0.1);
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
             position: relative;
             display: flex;
             justify-content: center;
             align-items: center;
-            overflow: hidden;
-            box-shadow: inset 0 0 50px rgba(0,0,0,0.5);
+            box-shadow: 0 0 30px rgba(0,0,0,0.5);
+            /* Grid overlay effect */
+            background-image: linear-gradient(rgba(0, 243, 255, 0.02) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(0, 243, 255, 0.02) 1px, transparent 1px);
+            background-size: 20px 20px;
         }
 
-        .earth {
-            width: 120px;
-            height: 120px;
-            background: radial-gradient(circle at 30% 30%, #4facfe, #00f2fe 80%, #080a10 100%);
+        /* Planet Styling */
+        .planet {
+            width: 140px; height: 140px;
             border-radius: 50%;
-            box-shadow: 0 0 40px rgba(79, 172, 254, 0.6);
+            background: radial-gradient(circle at 30% 30%, #4facfe, #00f2fe 60%, #000 100%);
+            box-shadow: 0 0 60px rgba(0, 242, 254, 0.2), inset -20px -20px 50px rgba(0,0,0,0.9);
             z-index: 5;
             position: relative;
         }
-        .earth::after {
-            content: ''; position: absolute; top:0; left:0; right:0; bottom:0;
-            border-radius: 50%;
-            background: repeating-linear-gradient(transparent 0%, transparent 5%, rgba(255,255,255,0.05) 5%, rgba(255,255,255,0.05) 10%);
-            animation: rotateEarth 60s linear infinite;
-            opacity: 0.5;
+        /* Atmosphere glow */
+        .planet::before {
+            content: ''; position: absolute; inset: -10px; border-radius: 50%;
+            box-shadow: 0 0 20px rgba(79, 172, 254, 0.4);
+            opacity: 0.6;
         }
 
-        .orbit-track {
-            position: absolute;
-            width: 500px;
-            height: 500px;
-            border: 2px dashed var(--orbit-path);
-            border-radius: 50%;
+        /* Orbit Rings */
+        .orbit-ring-outer {
+            position: absolute; width: 650px; height: 650px;
+            border: 1px dashed rgba(0, 243, 255, 0.1); border-radius: 50%;
+        }
+        .orbit-ring-main {
+            position: absolute; width: 550px; height: 550px;
+            border: 1px solid rgba(0, 243, 255, 0.2); border-radius: 50%;
+            box-shadow: 0 0 15px rgba(0, 243, 255, 0.05);
         }
 
-        /* ZONA ECLISSI: Gradiente conico per l'ombra */
-        .eclipse-cone {
-            position: absolute;
-            width: 100%;
-            height: 100%;
+        .eclipse-shade {
+            position: absolute; width: 100%; height: 100%;
             background: conic-gradient(
-                transparent 180deg,
+                transparent 180deg, 
                 rgba(0,0,0,0.85) 180deg, 
-                rgba(10,10,20,0.95) 210deg,
-                rgba(0,0,0,0.85) 240deg,
+                rgba(10,10,20,0.95) 210deg, 
+                rgba(0,0,0,0.85) 240deg, 
                 transparent 240deg
             );
-            z-index: 1;
-            pointer-events: none;
+            pointer-events: none; z-index: 1; border-radius: 50%;
         }
 
         /* SATELLITE MARKERS */
-        .marker-wrapper {
-            position: absolute;
-            top: 50%; left: 50%;
+        .sat-wrapper {
+            position: absolute; top: 50%; left: 50%;
             width: 0; height: 0;
-            transition: transform 1s linear; /* Movimento fluido */
-            z-index: 10;
-        }
-
-        .sat-marker {
-            position: absolute;
-            width: 16px; height: 16px;
-            background: var(--text-muted);
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
-            /* Posiziona il marker a 250px dal centro (raggio dell'orbita) */
-            top: -250px; 
-            box-shadow: 0 0 5px rgba(255,255,255,0.3);
-            transition: all 0.3s ease-out;
-        }
-
-        /* Satellite attivo (quello che ospita QUESTA dashboard) */
-        .sat-marker.active-host {
-            background: var(--neon-green);
-            box-shadow: 0 0 20px var(--neon-green), 0 0 40px var(--neon-green);
-            width: 22px; height: 22px;
+            transition: transform 1s linear;
             z-index: 20;
-            animation: pulse 2s infinite;
+        }
+        
+        /* Container del pallino + testo */
+        .sat-container {
+            position: absolute;
+            top: -275px; /* Distanza dal centro esatta */
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100px; /* Larghezza per centrare il testo */
         }
 
-        /* Satellite in eclissi */
-        .sat-marker.in-eclipse:not(.active-host) {
-            background: #222;
-            box-shadow: none;
-            border: 1px solid #444;
+        .sat-dot {
+            width: 12px; height: 12px;
+            background: #2a3b4c;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            box-shadow: 0 0 5px #000;
+            transition: all 0.3s;
+            margin-bottom: 8px; /* Spazio tra pallino e testo */
         }
 
-        /* RIGHT PANEL: TELEMETRY DATA */
-        .data-panel {
+        .sat-dot.active {
+            background: var(--neon-green);
+            border-color: #fff;
+            width: 18px; height: 18px;
+            box-shadow: 0 0 15px var(--neon-green), 0 0 30px var(--neon-green);
+        }
+
+        .sat-dot.eclipse:not(.active) {
+            background: #000; border-color: #333;
+        }
+
+        /* Label del nodo sotto il pallino */
+        .sat-label {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 0.7rem;
+            color: var(--neon-blue);
+            text-shadow: 0 0 5px rgba(0, 243, 255, 0.5);
+            text-transform: uppercase;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .sat-label.active { color: var(--neon-green); font-weight: bold; }
+
+
+        /* --- DATA PANEL (RIGHT) --- */
+        .telemetry-list {
             flex: 1;
             display: flex;
             flex-direction: column;
@@ -170,192 +280,237 @@
         }
 
         .node-card {
-            background: linear-gradient(145deg, rgba(30,35,50,0.9), rgba(20,25,40,0.9));
-            border-left: 3px solid var(--neon-blue);
-            padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-            transition: all 0.3s;
+            background: rgba(10, 20, 30, 0.7);
+            border: 1px solid var(--border-color);
+            padding: 15px 20px;
+            border-radius: 6px;
             position: relative;
-            overflow: hidden;
+            transition: all 0.3s;
+        }
+        /* Angolo tagliato decorativo */
+        .node-card::before {
+            content: ''; position: absolute; top: -1px; right: -1px;
+            border-width: 0 15px 15px 0; border-style: solid;
+            border-color: transparent var(--border-color) transparent transparent;
         }
 
-        .node-card.active-host {
-            border-left-color: var(--neon-green);
-            background: linear-gradient(145deg, rgba(0, 255, 157, 0.1), rgba(20,25,40,0.9));
+        .node-card.active {
+            background: linear-gradient(90deg, rgba(0, 255, 157, 0.05) 0%, transparent 100%);
+            border-left: 3px solid var(--neon-green);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.3);
         }
-        .node-card.active-host::after {
-            content: 'MISSION HOST';
-            position: absolute; top: 10px; right: 10px;
-            font-size: 0.7rem; font-weight: 700; color: var(--neon-green);
-            letter-spacing: 1px;
+        .node-card.danger { border-left: 3px solid var(--neon-red); }
+
+        .card-head {
+            display: flex; justify-content: space-between; margin-bottom: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 8px;
         }
-
-        .node-card.danger { border-left-color: var(--neon-red); }
-
-        .card-header { display: flex; justify-content: space-between; margin-bottom: 15px; }
-        .node-name { font-size: 1.2rem; font-weight: 700; letter-spacing: 1px; }
+        .node-title { 
+            font-family: 'Orbitron', sans-serif; font-size: 0.9rem; color: var(--text-main); 
+        }
         
-        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        .metric-box .label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; }
-        .metric-box .value { font-size: 1.4rem; font-weight: 700; }
+        .card-stats {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+            font-family: 'Share Tech Mono', monospace; font-size: 1.1rem;
+        }
+        .stat-item { display: flex; flex-direction: column; }
+        .stat-lbl { font-size: 0.65rem; color: var(--text-muted); }
+        .stat-val { font-weight: bold; }
 
-        /* Utilities */
-        .text-green { color: var(--neon-green); }
-        .text-red { color: var(--neon-red); }
-        .text-blue { color: var(--neon-blue); }
 
-        @keyframes pulse { 0% { transform: translate(-50%, -50%) scale(1); opacity: 1; } 50% { transform: translate(-50%, -50%) scale(1.2); opacity: 0.8; } 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
-        @keyframes rotateEarth { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        /* Animations & Scrollbar */
+        @keyframes glitch { 
+            0% { text-shadow: 3px 0 0 red, -3px 0 0 blue; }
+            50% { text-shadow: -3px 0 0 red, 3px 0 0 blue; } 
+            100% { text-shadow: 3px 0 0 red, -3px 0 0 blue; }
+        }
 
-        /* Scrollbar */
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: var(--bg-space); }
-        ::-webkit-scrollbar-thumb { background: var(--neon-blue); border-radius: 3px; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); }
+        ::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 2px; }
+        
+        /* Legenda */
+        .legend {
+            position: absolute; bottom: 20px; left: 20px;
+            font-family: 'Share Tech Mono', monospace; font-size: 0.7rem; color: var(--text-muted);
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
     </style>
 </head>
 <body>
 
     <header>
-        <div>
-            <h1>Space Cloud <span>v2.3</span></h1>
-            <div class="subtitle">MPC Autonomous Orchestration | Sidecar Memory</div>
+        <div class="brand">
+            <h1>Space<span>Cloud</span></h1>
+            <div class="sub">v3.0 // MPC ORCHESTRATOR</div>
         </div>
-        <div class="connection-info">
-            <div style="margin-bottom: 5px;">
-                <span class="info-label">Active Host Satellite:</span><br>
-                <span id="active-node-display" class="info-value">SEARCHING...</span>
+
+        <div class="hud-container">
+            <div class="hud-display">
+                <div class="hud-label">MISSION SEQUENCE</div>
+                <div id="counter" class="counter-val">00000</div>
             </div>
-            <div>
-                <span class="info-label">Local Sidecar Memory:</span> 
-                <span id="sidecar-status" class="sidecar-status">CHECKING...</span>
+            <div id="status-text" class="system-status">INITIALIZING...</div>
+        </div>
+
+        <div class="info-box">
+            <div class="info-row">
+                <span class="info-lbl">ACTIVE HOST</span> 
+                <span id="host-name" class="info-val">---</span>
+            </div>
+            <div class="info-row">
+                <span class="info-lbl">SIDECAR MEM</span> 
+                <span id="mem-status" class="info-val">---</span>
             </div>
         </div>
     </header>
 
-    <div class="main-container">
-        <div class="orbit-panel">
-            <div class="orbit-track">
-                <div class="eclipse-cone"></div> </div>
-            <div class="earth"></div>
+    <div class="layout">
+        <div class="orbit-view">
+            <div class="orbit-ring-outer"></div>
+            <div class="orbit-ring-main">
+                <div class="eclipse-shade"></div>
+            </div>
+            <div class="planet"></div>
             
-            <div style="position: absolute; bottom: 20px; left: 30px; font-size: 0.8rem; color: var(--text-muted);">
-                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
-                    <div style="width: 12px; height: 12px; background: var(--neon-green); border-radius: 50%; box-shadow: 0 0 10px var(--neon-green);"></div>
-                    <span>Active Mission Payload</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <div style="width: 12px; height: 12px; background: #222; border: 1px solid #555; border-radius: 50%;"></div>
-                    <span>Eclipse Zone (180°-240°)</span>
-                </div>
+            <div class="legend">
+                <div>● ACTIVE PAYLOAD</div>
+                <div style="margin-top:4px;">○ ECLIPSE ZONE</div>
             </div>
         </div>
 
-        <div class="data-panel" id="fleet-list">
+        <div class="telemetry-list" id="card-list">
             </div>
     </div>
 
     <script>
-        // === CONFIGURAZIONE ===
+        // === CONFIGURAZIONE LOGICA ===
         const ECLIPSE_START = 180;
         const ECLIPSE_END = 240;
 
         async function updateDashboard() {
+            const counterEl = document.getElementById('counter');
+            const statusEl = document.getElementById('status-text');
+            const hostEl = document.getElementById('host-name');
+            const memEl = document.getElementById('mem-status');
+
             try {
-                const res = await fetch('/api/telemetry');
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 1200);
+
+                const res = await fetch('/api/telemetry', { signal: controller.signal });
+                clearTimeout(timeoutId);
                 const data = await res.json();
 
-                // 1. Aggiorna Header Info
-                const myNodeName = data.pod_info.node || 'Unknown';
-                document.getElementById('active-node-display').textContent = myNodeName.replace('space-cloud-', '').toUpperCase();
+                // --- ONLINE ---
+                counterEl.textContent = data.mission_step.toString().padStart(5, '0');
+                counterEl.classList.remove('offline');
                 
-                const sidecarEl = document.getElementById('sidecar-status');
-                sidecarEl.textContent = data.pod_info.memory_status;
-                sidecarEl.className = data.pod_info.memory_status.includes('ONLINE') ? 'sidecar-status' : 'sidecar-error';
+                statusEl.textContent = "SYSTEM OPERATIONAL";
+                statusEl.style.color = "var(--text-muted)";
 
-                // 2. Riferimenti DOM
-                const listEl = document.getElementById('fleet-list');
-                const trackEl = document.querySelector('.orbit-track');
+                // Info Nodo
+                const myNode = data.pod_info.node || "Unknown";
+                hostEl.textContent = myNode.replace('space-cloud-', '').toUpperCase();
+                
+                // Info Memoria
+                const memStatus = data.pod_info.memory_status;
+                memEl.textContent = memStatus.includes("ONLINE") ? "LINKED" : "ERROR";
+                memEl.className = memStatus.includes("ONLINE") ? "info-val mem-ok" : "info-val mem-err";
 
-                // Pulizia (metodo semplice per reset)
-                listEl.innerHTML = '';
-                // Rimuovi solo i marker, non l'ombra conica
-                Array.from(trackEl.children).forEach(c => {
-                    if (c.classList.contains('marker-wrapper')) c.remove();
-                });
-
-                // Se non c'è telemetria, mostra messaggio
-                if (!data.fleet || Object.keys(data.fleet).length === 0) {
-                    listEl.innerHTML = '<div style="text-align:center; color: var(--text-muted); margin-top: 50px;">Waiting for System Bus Telemetry...<br>Make sure physics_sim.py is running.</div>';
-                    return;
-                }
-
-                // 3. Generazione Elementi
-                const sortedNodes = Object.keys(data.fleet).sort();
-                sortedNodes.forEach(nodeName => {
-                    const sat = data.fleet[nodeName];
-                    const isMyHost = (nodeName === myNodeName);
-                    const shortName = nodeName.replace('space-cloud-', '').toUpperCase().replace('CONTROL-PLANE', 'MASTER');
-
-                    // --- A. CREAZIONE CARD TELEMETRIA ---
-                    let cardClass = 'node-card';
-                    if (isMyHost) cardClass += ' active-host';
-                    if (sat.eclipse || sat.battery < 30) cardClass += ' danger';
-
-                    let battColor = 'text-blue';
-                    if (sat.battery < 50) battColor = 'text-yellow';
-                    if (sat.battery < 30) battColor = 'text-red';
-
-                    const card = document.createElement('div');
-                    card.className = cardClass;
-                    card.innerHTML = `
-                        <div class="card-header">
-                            <div class="node-name">${shortName}</div>
-                            <div style="font-size: 1.2rem;">${sat.eclipse ? '🌑' : '☀️'}</div>
-                        </div>
-                        <div class="metrics-grid">
-                            <div class="metric-box">
-                                <div class="label">Battery Level</div>
-                                <div class="value ${battColor}">${sat.battery.toFixed(0)}%</div>
-                            </div>
-                            <div class="metric-box">
-                                <div class="label">Temperature</div>
-                                <div class="value">${sat.temp.toFixed(1)}°C</div>
-                            </div>
-                        </div>
-                        <div style="margin-top: 15px; font-size: 0.8rem; color: var(--text-muted); text-align: right;">
-                            Orbit Angle: ${sat.angle}° | Status: ${sat.status}
-                        </div>
-                    `;
-                    listEl.appendChild(card);
-
-                    // --- B. CREAZIONE MARKER ORBITALE ---
-                    const wrapper = document.createElement('div');
-                    wrapper.className = 'marker-wrapper';
-                    // Ruota il contenitore per posizionare il marker lungo il cerchio
-                    wrapper.style.transform = `rotate(${sat.angle}deg)`;
-
-                    const marker = document.createElement('div');
-                    let markerClass = 'sat-marker';
-                    if (isMyHost) markerClass += ' active-host';
-                    if (sat.eclipse) markerClass += ' in-eclipse';
-                    marker.className = markerClass;
-
-                    // Aggiungi tooltip nativo
-                    marker.title = `${shortName} (B:${sat.battery.toFixed(0)}% T:${sat.temp.toFixed(1)}°)`;
-
-                    wrapper.appendChild(marker);
-                    trackEl.appendChild(wrapper);
-                });
+                renderFleet(data.fleet, myNode);
 
             } catch (e) {
-                console.error("Dashboard update error:", e);
+                // --- OFFLINE / MIGRATION ---
+                counterEl.classList.add('offline');
+                statusEl.textContent = "⚠ CONNECTION LOST // MIGRATING";
+                statusEl.style.color = "var(--neon-red)";
+                
+                hostEl.textContent = "SEARCHING...";
+                hostEl.style.color = "var(--neon-yellow)";
             }
         }
 
-        // Aggiorna ogni secondo per fluidità
+        function renderFleet(fleet, myNodeName) {
+            const track = document.querySelector('.orbit-ring-main');
+            const list = document.getElementById('card-list');
+
+            // Reset marker dinamici
+            Array.from(track.children).forEach(c => {
+                if (c.classList.contains('sat-wrapper')) c.remove();
+            });
+            list.innerHTML = '';
+
+            if (!fleet) return;
+
+            Object.keys(fleet).sort().forEach(nodeName => {
+                const sat = fleet[nodeName];
+                const isMyHost = (nodeName === myNodeName);
+                const shortName = nodeName.replace('space-cloud-', '').replace('control-plane', 'master').toUpperCase();
+
+                // --- 1. RENDER CARD (Destra) ---
+                const card = document.createElement('div');
+                let cardClass = 'node-card';
+                if (isMyHost) cardClass += ' active';
+                if (sat.eclipse || sat.battery < 30) cardClass += ' danger';
+                card.className = cardClass;
+
+                let battColor = '#fff';
+                if (sat.battery < 50) battColor = 'var(--neon-yellow)';
+                if (sat.battery < 30) battColor = 'var(--neon-red)';
+
+                card.innerHTML = `
+                    <div class="card-head">
+                        <span class="node-title">${shortName}</span>
+                        <span>${sat.eclipse ? '🌑' : '☀️'}</span>
+                    </div>
+                    <div class="card-stats">
+                        <div class="stat-item">
+                            <span class="stat-lbl">ENERGY</span>
+                            <span class="stat-val" style="color: ${battColor}">${sat.battery.toFixed(0)}%</span>
+                        </div>
+                        <div class="stat-item" style="text-align: right;">
+                            <span class="stat-lbl">THERMAL</span>
+                            <span class="stat-val">${sat.temp.toFixed(0)}°C</span>
+                        </div>
+                    </div>
+                `;
+                list.appendChild(card);
+
+                // --- 2. RENDER ORBIT MARKER (Sinistra) ---
+                const wrapper = document.createElement('div');
+                wrapper.className = 'sat-wrapper';
+                // Rotazione del wrapper per posizionare il satellite sull'orbita
+                wrapper.style.transform = `rotate(${sat.angle}deg)`;
+
+                // Container per pallino e testo
+                const container = document.createElement('div');
+                container.className = 'sat-container';
+                
+                // IMPORTANTE: Contro-ruotiamo il container del testo affinché rimanga orizzontale!
+                // angle negativo annulla la rotazione del wrapper padre.
+                container.style.transform = `translateX(-50%) rotate(-${sat.angle}deg)`;
+
+                const dot = document.createElement('div');
+                let dotClass = 'sat-dot';
+                if (isMyHost) dotClass += ' active';
+                if (sat.eclipse) dotClass += ' eclipse';
+                dot.className = dotClass;
+
+                const label = document.createElement('div');
+                label.className = `sat-label ${isMyHost ? 'active' : ''}`;
+                label.innerText = shortName;
+
+                container.appendChild(dot);
+                container.appendChild(label);
+                wrapper.appendChild(container);
+                track.appendChild(wrapper);
+            });
+        }
+
         setInterval(updateDashboard, 1000);
-        updateDashboard(); // Prima chiamata immediata
+        updateDashboard();
     </script>
 </body>
 </html>

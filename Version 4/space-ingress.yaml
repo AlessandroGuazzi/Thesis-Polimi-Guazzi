@@ -3,10 +3,10 @@ kind: Ingress
 metadata:
   name: space-ingress
   annotations:
-    # Opzionale: riscrive l'URL se necessario (qui non serve, ma è utile saperlo)
+    # Riscrive il path per evitare errori 404 se l'app si aspetta la root
     nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
-  # FONDAMENTALE: Dice a K8s di usare il controller che abbiamo installato in Fase 2
+  # FONDAMENTALE: Dice a Kubernetes di usare il controller NGINX
   ingressClassName: nginx
   rules:
   - host: mission-control.local
@@ -16,6 +16,8 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: space-mission-service # Deve coincidere con il nome del Service
+            # QUESTO NOME DEVE ESSERE IDENTICO A QUELLO IN space-mission.yaml
+            name: space-mission-service 
             port:
-              number: 80 # La porta del Service (non del Pod!)
+              # QUESTA PORTA DEVE ESSERE QUELLA ESPOSTA DAL SERVICE
+              number: 80

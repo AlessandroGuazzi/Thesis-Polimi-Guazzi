@@ -1,23 +1,43 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 
-# Configurazione della rete del cluster simulato
+# Configurazione della rete
 networking:
-  disableDefaultCNI: false # Usa la rete standard bridge
+  disableDefaultCNI: false 
 
 # Definizione dei Nodi (I nostri Satelliti)
 nodes:
-  # --- SATELLITE 0: Control Plane (Il Comandante) ---
+  # --- SATELLITE 0: Control Plane (Il Comandante + INGRESS PORT) ---
   - role: control-plane
-    image: kindest/node:v1.30.0  # Versione K8s recente per supporto Checkpoint
+    image: kindest/node:v1.30.0
+    
+    # 1. MAPPATURA PORTE (NOVITÀ PER INGRESS)
+    # Apriamo le porte verso il tuo PC
+    extraPortMappings:
+    - containerPort: 80
+      hostPort: 80
+      protocol: TCP
+    - containerPort: 443
+      hostPort: 443
+      protocol: TCP
+    
     kubeadmConfigPatches:
-    # ABILITAZIONE CHECKPOINTING: Permette di estrarre lo stato della RAM dei container tramite API e SIMULAZIONE ACCELERATA
+      # 2. LABEL INGRESS (NOVITÀ)
+      # Dice a NGINX di installarsi qui dove ci sono le porte aperte
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+
+      # 3. ABILITAZIONE CHECKPOINTING (VECCHIA LOGICA)
       - |
         kind: KubeletConfiguration
         featureGates:
           ContainerCheckpoint: true 
         nodeStatusUpdateFrequency: "2s"
-    # Se un nodo non risponde per 10s, è considerato "disperso" nello spazio
+      
+      # 4. MONITORAGGIO VELOCE (VECCHIA LOGICA)
       - |
         kind: ClusterConfiguration
         controllerManager:

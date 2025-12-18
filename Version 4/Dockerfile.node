@@ -3,10 +3,11 @@
 # Usiamo l'immagine base del nodo Kubernetes (il "Sistema Operativo" del Satellite)
 FROM kindest/node:v1.30.0
 
-# Installiamo CRIU e le dipendenze di rete necessarie
-# (senza questo, il nodo non sa come "congelare" i processi)
+# Installiamo CRIU, le dipendenze di rete e NANO (editor di testo per debug)
+# Abbiamo aggiunto 'nano' alla lista qui sotto
 RUN apt-get update && \
-    apt-get install -y criu libnet-dev && \
+    apt-get install -y criu libnet-dev nano && \
     rm -rf /var/lib/apt/lists/*
 
+# Comando per costruire (da lanciare nel terminale):
 # docker build -t space-cloud-node-criu:v1 -f Dockerfile.node .

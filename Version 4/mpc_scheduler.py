@@ -9,7 +9,7 @@ from kubernetes.stream import stream
 # CONFIGURAZIONE MISSIONE
 # ==========================================
 PREDICTION_HORIZON = 15.0   # Secondi nel futuro
-CRITICAL_BATTERY = 85.0     # Soglia alta per testare la migrazione frequente
+CRITICAL_BATTERY = 20.0     # Soglia alta per testare la migrazione frequente
 ECLIPSE_START = 180         # Gradi inizio ombra
 ECLIPSE_END = 240           # Gradi fine ombra
 FUTURE_DRAIN_LOAD = 2.0     # Consumo previsto

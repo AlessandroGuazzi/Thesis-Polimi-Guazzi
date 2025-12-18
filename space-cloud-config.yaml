@@ -9,7 +9,7 @@ networking:
 nodes:
   # --- SATELLITE 0: Control Plane (Il Comandante + INGRESS PORT) ---
   - role: control-plane
-    image: kindest/node:v1.30.0
+    image: space-cloud-node-criu:v1
     
     # 1. MAPPATURA PORTE (NOVITÀ PER INGRESS)
     # Apriamo le porte verso il tuo PC
@@ -46,7 +46,7 @@ nodes:
 
   # --- SATELLITE 1: Worker (Operativo) ---
   - role: worker
-    image: kindest/node:v1.30.0
+    image: space-cloud-node-criu:v1
     kubeadmConfigPatches:
       - |
         kind: KubeletConfiguration
@@ -56,7 +56,7 @@ nodes:
 
   # --- SATELLITE 2: Worker (Operativo) ---
   - role: worker
-    image: kindest/node:v1.30.0
+    image: space-cloud-node-criu:v1
     kubeadmConfigPatches:
       - |
         kind: KubeletConfiguration

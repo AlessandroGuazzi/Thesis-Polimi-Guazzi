@@ -1,0 +1,12 @@
+# Dockerfile.node
+
+# Usiamo l'immagine base del nodo Kubernetes (il "Sistema Operativo" del Satellite)
+FROM kindest/node:v1.30.0
+
+# Installiamo CRIU e le dipendenze di rete necessarie
+# (senza questo, il nodo non sa come "congelare" i processi)
+RUN apt-get update && \
+    apt-get install -y criu libnet-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# docker build -t space-cloud-node-criu:v1 -f Dockerfile.node .

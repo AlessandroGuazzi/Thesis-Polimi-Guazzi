@@ -3,51 +3,74 @@ const Redis = require('ioredis');
 const app = express();
 const port = 3000;
 
-// 1. MEMORIA LOCALE (SIDECAR) - Qui vive lo stato reale
+// ============================================================
+// 0. MEMORIA VOLATILE (RAM PURA - IL TEST PER CRIU)
+// ============================================================
+// Questa variabile vive SOLO nella RAM del processo. 
+// Non viene mai salvata su Redis.
+// - Se il Pod si riavvia normalmente -> Torna a 0.
+// - Se il Restore CRIU funziona -> Continua dal valore precedente.
+let criuVolatileCounter = 0;
+const nodeName = process.env.NODE_NAME || 'Unknown';
+
+// Incrementa ogni secondo (simula un calcolo in corso)
+setInterval(() => {
+    criuVolatileCounter++;
+    // Log su una sola riga per non sporcare troppo
+    //process.stdout.write(`\r[${nodeName}] RAM (CRIU): ${criuVolatileCounter} | Redis: (async)   `);
+    console.log(`[${nodeName}] RAM (CRIU): ${criuVolatileCounter} | Status: RUNNING`);
+}, 1000);
+
+// ============================================================
+// 1. MEMORIA LOCALE (SIDECAR) - Stato Applicativo
+// ============================================================
 const localMemory = new Redis({
     host: 'localhost',
     port: 6379,
     retryStrategy: times => Math.min(times * 50, 2000)
 });
 
-// 2. BUS DI TRASFERIMENTO (Simula la rete per CRIU)
+// ============================================================
+// 2. BUS DI TRASFERIMENTO - Simulazione Rete
+// ============================================================
 const transferBus = new Redis({
     host: 'system-redis',
     port: 6379,
     lazyConnect: true
 });
 
-// --- FASE DI RESTORE (Simulazione CRIU Restore) ---
+// --- FASE DI RESTORE LEGACY (Simulazione Applicativa) ---
+// Nota per la tesi: Con CRIU puro, questa parte diventerebbe ridondante
+// perché anche la connessione Redis verrebbe ripristinata "aperta".
+// La manteniamo per ibridazione e sicurezza.
 async function restoreMemoryState() {
     try {
-        // Controlliamo se c'è un pacchetto di memoria in transito per me
-        // Usiamo il nome del deployment (o un ID condiviso) per trovare il checkpoint
         const checkpoint = await transferBus.get('criu_checkpoint_mission_step');
         
         if (checkpoint) {
-            console.log(`♻️  CRIU RESTORE: Trovato stato precedente (${checkpoint}). Caricamento in RAM...`);
+            console.log(`\n♻️  APP RESTORE: Trovato stato Redis precedente (${checkpoint}).`);
             await localMemory.set('mission_step', checkpoint);
-            // Opzionale: Puliamo il checkpoint per evitare reload doppi
-            // await transferBus.del('criu_checkpoint_mission_step'); 
         } else {
-            console.log("🆕  COLD START: Nessun checkpoint trovato. Inizio da zero.");
+            console.log("\n🆕  COLD START: Nessun checkpoint Redis. Inizio da zero.");
         }
     } catch (e) {
-        console.warn("⚠️  Errore durante il Restore CRIU:", e.message);
+        console.warn("\n⚠️  Errore durante il Restore Redis:", e.message);
     }
 }
 
-// Avvio Restore
+// Avvio Restore Applicativo
 restoreMemoryState();
 
-// --- API ---
+// ============================================================
+// 3. API & ROUTING
+// ============================================================
 app.get('/', (req, res) => {
     res.sendFile(__dirname + '/index.html');
 });
 
 app.get('/api/telemetry', async (req, res) => {
     try {
-        // A. Incremento su REDIS LOCALE (Sidecar)
+        // A. Incremento su REDIS LOCALE (Persistenza Dati)
         let step = 0;
         try {
             step = await localMemory.incr('mission_step');
@@ -60,15 +83,25 @@ app.get('/api/telemetry', async (req, res) => {
             if (raw) fleet = JSON.parse(raw);
         } catch (e) {}
 
-        // C. Info Pod
-        const myNode = process.env.NODE_NAME || 'Unknown';
-        
+        // C. Risposta combinata
         res.json({
-            mission_step: step,
+            // Stato salvato su DB (Approccio Vecchio)
+            mission_step: step, 
+            
+            // Stato salvato in RAM (Approccio CRIU)
+            criu_check: {
+                ram_counter: criuVolatileCounter,
+                node_id: nodeName,
+                status: "RUNNING"
+            },
+
+            // Info Pod generiche
             pod_info: { 
-                node: myNode,
+                node: nodeName,
                 memory_status: step > 0 ? "ONLINE (Local)" : "OFFLINE"
             },
+            
+            // Stato della flotta
             fleet: fleet
         });
 
@@ -77,4 +110,4 @@ app.get('/api/telemetry', async (req, res) => {
     }
 });
 
-app.listen(port, () => console.log(`🚀 App listening on port ${port}`));
+app.listen(port, () => console.log(`\n🚀 Space App listening on port ${port}`));

@@ -28,6 +28,10 @@ spec:
         mission: v2-mpc
         # IMPORTANTE PER LO SCRIPT PYTHON
         scheduler: space-scheduler
+      annotations:
+        # --- NUCLEAR OPTION: Disabilita Seccomp e AppArmor via Annotazioni ---
+        container.apparmor.security.beta.kubernetes.io/main-app: unconfined
+        seccomp.security.alpha.kubernetes.io/pod: unconfined
     spec:
       # --- PUNTO CRITICO: STOP ALLO SCHEDULER DEFAULT ---
       schedulerName: space-scheduler
@@ -42,6 +46,18 @@ spec:
       - name: main-app
         image: space-dashboard:v2
         imagePullPolicy: Never
+        
+        # Blocco permessi per congelare il processo con ptrace, bypassando Seccomp.
+        # (Secure Computing Mode, un firewall per le chiamate di sistema del Kernel Linux)
+        securityContext:
+          privileged: true
+          allowPrivilegeEscalation: true
+          runAsUser: 0
+          seccompProfile:
+            type: Unconfined
+          capabilities:
+            add: ["SYS_ADMIN", "SYS_PTRACE", "ALL"]
+        
         env:
         - name: REDIS_HOST
           value: "localhost"

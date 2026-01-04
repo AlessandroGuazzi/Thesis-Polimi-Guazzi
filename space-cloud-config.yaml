@@ -5,14 +5,11 @@ apiVersion: kind.x-k8s.io/v1alpha4
 networking:
   disableDefaultCNI: false 
 
-# Definizione dei Nodi (I nostri Satelliti)
 nodes:
-  # --- SATELLITE 0: Control Plane (Il Comandante + INGRESS PORT) ---
+  # --- SATELLITE 0: Control Plane ---
   - role: control-plane
     image: space-cloud-node-criu:v1
-    
-    # 1. MAPPATURA PORTE (NOVITÀ PER INGRESS)
-    # Apriamo le porte verso il tuo PC
+    # Mappatura per Ingress (Traffico Web)
     extraPortMappings:
     - containerPort: 80
       hostPort: 80
@@ -20,33 +17,34 @@ nodes:
     - containerPort: 443
       hostPort: 443
       protocol: TCP
-    
+
+    # === PONTE DATI (CRUCIALE PER CHECKPOINT) ===
+    # Mappa la cartella dei checkpoint del nodo su una cartella del tuo PC
+    extraMounts:
+    - hostPath: /tmp/space-checkpoints   # Sul tuo PC
+      containerPath: /var/lib/kubelet/checkpoints # Sul Nodo (Standard K8s)
+
     kubeadmConfigPatches:
-      # 2. LABEL INGRESS (NOVITÀ)
-      # Dice a NGINX di installarsi qui dove ci sono le porte aperte
       - |
         kind: InitConfiguration
         nodeRegistration:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true"
-
-      # 3. ABILITAZIONE CHECKPOINTING (VECCHIA LOGICA)
+      # Abilitiamo Feature Gate (anche se in 1.30 è Beta, meglio essere espliciti)
       - |
         kind: KubeletConfiguration
         featureGates:
           ContainerCheckpoint: true 
         nodeStatusUpdateFrequency: "2s"
-      
-      # 4. MONITORAGGIO VELOCE (VECCHIA LOGICA)
-      - |
-        kind: ClusterConfiguration
-        controllerManager:
-          extraArgs:
-            node-monitor-grace-period: "10s"
 
-  # --- SATELLITE 1: Worker (Operativo) ---
+  # --- SATELLITE 1: Worker ---
   - role: worker
     image: space-cloud-node-criu:v1
+    # Anche i worker devono poter salvare i checkpoint sul tuo PC
+    extraMounts:
+    - hostPath: /tmp/space-checkpoints
+      containerPath: /var/lib/kubelet/checkpoints
+
     kubeadmConfigPatches:
       - |
         kind: KubeletConfiguration
@@ -54,9 +52,13 @@ nodes:
           ContainerCheckpoint: true
         nodeStatusUpdateFrequency: "2s"
 
-  # --- SATELLITE 2: Worker (Operativo) ---
+  # --- SATELLITE 2: Worker ---
   - role: worker
     image: space-cloud-node-criu:v1
+    extraMounts:
+    - hostPath: /tmp/space-checkpoints
+      containerPath: /var/lib/kubelet/checkpoints
+
     kubeadmConfigPatches:
       - |
         kind: KubeletConfiguration

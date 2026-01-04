@@ -14,6 +14,10 @@ venv/
 .venv/
 env/
 
+criu.tar.gz
+criu_3.17.1-2+deb12u2_amd64.deb
+minikube-linux-amd64
+
 # --- Node.js (per la cartella satellite) ---
 # Le dipendenze si installano con 'npm install', non si committano
 node_modules/

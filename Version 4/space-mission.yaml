@@ -1,14 +1,78 @@
+# 1. IL SERVICE (Punto di accesso per l'Ingress)
 apiVersion: v1
-kind: Pod
+kind: Service
 metadata:
-  name: counter-pod
-  labels:
-    app: counter
+  name: space-mission-service
 spec:
-  containers:
-  - name: main-app
-    image: localhost/space-counter:latest # Immagine che creeremo
-    imagePullPolicy: Never
-    securityContext:
-      privileged: true
-  nodeName: minikube # Forziamo il nodo per semplicità
+  selector:
+    app: space-mission
+  ports:
+    - protocol: TCP
+      port: 80        # Porta esposta all'interno del cluster
+      targetPort: 80  # Porta aperta dal container Node.js
+  type: ClusterIP
+
+---
+# 2. IL CARICO DI LAVORO (Deployment)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: space-mission
+  labels:
+    app: space-mission
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: space-mission
+  template:
+    metadata:
+      labels:
+        app: space-mission
+      annotations:
+        container.apparmor.security.beta.kubernetes.io/main-app: unconfined
+    spec:
+      # === VINCOLO SPAZIALE ===
+      # Questo pod può girare SOLO sui nodi satellite (m02, m03)
+      nodeSelector:
+        type: satellite
+
+      volumes:
+        - name: checkpoint-storage
+          hostPath:
+            # Questa è la cartella SUL NODO (dove demo_migration.sh copia il file)
+            path: /var/lib/kubelet/checkpoints
+            type: DirectoryOrCreate
+
+      containers:
+      - name: main-app
+        # Usiamo la nuova immagine "intelligente" con Dashboard
+        image: localhost/space-dashboard:v28-immortal
+        imagePullPolicy: Never # Usa l'immagine costruita localmente
+
+        ports:
+        - containerPort: 80 # Espone la Dashboard
+
+        # Variabili d'ambiente per il software di bordo
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+
+        volumeMounts:
+          - name: checkpoint-storage
+            # Questa è la cartella DENTRO IL CONTAINER (dove entrypoint.sh guarda)
+            mountPath: /restore-pool
+
+        # === ABILITAZIONE CRIU ===
+        # Fondamentale per accedere alle syscall del kernel
+        securityContext:
+          privileged: true
+          # Disabilita esplicitamente AppArmor per il container 'main-app'
+          appArmorProfile:
+            type: Unconfined

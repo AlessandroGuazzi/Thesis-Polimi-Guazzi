@@ -2,6 +2,9 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: space-ingress
+  annotations:
+    # Rewrite target non necessario se l'app risponde su /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   rules:
   - http:
@@ -10,6 +13,6 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: space-mission-service  # Assicurati che il tuo Service si chiami così!
+            name: space-mission-service # Deve matchare il nome nel space-mission.yaml
             port:
               number: 80

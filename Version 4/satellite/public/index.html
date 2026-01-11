@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>K8S ORBITAL COMMAND</title>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-deep: #02060c;
+            --panel-glass: rgba(20, 30, 50, 0.6);
+            --neon-blue: #00f3ff;
+            --neon-purple: #bd00ff;
+            --neon-green: #00ff41;
+            --neon-orange: #ff9d00;
+            --neon-red: #ff2a2a;
+            --text-dim: #a0b0c0;
+            --text-bright: #ffffff;
+        }
+
+        body {
+            background-color: var(--bg-deep);
+            /* Sfondo Spaziale Moderno con Griglia Esagonale */
+            background-image:
+                radial-gradient(circle at 50% 50%, rgba(0, 243, 255, 0.1) 0%, transparent 60%),
+                repeating-linear-gradient(60deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 30px),
+                repeating-linear-gradient(-60deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 30px);
+            background-size: 100% 100%, 70px 120px, 70px 120px;
+
+            color: var(--text-dim);
+            font-family: 'Rajdhani', sans-serif;
+            margin: 0;
+            padding: 25px;
+            height: 100vh;
+            box-sizing: border-box;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- HEADER MODERNIZZATO --- */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(0, 243, 255, 0.3);
+            background: linear-gradient(90deg, rgba(0,243,255,0.1) 0%, transparent 100%);
+        }
+
+        h1 {
+            margin: 0;
+            font-weight: 700;
+            font-size: 28px;
+            color: var(--text-bright);
+            letter-spacing: 2px;
+        }
+        h1 .accent { color: var(--neon-blue); }
+
+        .mission-timer-box { text-align: right; }
+        .timer-label { font-size: 12px; letter-spacing: 1px; color: var(--neon-blue); }
+        .timer-val { font-size: 36px; font-weight: 700; color: var(--text-bright); text-shadow: 0 0 10px var(--neon-blue); }
+
+        /* --- LAYOUT PRINCIPALE --- */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 320px 1fr 350px;
+            gap: 25px;
+            flex: 1;
+            min-height: 0;
+        }
+
+        /* --- PANNELLI GLASSMORPHISM --- */
+        .panel {
+            background: var(--panel-glass);
+            /* Effetto Vetro Sfocato */
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+        /* Bordo superiore luminoso */
+        .panel::before {
+            content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 2px;
+            background: linear-gradient(90deg, var(--neon-blue), transparent);
+            opacity: 0.7;
+        }
+
+        .panel h3 {
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-bright);
+            letter-spacing: 1px;
+            display: flex; align-items: center;
+        }
+        .panel h3::before { content: '►'; color: var(--neon-blue); margin-right: 10px; font-size: 14px; }
+
+        /* --- STATI & INDICATORI --- */
+        .status-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; font-size: 16px; }
+        .status-label { font-weight: 600; }
+        .status-val { font-weight: 700; color: var(--text-bright); display: flex; align-items: center;}
+
+        /* Indicatori luminosi */
+        .indicator { width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; box-shadow: 0 0 8px currentColor; }
+        .status-val.active { color: var(--neon-green); } .status-val.active .indicator { background: var(--neon-green); }
+        .status-val.warning { color: var(--neon-orange); } .status-val.warning .indicator { background: var(--neon-orange); }
+        .status-val.danger { color: var(--neon-red); } .status-val.danger .indicator { background: var(--neon-red); }
+        .status-val.connecting { color: var(--neon-blue); } .status-val.connecting .indicator { background: var(--neon-blue); }
+
+        /* --- VISUALIZZATORE ORBITALE (CENTRO) --- */
+        .orbit-container {
+            align-items: center; justify-content: center;
+            background: radial-gradient(circle at center, rgba(0,243,255,0.05) 0%, transparent 70%);
+        }
+
+        /* Luce Solare */
+        .sun-source {
+            position: absolute; right: -50px; top: 0; bottom: 0; width: 100px;
+            background: radial-gradient(circle at center, rgba(255,200,50,0.4) 0%, transparent 70%);
+            filter: blur(30px); z-index: 0;
+        }
+
+        /* L'Anello Orbitale */
+        .orbit-ring {
+            width: 450px; height: 450px;
+            border: 2px solid rgba(0, 243, 255, 0.2);
+            border-radius: 50%; position: relative;
+            /* Ombra sottile sulla destra invece del cono netto */
+            background: linear-gradient(to right, transparent 40%, rgba(0,0,0,0.6) 100%);
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
+        }
+
+        .earth {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 80px; height: 80px; background: #1a355e; border-radius: 50%;
+            box-shadow: 0 0 30px #2a559e; z-index: 10;
+            display: flex; justify-content: center; align-items: center; font-weight: 700; color: #fff;
+        }
+
+        /* Satelliti */
+        .sat-marker {
+            position: absolute; width: 36px; height: 36px;
+            background: #1a1a1a; border: 2px solid #444; border-radius: 50%;
+            display: flex; justify-content: center; align-items: center; z-index: 20;
+            transition: all 1s cubic-bezier(0.25, 0.8, 0.25, 1); /* Movimento fluido */
+        }
+
+        /* Satellite Attivo (Pulsante) */
+        .sat-marker.active-mission {
+            border-color: var(--neon-green); background: rgba(0, 255, 65, 0.1);
+            box-shadow: 0 0 20px var(--neon-green);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse { 0% { box-shadow: 0 0 15px var(--neon-green); } 50% { box-shadow: 0 0 25px var(--neon-green), 0 0 10px var(--neon-green) inset; } 100% { box-shadow: 0 0 15px var(--neon-green); } }
+
+        .sat-label { position: absolute; top: -25px; white-space: nowrap; font-weight: 600; color: var(--neon-blue); text-shadow: 0 0 5px rgba(0,243,255,0.5); }
+
+        /* --- LISTA FLOTTA (DESTRA) --- */
+        .fleet-item {
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px; padding: 12px; margin-bottom: 12px;
+            border-left: 3px solid transparent;
+            transition: all 0.3s ease;
+        }
+        .fleet-item.active { border-left-color: var(--neon-green); background: linear-gradient(90deg, rgba(0,255,65,0.1) 0%, transparent 100%); }
+
+        .fleet-header { display: flex; justify-content: space-between; margin-bottom: 8px; font-weight: 600; color: var(--text-bright); }
+        .fleet-sub { font-size: 14px; color: var(--text-dim); display: flex; justify-content: space-between; }
+
+        /* Barre Batteria Moderne */
+        .bar-container { height: 6px; background: rgba(0,0,0,0.5); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+
+        /* --- LOGS (BASSO) --- */
+        .log-panel {
+            margin-top: 25px; height: 140px; overflow-y: auto;
+            background: rgba(0,0,0,0.8); border-radius: 12px; padding: 15px;
+            font-family: monospace; font-size: 13px; border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .log-entry { margin-bottom: 4px; }
+        .log-time { color: var(--neon-blue); margin-right: 10px; }
+        .log-msg.warn { color: var(--neon-orange); }
+        .log-msg.success { color: var(--neon-green); }
+
+        /* --- OVERLAY MIGRAZIONE --- */
+        #alert-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(2, 6, 12, 0.9); backdrop-filter: blur(20px);
+            display: none; justify-content: center; align-items: center; flex-direction: column; z-index: 100;
+        }
+        .alert-box {
+            padding: 50px; background: linear-gradient(145deg, rgba(255,42,42,0.1), transparent);
+            border: 2px solid var(--neon-red); border-radius: 20px; text-align: center;
+            box-shadow: 0 0 100px rgba(255,42,42,0.3);
+        }
+        .blink-text { animation: blinker 1.5s linear infinite; color: var(--neon-red); font-size: 32px; font-weight: 700; margin-bottom: 20px; }
+        @keyframes blinker { 50% { opacity: 0.3; } }
+    </style>
+</head>
+<body>
+
+    <div id="alert-overlay">
+        <div class="alert-box">
+            <div class="blink-text">⚠️ HYPERSPACE JUMP INITIATED</div>
+            <p id="alert-msg" style="font-size: 18px; color: var(--text-bright);">Telemetry Uplink Paused. Establishing new connection path...</p>
+        </div>
+    </div>
+
+    <header>
+        <div>
+            <h1>K8S <span class="accent">ORBITAL</span> COMMAND</h1>
+            <small style="letter-spacing: 1px; opacity: 0.7;">CLUSTER: MINIKUBE V1.32 // NAMESPACE: DEFAULT</small>
+        </div>
+        <div class="mission-timer-box">
+            <div class="timer-label">MISSION ELAPSED TIME</div>
+            <div id="mission-timer" class="timer-val">T+00:00:00</div>
+        </div>
+    </header>
+
+    <div class="main-grid">
+
+        <div class="panel">
+            <h3>ACTIVE POD TELEMETRY</h3>
+
+            <div class="status-row">
+                <span class="status-label">POD IDENTITY</span>
+                <span id="sat-id" class="status-val connecting" style="font-family: monospace; font-size: 14px;"><div class="indicator"></div>INITIALIZING...</span>
+            </div>
+
+            <div class="status-row">
+                <span class="status-label">HOST NODE</span>
+                <span id="active-node" class="status-val active"><div class="indicator"></div>UNKNOWN</span>
+            </div>
+
+            <div class="status-row">
+                <span class="status-label">UPLINK STATUS</span>
+                <span id="conn-status" class="status-val connecting"><div class="indicator"></div>CONNECTING</span>
+            </div>
+
+            <div style="margin-top: auto; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px;">
+                <div style="font-weight: 600; margin-bottom: 10px; color: var(--neon-blue)">SYSTEM HEALTH</div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 14px;">
+                    <span>CPU LOAD</span><span style="color: var(--neon-green)">NOMINAL</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 14px;">
+                    <span>MEMORY STATE</span><span style="color: var(--neon-green)">PRESERVED</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel orbit-container">
+            <div class="sun-source"></div> <div class="orbit-ring">
+                <div class="earth">TERRA</div>
+                <div id="sat-layer"></div>
+            </div>
+
+            <div style="position: absolute; bottom: 20px; right: 20px; text-align: right; font-size: 12px;">
+                <div style="color: var(--neon-orange)">◀ SUNLIGHT VECTOR</div>
+                <div style="color: #555">ORBITAL PLANE: EQUATORIAL</div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>FLEET OVERVIEW</h3>
+            <div id="fleet-list">
+                <div style="text-align: center; padding: 20px; opacity: 0.5;">Acquiring Fleet Signals...</div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="log-panel" id="log-window">
+        </div>
+
+    <script>
+        // === UTILS (Modificati per supportare classi CSS nei log) ===
+        function log(msg, type = '') {
+            const win = document.getElementById('log-window');
+            const time = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            div.className = 'log-entry';
+            div.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-msg ${type}">${msg}</span>`;
+            win.appendChild(div);
+            win.scrollTop = win.scrollHeight;
+        }
+
+        function formatTime(seconds) {
+            const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
+            const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+            const s = (seconds % 60).toString().padStart(2, '0');
+            return `T+${h}:${m}:${s}`;
+        }
+
+        // === MAIN LOGIC (Invariata, solo aggiornamenti UI) ===
+        let telemetryInterval;
+        let isReconnecting = false;
+
+        async function fetchTelemetry() {
+            if (isReconnecting) return;
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 1000);
+
+                const response = await fetch('/api/telemetry', { signal: controller.signal });
+                clearTimeout(timeoutId);
+
+                if (!response.ok) throw new Error("Network response was not ok");
+
+                const data = await response.json();
+
+                // Check Flight Mode
+                if (data.flight_mode === true) {
+                    handleFlightMode();
+                    return;
+                }
+
+                // Normal Update
+                updateDashboard(data);
+                updateStatus('conn-status', 'ESTABLISHED', 'active');
+                document.getElementById('alert-overlay').style.display = "none";
+
+            } catch (error) {
+                // console.error(error); // Meno rumore in console
+                handleDisconnection();
+            }
+        }
+
+        // Helper per aggiornare stati con colori e indicatori
+        function updateStatus(elementId, text, type) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = `<div class="indicator"></div>${text}`;
+            el.className = `status-val ${type}`;
+        }
+
+        // === VISUALIZATION ENGINE ===
+        function updateDashboard(data) {
+            document.getElementById('sat-id').innerHTML = `<div class="indicator"></div>${data.satellite_id}`;
+            document.getElementById('sat-id').className = 'status-val connecting'; // Usa colore blu per ID
+
+            document.getElementById('mission-timer').innerText = formatTime(data.internal_state.mission_timer);
+
+            let fleet = {};
+            if(data.environment && data.environment.status !== "NO_DATA" && data.environment.status !== "MIGRATION_IN_PROGRESS") {
+                fleet = data.environment;
+            }
+
+            renderOrbit(fleet);
+            renderFleetPanel(fleet);
+        }
+
+        function renderOrbit(fleet) {
+            const layer = document.getElementById('sat-layer');
+            layer.innerHTML = '';
+            let activeNodeName = "UNKNOWN";
+
+            for (const [nodeName, stats] of Object.entries(fleet)) {
+                if(stats.type === 'ground') continue;
+
+                // Calcolo posizioni (Anello 450px -> Raggio 225px)
+                const radius = 225;
+                const rad = stats.angle * (Math.PI / 180);
+                const x = 225 + (radius * Math.cos(rad));
+                const y = 225 + (radius * Math.sin(rad));
+
+                const div = document.createElement('div');
+                div.className = 'sat-marker';
+                // Offset per centrare il marker (36px / 2 = 18px)
+                div.style.left = `${x - 18}px`;
+                div.style.top = `${y - 18}px`;
+
+                // Icona differenziata
+                div.innerHTML = stats.is_working ? "⚙️" : "🛰️";
+
+                const label = document.createElement('div');
+                label.className = 'sat-label';
+                label.innerText = nodeName.slice(-3).toUpperCase();
+                div.appendChild(label);
+
+                if(stats.is_working) {
+                    div.classList.add('active-mission');
+                    activeNodeName = nodeName;
+                }
+                layer.appendChild(div);
+            }
+            updateStatus('active-node', activeNodeName.toUpperCase(), activeNodeName !== 'UNKNOWN' ? 'active' : 'danger');
+        }
+
+        function renderFleetPanel(fleet) {
+            const list = document.getElementById('fleet-list');
+            list.innerHTML = '';
+
+            for (const [nodeName, stats] of Object.entries(fleet)) {
+                const item = document.createElement('div');
+                item.className = `fleet-item ${stats.is_working ? 'active' : ''}`;
+
+                // Colori Batteria (Gradienti)
+                let batColor = 'linear-gradient(90deg, #00ff41, #00bd2f)'; // Green
+                let statusType = 'active';
+                if(stats.battery < 50) { batColor = 'linear-gradient(90deg, #ff9d00, #cc7d00)'; statusType = 'warning'; }
+                if(stats.battery < 20) { batColor = 'linear-gradient(90deg, #ff2a2a, #cc2222)'; statusType = 'danger'; }
+
+                const icon = stats.type === 'ground' ? '🌍' : (stats.eclipse ? '🌑 ECLIPSE' : '☀️ SUNLIGHT');
+                const workStatus = stats.is_working ? '<span style="color: var(--neon-green)">● ACTIVE TASK</span>' : '<span style="opacity:0.5">○ IDLE</span>';
+
+                item.innerHTML = `
+                    <div class="fleet-header">
+                        <span>${nodeName.toUpperCase()}</span>
+                        <span>${workStatus}</span>
+                    </div>
+                    <div class="fleet-sub">
+                        <span>STATUS: ${icon}</span>
+                        <span>TEMP: ${stats.temp}°C</span>
+                    </div>
+                    <div style="margin-top: 8px; font-size: 12px; display: flex; justify-content: space-between;">
+                        <span>BATTERY LEVEL</span><span>${stats.battery}%</span>
+                    </div>
+                    <div class="bar-container">
+                        <div class="bar-fill" style="width: ${stats.battery}%; background: ${batColor}"></div>
+                    </div>
+                `;
+                list.appendChild(item);
+            }
+        }
+
+
+        // === HANDLE EVENTS ===
+
+        function handleFlightMode() {
+            document.getElementById('alert-overlay').style.display = "flex";
+            updateStatus('conn-status', 'FLIGHT MODE ENGAGED', 'warning');
+
+            log("⚠️ JUMP SEQUENCE INITIATED. Uplink paused for migration.", 'warn');
+
+            clearInterval(telemetryInterval);
+
+            log("Scheduling reconnection attempt in 10s...");
+            setTimeout(() => {
+                log("♻️ Attempting to re-acquire signal...", 'connecting');
+                startReconnectionLoop();
+            }, 10000);
+        }
+
+        function handleDisconnection() {
+            updateStatus('conn-status', 'SIGNAL LOST', 'danger');
+            // log("Uplink unstable...", 'danger'); // Troppo spam
+        }
+
+        function startReconnectionLoop() {
+            isReconnecting = true;
+            const reconInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/telemetry');
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (!data.flight_mode) {
+                            log("✅ SIGNAL ACQUIRED. Handshake successful.", 'success');
+
+                            clearInterval(reconInterval);
+                            isReconnecting = false;
+                            document.getElementById('alert-overlay').style.display = "none";
+                            telemetryInterval = setInterval(fetchTelemetry, 1000);
+                            updateDashboard(data);
+                        }
+                    }
+                } catch (e) {}
+            }, 2000);
+        }
+
+        // Init
+        telemetryInterval = setInterval(fetchTelemetry, 1000);
+        log("Orbital Command Systems Online. Initializing fleet handshake...", 'connecting');
+
+    </script>
+</body>
+</html>

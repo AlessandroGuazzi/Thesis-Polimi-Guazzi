@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# SPACE MISSION MIGRATION - BUILDAH STRATEGY (V2 - PERMISSION FIX)
+# SPACE MISSION MIGRATION V3.3 - POST-RESTORE HOOK
+# Fix: Automatizza il 'wake_up' eseguendolo live sul container ripristinato
 # ==============================================================================
 
 if [ "$#" -ne 2 ]; then
@@ -22,7 +23,7 @@ CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${CYAN}🚀 INIZIO MIGRAZIONE ROBUSTA (BUILDAH): $SOURCE_NODE -> $DEST_NODE${NC}"
+echo -e "${CYAN}🚀 INIZIO MIGRAZIONE AUTOMATICA: $SOURCE_NODE -> $DEST_NODE${NC}"
 
 # 1. TROVA IL POD
 POD_NAME=$(kubectl get pod -l $POD_LABEL --field-selector spec.nodeName=$SOURCE_NODE -o jsonpath="{.items[0].metadata.name}")
@@ -50,7 +51,6 @@ sleep 2
 API_URL="http://127.0.0.1:$PROXY_PORT/api/v1/nodes/$SOURCE_NODE/proxy/checkpoint/default/$POD_NAME/main-app"
 echo "📸 Richiesta snapshot..."
 
-# Loop di tentativi
 for i in {1..5}; do
     RESPONSE=$(curl -X POST -s "$API_URL")
     if [[ "$RESPONSE" == *"/var/lib/kubelet/checkpoints"* ]]; then
@@ -72,20 +72,14 @@ fi
 
 kill $PROXY_PID
 
-# 3. TRASFERIMENTO (CON FIX PERMESSI)
-echo -e "${CYAN}--- FASE 2: TRASFERIMENTO & COSTRUZIONE IMMAGINE ---${NC}"
+# 3. TRASFERIMENTO
+echo -e "${CYAN}--- FASE 2: TRASFERIMENTO & COSTRUZIONE ---${NC}"
 mkdir -p $TRANSIT_DIR
 rm -rf $TRANSIT_DIR/*
 
-# === FIX PERMESSI: Copia in /tmp e chmod ===
-echo "🔓 Sblocco permessi file sul nodo sorgente..."
+echo "🔓 Prelievo archivio..."
 minikube ssh -n $SOURCE_NODE "sudo cp $REMOTE_PATH /tmp/$ARCHIVE_NAME && sudo chmod 644 /tmp/$ARCHIVE_NAME"
-
-echo "⬇️  Scaricamento da $SOURCE_NODE..."
-# Scarichiamo dalla cartella /tmp dove abbiamo permessi di lettura
 minikube cp "$SOURCE_NODE:/tmp/$ARCHIVE_NAME" "$TRANSIT_DIR/$ARCHIVE_NAME"
-
-# Pulizia sul nodo sorgente
 minikube ssh -n $SOURCE_NODE "sudo rm /tmp/$ARCHIVE_NAME"
 
 if [ ! -f "$TRANSIT_DIR/$ARCHIVE_NAME" ]; then
@@ -94,30 +88,28 @@ if [ ! -f "$TRANSIT_DIR/$ARCHIVE_NAME" ]; then
 fi
 
 echo "⬆️  Caricamento su $DEST_NODE..."
-# Copiamo il file in una cartella temporanea sul nodo destinazione
 minikube cp "$TRANSIT_DIR/$ARCHIVE_NAME" "$DEST_NODE:/tmp/checkpoint.tar"
 
-# 4. BUILDAH MAGIC (Sul nodo destinazione)
-echo "🔨 Costruzione immagine ripristinata su $DEST_NODE..."
+# 4. BUILDAH (Struttura Base)
+echo "🔨 Costruzione immagine su $DEST_NODE..."
 
 BUILD_SCRIPT="
 set -e
-# 1. Pulizia
 sudo buildah rm restoration-lab 2>/dev/null || true
-
-# 2. Creiamo un container 'scratch' (vuoto)
 sudo buildah from --name restoration-lab scratch
-
-# 3. Aggiungiamo il checkpoint alla root
 sudo buildah add restoration-lab /tmp/checkpoint.tar /
 
-# 4. Configuriamo l'annotazione magica per CRI-O
+# === PREPARAZIONE FILESYSTEM ===
+# Creiamo solo le cartelle necessarie. Il file 'landed' lo creeremo LIVE dopo il restore.
+MNT=\$(sudo buildah mount restoration-lab)
+sudo mkdir -p \"\$MNT/tmp\"
+# Rimuoviamo il vecchio segnale di salto se presente
+sudo rm -f \"\$MNT/tmp/prepare_jump\"
+sudo buildah unmount restoration-lab
+# ===============================
+
 sudo buildah config --annotation \"io.kubernetes.cri-o.annotations.checkpoint.name=main-app\" restoration-lab
-
-# 5. Creiamo l'immagine finale
 sudo buildah commit restoration-lab $RESTORED_IMAGE
-
-# 6. Pulizia
 sudo buildah rm restoration-lab
 sudo rm /tmp/checkpoint.tar
 "
@@ -125,21 +117,47 @@ sudo rm /tmp/checkpoint.tar
 minikube ssh -n $DEST_NODE "$BUILD_SCRIPT"
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✅ Immagine $RESTORED_IMAGE costruita con successo!${NC}"
+    echo -e "${GREEN}✅ Immagine pronta.${NC}"
 else
-    echo -e "${RED}❌ Errore durante la build dell'immagine.${NC}"
+    echo -e "${RED}❌ Errore build.${NC}"
     exit 1
 fi
 
-# 5. RESTORE
-echo -e "${CYAN}--- FASE 3: RICONFIGURAZIONE ORBITALE ---${NC}"
+# 5. RESTORE & WAKE UP
+echo -e "${CYAN}--- FASE 3: SWITCHOVER & WAKE UP ---${NC}"
 
-echo "🔧 Patching Deployment..."
-# Patchamo per usare la nuova immagine
-kubectl patch deployment space-mission --patch "{\"spec\": {\"template\": {\"spec\": {\"containers\": [{\"name\": \"main-app\", \"image\": \"$RESTORED_IMAGE\"}]}}}}"
+echo "🛑 1. Spegnimento vecchio deployment..."
+kubectl scale deployment space-mission --replicas=0
+kubectl wait --for=delete pod/$POD_NAME --timeout=60s 2>/dev/null || sleep 2
 
-echo "💀 Cancellazione vecchio Pod (Force)..."
-kubectl delete pod $POD_NAME --grace-period=0 --force >/dev/null 2>&1
+echo "📌 2. Vincolo sul nodo destinazione ($DEST_NODE)..."
+kubectl patch deployment space-mission --type='json' -p="[{\"op\": \"add\", \"path\": \"/spec/template/spec/nodeSelector/kubernetes.io~1hostname\", \"value\": \"$DEST_NODE\"}]"
 
-echo -e "${GREEN}🎉 MIGRAZIONE COMPLETATA!${NC}"
-echo "Il nuovo pod userà l'immagine '$RESTORED_IMAGE' che contiene la memoria RAM."
+echo "🖼️  3. Impostazione immagine..."
+kubectl set image deployment/space-mission main-app=$RESTORED_IMAGE
+
+echo "🚀 4. Avvio nuovo Pod..."
+kubectl scale deployment space-mission --replicas=1
+
+echo "⏳ Attesa disponibilità nuovo Pod..."
+# Aspettiamo che Kubernetes assegni il nome e che il container sia creato
+sleep 5
+NEW_POD=$(kubectl get pod -l $POD_LABEL -o jsonpath="{.items[0].metadata.name}")
+
+if [ -z "$NEW_POD" ]; then
+     echo "⚠️ Pod non trovato subito, attendo..."
+     sleep 5
+     NEW_POD=$(kubectl get pod -l $POD_LABEL -o jsonpath="{.items[0].metadata.name}")
+fi
+
+echo "   Pod identificato: $NEW_POD"
+echo "   Attesa stato 'Running'..."
+kubectl wait --for=condition=Ready pod/$NEW_POD --timeout=60s
+
+# === POST-RESTORE HOOK (AUTOMATIC WAKE UP) ===
+echo -e "${GREEN}🔔 INVIO SEGNALE DI ATTERRAGGIO AUTOMATICO...${NC}"
+kubectl exec $NEW_POD -- touch /tmp/landed
+echo -e "${GREEN}✅ Satellite svegliato con successo!${NC}"
+# ==============================================
+
+echo -e "${CYAN}🎉 MIGRAZIONE COMPLETATA!${NC}"

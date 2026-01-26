@@ -29,8 +29,6 @@ spec:
     metadata:
       labels:
         app: space-mission
-      annotations:
-        container.apparmor.security.beta.kubernetes.io/main-app: unconfined
     spec:
       # === VINCOLO SPAZIALE ===
       # Questo pod può girare SOLO sui nodi satellite (m02, m03)
@@ -47,7 +45,7 @@ spec:
       containers:
       - name: main-app
         # Usiamo la nuova immagine "intelligente" con Dashboard
-        image: localhost/space-dashboard:v28-immortal
+        image: localhost/space-dashboard:native
         imagePullPolicy: Never # Usa l'immagine costruita localmente
 
         ports:

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-# 🎮 SPACE MISSION CONTROL CENTER V4.5 (Full Autonomy)
+# 🎮 SPACE MISSION CONTROL CENTER V4.6 (Stable Dashboard)
 # Avvia: Redis Tunnel + Physics Engine + Scheduler IA + Dashboard
 # ============================================================
 
@@ -11,7 +11,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${BLUE}🚀 INIZIALIZZAZIONE MISSION CONTROL V4.5...${NC}"
+echo -e "${BLUE}🚀 INIZIALIZZAZIONE MISSION CONTROL V4.6...${NC}"
 
 # Check prerequisiti
 if ! kubectl get svc system-redis >/dev/null 2>&1; then
@@ -67,22 +67,24 @@ python3 space_scheduler.py &
 SCHEDULER_PID=$!
 echo -e "${GREEN}   -> Scheduler Brain: ONLINE (PID: $SCHEDULER_PID)${NC}"
 
-# --- 5. AVVIO DASHBOARD ---
+# --- 5. AVVIO DASHBOARD (STABLE SERVICE LINK) ---
 echo -e "${YELLOW}[4/4] Connessione Dashboard (Port 8080)...${NC}"
-echo -e "${BLUE}ℹ️  Il sistema gestirà le riconnessioni durante la migrazione.${NC}"
 
+# A. Creiamo il Service stabile se non esiste
+if ! kubectl get svc space-mission >/dev/null 2>&1; then
+    echo -e "${BLUE}ℹ️  Creazione Service stabile per il tunneling...${NC}"
+    kubectl expose deployment space-mission --type=NodePort --port=80 --name=space-mission
+fi
+
+# B. Avviamo il tunnel verso il SERVICE (non il Pod)
+# Questo tunnel sopravvive anche se il pod muore/migra!
 (
     while true; do
-        # Cerchiamo il nome del pod attivo dinamicamente
-        POD_NAME=$(kubectl get pod -l app=space-mission -o jsonpath="{.items[0].metadata.name}" 2>/dev/null)
+        # Puntiamo a svc/space-mission invece che a un pod specifico
+        kubectl port-forward svc/space-mission 8080:80 >/dev/null 2>&1
 
-        if [ ! -z "$POD_NAME" ]; then
-            # Tenta connessione (blocca finché non cade)
-            kubectl port-forward $POD_NAME 8080:80 >/dev/null 2>&1
-        fi
-
-        # Se arriviamo qui, il tunnel è caduto. Riprova tra 2 secondi.
-        sleep 2
+        # Se cade (es. durante lo switchover istantaneo), riprova subito
+        sleep 0.2
     done
 ) &
 

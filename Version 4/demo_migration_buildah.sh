@@ -124,40 +124,77 @@ else
 fi
 
 # 5. RESTORE & WAKE UP
-echo -e "${CYAN}--- FASE 3: SWITCHOVER & WAKE UP ---${NC}"
+echo -e "${CYAN}--- FASE 3: SWITCHOVER & WAKE UP (CLEAN TURBO) ---${NC}"
 
-echo "🛑 1. Spegnimento vecchio deployment..."
-kubectl scale deployment space-mission --replicas=0
-kubectl wait --for=delete pod/$POD_NAME --timeout=60s 2>/dev/null || sleep 2
+# A. PREPARAZIONE CONFIGURAZIONE
+# Aggiungiamo "terminationGracePeriodSeconds: 0" alla patch.
+# Questo dice a K8s: "Quando spegni questo pod, fallo ISTANTANEAMENTE", senza creare zombie.
+PATCH_JSON=$(cat <<EOF
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "terminationGracePeriodSeconds": 0,
+        "nodeSelector": {
+          "kubernetes.io/hostname": "$DEST_NODE"
+        },
+        "containers": [{
+          "name": "main-app",
+          "image": "$RESTORED_IMAGE"
+        }]
+      }
+    }
+  }
+}
+EOF
+)
 
-echo "📌 2. Vincolo sul nodo destinazione ($DEST_NODE)..."
-kubectl patch deployment space-mission --type='json' -p="[{\"op\": \"add\", \"path\": \"/spec/template/spec/nodeSelector/kubernetes.io~1hostname\", \"value\": \"$DEST_NODE\"}]"
+# B. APPLICAZIONE PATCH
+echo "⚡ Applicazione Switchover..."
+# Applichiamo la patch. Kubernetes vedrà il cambio nodo e creerà il nuovo pod.
+# Vedrà anche terminationGracePeriodSeconds: 0 e ucciderà il vecchio pod istantaneamente.
+kubectl patch deployment space-mission --type='strategic' -p "$PATCH_JSON"
 
-echo "🖼️  3. Impostazione immagine..."
-kubectl set image deployment/space-mission main-app=$RESTORED_IMAGE
+# C. PULIZIA VECCHIO POD (Opzionale ma utile per velocità)
+# Usiamo delete SENZA --force. Questo rispetta il protocollo Kubelet ed evita gli zombie.
+# Avendo impostato grace-period: 0 nella patch sopra, sarà comunque istantaneo.
+kubectl delete pod $POD_NAME --wait=false 2>/dev/null &
 
-echo "🚀 4. Avvio nuovo Pod..."
-kubectl scale deployment space-mission --replicas=1
+echo "⏳ Attesa nuovo Pod..."
+# Loop di controllo
+for i in {1..20}; do
+    NEW_POD=$(kubectl get pod -l $POD_LABEL --field-selector spec.nodeName=$DEST_NODE -o jsonpath="{.items[0].metadata.name}")
+    # Controlliamo che il nuovo pod esista e non sia quello vecchio (che sta morendo)
+    if [ ! -z "$NEW_POD" ] && [ "$NEW_POD" != "$POD_NAME" ]; then
+        echo "   Pod rilevato: $NEW_POD"
+        break
+    fi
+    sleep 0.5
+done
 
-echo "⏳ Attesa disponibilità nuovo Pod..."
-# Aspettiamo che Kubernetes assegni il nome e che il container sia creato
-sleep 5
-NEW_POD=$(kubectl get pod -l $POD_LABEL -o jsonpath="{.items[0].metadata.name}")
+if [ -z "$NEW_POD" ]; then echo "❌ Errore avvio pod"; exit 1; fi
 
-if [ -z "$NEW_POD" ]; then
-     echo "⚠️ Pod non trovato subito, attendo..."
-     sleep 5
-     NEW_POD=$(kubectl get pod -l $POD_LABEL -o jsonpath="{.items[0].metadata.name}")
-fi
+# D. WAKE UP IMMEDIATO (ROBUST)
+echo "   Attesa ContainerRunning..."
 
-echo "   Pod identificato: $NEW_POD"
-echo "   Attesa stato 'Running'..."
-kubectl wait --for=condition=Ready pod/$NEW_POD --timeout=60s
+# 1. Primo check: Aspettiamo che Kubernetes segni il container come avviato
+until kubectl get pod $NEW_POD -o jsonpath='{.status.containerStatuses[0].state.running.startedAt}' 2>/dev/null | grep -q "20"; do
+    sleep 0.1
+done
 
-# === POST-RESTORE HOOK (AUTOMATIC WAKE UP) ===
-echo -e "${GREEN}🔔 INVIO SEGNALE DI ATTERRAGGIO AUTOMATICO...${NC}"
-kubectl exec $NEW_POD -- touch /tmp/landed
-echo -e "${GREEN}✅ Satellite svegliato con successo!${NC}"
-# ==============================================
+echo -e "${GREEN}🔔 WAKE UP!${NC}"
+
+# 2. Secondo check: Tentiamo l'EXEC finché il container non è VERAMENTE pronto
+MAX_RETRIES=20
+COUNT=0
+until kubectl exec $NEW_POD -- touch /tmp/landed 2>/dev/null; do
+    echo "   ...connessione exec in corso..."
+    sleep 0.2
+    ((COUNT++))
+    if [ $COUNT -ge $MAX_RETRIES ]; then
+        echo -e "${RED}❌ Timeout Wake Up!${NC}"
+        exit 1
+    fi
+done
 
 echo -e "${CYAN}🎉 MIGRAZIONE COMPLETATA!${NC}"

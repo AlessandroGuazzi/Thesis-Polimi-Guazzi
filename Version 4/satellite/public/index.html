@@ -3,381 +3,275 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Space Cloud | Mission Control V3.1</title>
-    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Roboto+Mono&display=swap" rel="stylesheet">
+    <title>Space Cloud Mission Control</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-space: #0a0a12;
-            --bg-panel: #141420;
-            --text-primary: #e0e0ff;
-            --text-secondary: #8a8ab5;
-            --accent-blue: #00d2ff;
-            --accent-purple: #9d00ff;
-            --accent-sun: #ffdb4d;
-            --status-ok: #00ff9d;
-            --status-warn: #ffbb00;
-            --status-danger: #ff3366;
+            --ios-bg: #F5F5F7; --ios-card: #FFFFFF; --ios-text: #1D1D1F; --ios-subtext: #86868B;
+            --ios-border: #E5E5EA; --blue: #007AFF; --green: #34C759; --orange: #FF9500; --red: #FF3B30;
+            --radius-l: 24px; --radius-m: 20px;
+            --shadow-soft: 0 4px 12px rgba(0,0,0,0.03); --shadow-hover: 0 12px 32px rgba(0, 122, 255, 0.15);
         }
+        body { margin: 0; padding: 0; background-color: var(--ios-bg); font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif; height: 100vh; display: flex; flex-direction: column; color: var(--ios-text); overflow: hidden; }
 
-        body {
-            margin: 0;
-            padding: 20px;
-            background-color: var(--bg-space);
-            background-image: radial-gradient(circle at center, #1b1b2f 0%, #050508 80%);
-            color: var(--text-primary);
-            font-family: 'Roboto Mono', monospace;
-            overflow-x: hidden;
-        }
+        /* HEADER */
+        header { display: flex; justify-content: space-between; align-items: center; padding: 16px 32px; background: rgba(255,255,255,0.8); backdrop-filter: blur(20px); border-bottom: 1px solid var(--ios-border); z-index: 100; }
+        .brand { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; display: flex; gap: 10px; }
+        .pill-stack { display: flex; gap: 12px; }
+        .pill { background: var(--ios-bg); padding: 8px 16px; border-radius: 12px; font-size: 13px; font-weight: 600; color: var(--ios-subtext); display: flex; gap: 8px; align-items: center; }
+        .pill-val { color: var(--ios-text); font-weight: 700; font-feature-settings: "tnum"; }
 
-        /* --- HEADER & STATUS BAR --- */
-        #header {
-            text-align: center;
-            margin-bottom: 20px;
-        }
-        h1 {
-            font-family: 'Orbitron', sans-serif;
-            margin: 0;
-            color: var(--accent-blue);
-            text-shadow: 0 0 15px rgba(0, 210, 255, 0.4);
-            letter-spacing: 3px;
-        }
+        /* CONTENT */
+        .content-split { display: grid; grid-template-columns: 420px 1fr; gap: 32px; padding: 32px; height: 100%; overflow: hidden; }
 
-        .mission-status-bar {
-            display: flex;
-            justify-content: center;
-            gap: 20px;
-            margin-top: 15px;
-            padding: 10px;
-            background: rgba(20, 20, 32, 0.8);
-            border: 1px solid #333;
-            border-radius: 8px;
-            backdrop-filter: blur(5px);
-        }
+        /* RADAR */
+        .radar-panel { background: #E8E8ED; border-radius: var(--radius-l); position: relative; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 0 40px rgba(0,0,0,0.05); border: 1px solid rgba(255,255,255,0.5); }
+        .radar-ring { position: absolute; border-radius: 50%; border: 1px solid rgba(255,255,255,0.5); }
+        .ring-1 { width: 300px; height: 300px; border-color: rgba(0,0,0,0.05); }
+        .orbit-track { width: 280px; height: 280px; border-radius: 50%; border: 6px solid rgba(255,255,255,0.6); position: relative; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
+        .earth-3d { position: absolute; top: 50%; left: 50%; width: 80px; height: 80px; transform: translate(-50%, -50%); background: radial-gradient(circle at 30% 30%, #5AC8FA, #007AFF); border-radius: 50%; box-shadow: inset 0 4px 10px rgba(255,255,255,0.4), 0 10px 30px rgba(0, 122, 255, 0.3); z-index: 10; }
+        .night-slice { position: absolute; top: -10%; left: -10%; width: 120%; height: 120%; border-radius: 50%; filter: blur(20px); z-index: 0; background: conic-gradient(transparent 0deg 220deg, rgba(20,20,30,0.2) 220deg 320deg, transparent 320deg 360deg); }
+        .sat-arm { position: absolute; top: 0; left: 50%; width: 0; height: 50%; transform-origin: bottom center; z-index: 20; transition: transform 1s linear; }
+        .sat-tag { position: absolute; top: 0; left: 0; width: 36px; height: 36px; background: white; border-radius: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #1D1D1F; box-shadow: 0 2px 8px rgba(0,0,0,0.15); transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .sat-tag.active { background: var(--blue); color: white; transform: translate(-50%, -50%) scale(1.2); box-shadow: 0 8px 20px rgba(0, 122, 255, 0.4); z-index: 30; }
 
-        .status-item {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-width: 150px;
-        }
-        .status-label { font-size: 0.8em; color: var(--text-secondary); text-transform: uppercase; }
-        .status-value { font-size: 1.1em; font-weight: bold; color: white; font-family: 'Orbitron', sans-serif; }
-        .status-value.highlight { color: var(--accent-purple); text-shadow: 0 0 10px var(--accent-purple); }
+        /* CARDS */
+        .cards-list { display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(2, 1fr); gap: 24px; overflow-y: auto; padding: 10px; }
+        .cards-list::-webkit-scrollbar { width: 0; }
+        .apple-card { background: var(--ios-card); border-radius: var(--radius-m); padding: 32px; box-shadow: var(--shadow-soft); border: 1px solid transparent; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.4s ease, border-color 0.2s; cursor: default; }
+        .apple-card:hover { transform: translateY(-4px) scale(1.01); box-shadow: var(--shadow-hover); border-color: rgba(0, 122, 255, 0.3); z-index: 10; }
+        .apple-card.active-node { border: 2px solid rgba(0, 122, 255, 0.2); background: #F2F8FF; }
 
-        /* --- ORBITAL MAP VISUALIZER --- */
-        #orbit-system {
-            position: relative;
-            width: 400px;
-            height: 400px;
-            margin: 40px auto;
-            border-radius: 50%;
-            /* Orbit Path border */
-            border: 1px dashed rgba(255, 255, 255, 0.15);
-        }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .node-h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+        .node-sub { font-size: 13px; font-weight: 500; color: var(--ios-subtext); margin-top: 4px;}
+        .status-dot { height: 10px; width: 10px; border-radius: 50%; background: var(--ios-border); }
+        .active-node .status-dot { background: var(--blue); box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.15); }
 
-        /* 1. Earth (Center) */
-        .earth {
-            position: absolute;
-            top: 50%; left: 50%;
-            width: 60px; height: 60px;
-            transform: translate(-50%, -50%);
-            background: radial-gradient(circle at 30% 30%, #4facfe, #00f2fe);
-            border-radius: 50%;
-            box-shadow: 0 0 20px rgba(79, 172, 254, 0.6);
-            z-index: 10;
-            display: flex;
-            align-items: center; justify-content: center;
-            font-size: 1.5em;
-        }
+        .meter-box { margin-bottom: 24px; }
+        .meter-label { display: flex; justify-content: space-between; font-size: 14px; font-weight: 600; color: var(--ios-subtext); margin-bottom: 8px; }
+        .meter-val { font-weight: 700; font-size: 17px; font-feature-settings: "tnum"; color: var(--ios-text); }
+        .track { height: 12px; background: rgba(0,0,0,0.05); border-radius: 10px; overflow: hidden; }
+        .fill { height: 100%; border-radius: 10px; transition: width 0.6s ease; }
 
-        /* 2. The Sun (Directional Light Source) */
-        /* Located at Right (90deg) to oppose shadow at Left (270deg) */
-        .sun-indicator {
-            position: absolute;
-            top: 50%; left: 140%;
-            transform: translate(-50%, -50%);
-            font-size: 3em;
-            color: var(--accent-sun);
-            text-shadow: 0 0 30px var(--accent-sun);
-        }
+        .forecast-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 20px; border-top: 1px solid rgba(0,0,0,0.05); }
+        .f-item { display: flex; flex-direction: column; gap: 4px; }
+        .f-head { font-size: 11px; font-weight: 700; color: #98989D; text-transform: uppercase; letter-spacing: 0.5px; }
+        .f-stat { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 
-        /* 3. Shadow Cone (Eclipse Zone) */
-        /* Matches Physics Engine: 220deg to 320deg */
-        .shadow-cone {
-            position: absolute;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            border-radius: 50%;
-            background: conic-gradient(
-                transparent 0deg 220deg,
-                rgba(0, 0, 0, 0.7) 220deg 320deg, /* Dark Zone exact match */
-                transparent 320deg 360deg
-            );
-            pointer-events: none;
-            z-index: 1;
-        }
-        .shadow-label {
-            position: absolute;
-            bottom: 10%; left: 20%; /* Positioned near the shadow cone */
-            color: #555;
-            font-size: 0.8em;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-        }
-
-        /* 4. Satellites on Orbit */
-        .sat-marker {
-            position: absolute;
-            top: 0; left: 50%; /* Start at top center */
-            width: 0px; height: 50%; /* Height is radius */
-            transform-origin: bottom center; /* Rotate around earth */
-            z-index: 20;
-            transition: transform 1s linear; /* Smooth movement */
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: flex-start;
-        }
-
-        /* Il pallino del satellite */
-        .sat-body {
-            width: 16px; height: 16px;
-            background: #333;
-            border: 2px solid var(--accent-blue);
-            border-radius: 50%;
-            box-shadow: 0 0 5px var(--accent-blue);
-            margin-top: -8px; /* Center on the orbit line */
-            transition: all 0.3s;
-        }
-
-        /* L'etichetta sotto il satellite */
-        .sat-label {
-            margin-top: 5px;
-            font-size: 0.8em;
-            color: var(--text-secondary);
-            font-weight: bold;
-            text-shadow: 1px 1px 2px black;
-        }
-
-        /* Active Satellite Animation */
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(157, 0, 255, 0.7); border-color: #fff;}
-            70% { box-shadow: 0 0 0 15px rgba(157, 0, 255, 0); border-color: var(--accent-purple);}
-            100% { box-shadow: 0 0 0 0 rgba(157, 0, 255, 0); border-color: #fff;}
-        }
-
-        .sat-body.pulsing {
-            background: var(--accent-purple);
-            animation: pulse 2s infinite;
-        }
-
-        .sat-label.pulsing-text {
-            color: var(--accent-purple);
-        }
-
-        /* Ground Station Marker (Fixed) */
-        .ground-marker {
-            position: absolute;
-            top: 60%; left: 50%;
-            transform: translateX(-50%);
-            font-size: 0.8em;
-            color: #666;
-            z-index: 5;
-        }
-
-        /* --- CARDS GRID --- */
-        #dashboard-content {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            max-width: 1000px;
-            margin: 0 auto;
-        }
-
-        .node-card {
-            background: var(--bg-panel);
-            border: 1px solid #333;
-            border-radius: 6px;
-            padding: 15px;
-            position: relative;
-        }
-        .node-card.active-node {
-            border-color: var(--accent-purple);
-            box-shadow: 0 0 15px rgba(157, 0, 255, 0.15);
-        }
-        .card-title {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 1em;
-            color: white;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        /* Bars */
-        .metric-row { margin-bottom: 8px; }
-        .metric-meta { display: flex; justify-content: space-between; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 3px; }
-        .bar-bg { height: 6px; background: #222; border-radius: 3px; overflow: hidden; }
-        .bar-val { height: 100%; transition: width 0.5s; }
-
+        /* OVERLAYS */
+        #mig-overlay, #loader-overlay { display: none; position: fixed; inset: 0; background: rgba(255,255,255,0.7); backdrop-filter: blur(20px); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
+        .mig-box { background: white; padding: 40px; border-radius: 32px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); text-align: center; border: 1px solid rgba(0,0,0,0.05); }
+        .loader-spinner { width: 40px; height: 40px; border: 4px solid #E5E5EA; border-top: 4px solid var(--blue); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
+    <div id="loader-overlay" style="display:flex;">
+        <div class="loader-spinner"></div>
+        <div style="font-weight:600; color:var(--ios-subtext);">ACQUIRING SIGNAL...</div>
+    </div>
 
-    <div id="header">
-        <h1>🚀 Space Cloud Orbit</h1>
-
-        <div class="mission-status-bar">
-            <div class="status-item">
-                <span class="status-label">Vessel Identity</span>
-                <span id="pod-name-display" class="status-value">--</span>
-            </div>
-            <div class="status-item">
-                <span class="status-label">Active Node</span>
-                <span id="active-node-display" class="status-value highlight">--</span>
-            </div>
-            <div class="status-item">
-                <span class="status-label">Mission Time</span>
-                <span id="mission-time-display" class="status-value">T+0s</span>
-            </div>
+    <div id="mig-overlay">
+        <div class="mig-box">
+            <div style="font-size:48px; margin-bottom:16px;">🛫</div>
+            <h2 style="margin:0 0 8px 0;">Switching Satellite</h2>
+            <p style="color:var(--ios-subtext); margin:0;">Handing over active memory state...</p>
         </div>
     </div>
 
-    <div id="orbit-system">
-        <div class="earth">🌍</div>
-        <div class="ground-marker">📡 Ground</div>
+    <header>
+        <div class="brand"><span style="font-size:24px;">🛰️</span> SpaceCloud</div>
+        <div class="pill-stack">
+            <div class="pill"><span>POD</span><span class="pill-val" id="pod-id">--</span></div>
+            <div class="pill"><span>ACTIVE</span><span class="pill-val" id="active-node" style="color:var(--blue)">--</span></div>
+            <div class="pill"><span class="pill-val" id="mission-clock" style="font-family:monospace;">T+0s</span></div>
+        </div>
+    </header>
 
-        <div class="shadow-cone"></div>
-        <div class="shadow-label">Eclipse Zone</div>
-
-        <div class="sun-indicator">☀️</div>
-
-        <div id="satellites-layer"></div>
+    <div class="content-split">
+        <div class="radar-panel">
+            <div class="radar-ring ring-1"></div>
+            <div class="orbit-track">
+                <div class="earth-3d"></div> <div class="night-slice"></div> <div id="sat-layer"></div>
+            </div>
+            <div style="position:absolute; bottom:30px; font-size:11px; font-weight:700; color:var(--ios-subtext); letter-spacing:1px;">LIVE ORBIT TELEMETRY</div>
+        </div>
+        <div class="cards-list" id="dashboard-content"></div>
     </div>
 
-    <div id="loading" style="text-align:center; margin-top:20px; color:#666;">Waiting for telemetry link...</div>
-
-    <div id="dashboard-content"></div>
-
     <script>
-        function getBatteryColor(level) {
-            if (level > 60) return 'var(--status-ok)';
-            if (level > 25) return 'var(--status-warn)';
-            return 'var(--status-danger)';
+        // --- CONFIGURAZIONE ---
+        const REFRESH_RATE = 500;   // Aggiornamento ogni 0.5s
+        const FETCH_TIMEOUT = 2000; // Se il server non risponde in 2s, è un errore (evita blocchi infiniti)
+        const MAX_ERRORS_FOR_MIGRATION = 3; // Dopo 3 errori, consideriamo che stia migrando
+
+        // --- COLORI & UTILS ---
+        const C = { blue: '#007AFF', green: '#34C759', orange: '#FF9500', red: '#FF3B30', gray: '#8E8E93' };
+
+        function getBatColor(v) { return v > 50 ? C.green : (v > 25 ? C.orange : C.red); }
+        function getTempColor(v) { return v < 50 ? C.blue : (v < 85 ? C.orange : C.red); }
+
+        function getTrendAnalysis(current, forecast, type) {
+            if (current === undefined || forecast === undefined) return { arrow: '-', color: C.gray };
+            const delta = forecast - current;
+            if (Math.abs(delta) < 0.1) return { arrow: '•', color: C.green };
+            const arrow = delta >= 0 ? '↗' : '↘';
+            let color = C.gray;
+            if (type === 'temp') {
+                if (current < 0 && delta > 0) color = C.green;
+                else if (current > 50 && delta < 0) color = C.green;
+                else if (current < 10 && delta < 0) color = C.blue;
+                else if (current > 40 && delta > 0) color = C.red;
+            } else if (type === 'bat') {
+                if (delta > 0) color = C.green;
+                else if (current < 30 && delta < 0) color = C.red;
+            }
+            return { arrow, color };
         }
 
-        function getTempColor(temp) {
-            if (temp < 45) return '#00d2ff';
-            if (temp < 75) return 'var(--status-warn)';
-            return 'var(--status-danger)';
-        }
+        // --- CORE LOGIC (STATELESS) ---
+        let errorCounter = 0;
 
-        async function fetchData() {
+        async function masterLoop() {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+
             try {
-                const response = await fetch('/api/telemetry');
-                if (!response.ok) throw new Error("Network err");
+                // Cache busting + AbortSignal (Timeout)
+                const res = await fetch(`/api/telemetry?t=${Date.now()}`, {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId); // Ferma il timeout se la risposta arriva
 
-                const fullData = await response.json();
+                if (!res.ok) throw new Error("Server Error");
+                const data = await res.json();
 
-                // 1. Update Header Info
-                document.getElementById('pod-name-display').innerText = fullData.satellite_id || "Unknown";
-                document.getElementById('mission-time-display').innerText = `T+${fullData.internal_state.mission_timer}s`;
+                // === SUCCESSO: ABBIAMO I DATI ===
+                errorCounter = 0; // Reset contatore errori
 
-                const telemetry = fullData.environment;
-
-                if (!telemetry || telemetry.status === "NO_DATA") {
-                    document.getElementById('loading').style.display = 'block';
-                    return;
+                // 1. DECISIONE STATO: Siamo in volo o a terra?
+                if (data.flight_mode === true) {
+                    showMigrationUI();
+                } else {
+                    // Siamo ONLINE e STABILI
+                    showOrbitUI();
+                    updateDashboard(data);
                 }
-                document.getElementById('loading').style.display = 'none';
 
-                updateSystem(telemetry);
+            } catch (e) {
+                // === ERRORE: TIMEOUT O RETE ===
+                errorCounter++;
+                // console.warn(`Ping fallito (${errorCounter}):`, e.name);
 
-            } catch (error) {
-                console.error(error);
+                // Se fallisce troppe volte, assumiamo stia migrando (o sia morto)
+                if (errorCounter >= MAX_ERRORS_FOR_MIGRATION) {
+                    showMigrationUI();
+                } else {
+                    // Se è un piccolo glitch, mostra loader ma non l'aereo
+                    document.getElementById('loader-overlay').style.display = 'flex';
+                }
+            }
+
+            // Pianifica il prossimo frame SEMPRE, qualunque cosa succeda
+            setTimeout(masterLoop, REFRESH_RATE);
+        }
+
+        // --- GESTIONE UI ---
+        function showMigrationUI() {
+            const mig = document.getElementById('mig-overlay');
+            const load = document.getElementById('loader-overlay');
+
+            // Mostra l'aereo solo se non è già visibile (evita flicker)
+            if (mig.style.display !== 'flex') {
+                console.log("✈️ UI: Switching to Migration Mode");
+                mig.style.display = 'flex';
+            }
+            load.style.display = 'none';
+        }
+
+        function showOrbitUI() {
+            const mig = document.getElementById('mig-overlay');
+            const load = document.getElementById('loader-overlay');
+
+            // Nascondi tutto forzatamente
+            if (mig.style.display !== 'none') {
+                console.log("✅ UI: Switching to Orbit Mode");
+                mig.style.display = 'none';
+            }
+            load.style.display = 'none';
+        }
+
+        function updateDashboard(data) {
+            // Header
+            document.getElementById('pod-id').innerText = data.satellite_id || "Searching...";
+            document.getElementById('mission-clock').innerText = `T+${data.internal_state.mission_timer}s`;
+
+            // Rendering Griglia
+            if (data.environment && data.environment.status !== "NO_DATA") {
+                renderFleet(data.environment);
             }
         }
 
-        function updateSystem(telemetry) {
-            const cardContainer = document.getElementById('dashboard-content');
-            const satLayer = document.getElementById('satellites-layer');
+        function renderFleet(fleet) {
+            const grid = document.getElementById('dashboard-content');
+            const orbit = document.getElementById('sat-layer');
+            grid.innerHTML = ''; orbit.innerHTML = '';
 
-            cardContainer.innerHTML = '';
-            satLayer.innerHTML = '';
+            let activeName = "Scanning...";
 
-            let activeNodeName = "MIGRATING...";
+            Object.keys(fleet).sort().forEach(name => {
+                const sat = fleet[name];
+                if (typeof sat !== 'object') return;
 
-            // Sort keys
-            const sortedKeys = Object.keys(telemetry).sort();
+                const active = sat.is_working;
+                if(active) activeName = name;
 
-            sortedKeys.forEach(nodeName => {
-                const data = telemetry[nodeName];
-                const isActive = data.is_working;
-
-                if (isActive) activeNodeName = nodeName;
-
-                // --- 1. RENDER CARDS (Bottom) ---
-                const batColor = getBatteryColor(data.battery);
-                const tempColor = getTempColor(data.temp);
-                const tempPct = Math.min(100, Math.max(0, (data.temp + 20) / 1.2));
-
-                // Icona Ambiente: ☀️ se al sole, 🌑 se in eclissi (solo per satelliti)
-                let envIcon = "";
-                if (data.type !== 'ground') {
-                    envIcon = data.eclipse ? "🌑" : "☀️";
+                // Orbit Marker
+                if(sat.type !== 'ground') {
+                    const arm = document.createElement('div');
+                    arm.className = 'sat-arm'; arm.style.transform = `rotate(${sat.angle}deg)`;
+                    const tag = document.createElement('div');
+                    tag.className = `sat-tag ${active ? 'active' : ''}`;
+                    tag.innerText = name.split('-').pop().replace('m','');
+                    arm.appendChild(tag); orbit.appendChild(arm);
                 }
 
-                const cardHtml = `
-                <div class="node-card ${isActive ? 'active-node' : ''}">
-                    <div class="card-title">
-                        <span>${nodeName}</span>
-                        <span>${envIcon} <span style="font-size:0.8em; color:${data.type === 'ground' ? '#666' : 'var(--accent-blue)'}">${data.type.toUpperCase()}</span></span>
-                    </div>
+                // Card Stats
+                const batVal = sat.forecast?.bat_60s;
+                const tempVal = sat.forecast?.temp_60s;
+                const batTrend = getTrendAnalysis(sat.battery, batVal, 'bat');
+                const tempTrend = getTrendAnalysis(sat.temp, tempVal, 'temp');
 
-                    <div class="metric-row">
-                        <div class="metric-meta"><span>BATTERY</span><span>${data.battery.toFixed(0)}%</span></div>
-                        <div class="bar-bg"><div class="bar-val" style="width:${data.battery}%; background:${batColor}"></div></div>
+                const html = `
+                <div class="apple-card ${active ? 'active-node' : ''}">
+                    <div class="card-header">
+                        <div>
+                            <div class="node-h1">${name}</div>
+                            <div class="node-sub">${sat.type === 'ground' ? 'Ground Control' : (sat.eclipse ? 'Dark Side 🌑' : 'Sunlight ☀️')}</div>
+                        </div>
+                        <div class="status-dot"></div>
                     </div>
-
-                    <div class="metric-row">
-                        <div class="metric-meta"><span>TEMP</span><span>${data.temp.toFixed(0)}°C</span></div>
-                        <div class="bar-bg"><div class="bar-val" style="width:${tempPct}%; background: linear-gradient(90deg, #00d2ff, ${tempColor})"></div></div>
+                    <div class="meter-box">
+                        <div class="meter-label"><span>Battery</span><span class="meter-val" style="color:${getBatColor(sat.battery)}">${sat.battery.toFixed(0)}%</span></div>
+                        <div class="track"><div class="fill" style="width:${sat.battery}%; background:${getBatColor(sat.battery)}"></div></div>
+                    </div>
+                    <div class="meter-box">
+                        <div class="meter-label"><span>Core Temp</span><span class="meter-val" style="color:${getTempColor(sat.temp)}">${sat.temp.toFixed(0)}°C</span></div>
+                        <div class="track"><div class="fill" style="width:${Math.min(100, Math.max(0, (sat.temp+50)/1.5))}%; background:${getTempColor(sat.temp)}"></div></div>
+                    </div>
+                    <div class="forecast-grid">
+                        <div class="f-item"><span class="f-head">60s Power</span><span class="f-stat" style="color:${batTrend.color}">${batTrend.arrow} ${batVal !== undefined ? batVal + '%' : '--'}</span></div>
+                        <div class="f-item"><span class="f-head">60s Thermal</span><span class="f-stat" style="color:${tempTrend.color}">${tempTrend.arrow} ${tempVal !== undefined ? tempVal + '°' : '--'}</span></div>
                     </div>
                 </div>`;
-                cardContainer.insertAdjacentHTML('beforeend', cardHtml);
-
-
-                // --- 2. RENDER ORBIT MAP (Satellites Only) ---
-                if (data.type !== 'ground') {
-                    // Wrapper che ruota
-                    const wrapper = document.createElement('div');
-                    wrapper.className = 'sat-marker';
-                    wrapper.style.transform = `rotate(${data.angle}deg)`;
-
-                    // Body del satellite (Il pallino)
-                    const body = document.createElement('div');
-                    body.className = `sat-body ${isActive ? 'pulsing' : ''}`;
-
-                    // Etichetta (Numero)
-                    const label = document.createElement('div');
-                    label.className = `sat-label ${isActive ? 'pulsing-text' : ''}`;
-                    // Estrae "02" o "03" dal nome "minikube-m02"
-                    const shortName = nodeName.split('-').pop().replace('m', '');
-                    label.innerText = shortName;
-
-                    wrapper.appendChild(body);
-                    wrapper.appendChild(label);
-                    satLayer.appendChild(wrapper);
-                }
+                grid.insertAdjacentHTML('beforeend', html);
             });
-
-            // Update Status Bar Active Node
-            document.getElementById('active-node-display').innerText = activeNodeName;
+            document.getElementById('active-node').innerText = activeName;
         }
 
-        setInterval(fetchData, 1000);
-        fetchData();
+        // AVVIO
+        masterLoop();
     </script>
 </body>
 </html>

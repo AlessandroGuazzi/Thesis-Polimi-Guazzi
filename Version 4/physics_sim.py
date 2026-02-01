@@ -6,42 +6,38 @@ import logging
 from kubernetes import client, config
 
 # =============================================================================
-#  SPACE CLOUD PHYSICS ENGINE V4.0 (Enhanced Dynamics)
+#  SPACE CLOUD PHYSICS ENGINE V4.1 (With Telemetry Forecasting)
 # =============================================================================
 
-# --- CONFIGURAZIONE SIMULAZIONE ---
-ORBIT_PERIOD = 120.0  # Secondi per un'orbita completa (2 minuti)
-ECLIPSE_START = 220  # Gradi inizio cono d'ombra
-ECLIPSE_END = 320  # Gradi fine cono d'ombra (100 gradi di buio)
+# --- CONFIGURAZIONE FISICA (REALISTIC CONSTELLATION) ---
+ORBIT_PERIOD = 120.0
+ECLIPSE_START = 220
+ECLIPSE_END = 320
 
-# --- CONFIGURAZIONE FISICA ---
-# Temp (°C)
-TEMP_SPACE = -270.0  # Zero assoluto (quasi)
-TEMP_OPTIMAL = 20.0  # Temp interna Ground Station
+TEMP_SPACE = -270.0
+TEMP_OPTIMAL = 20.0
 
 # Coefficienti Termici
-# Più alto è THERMAL_MASS, più lentamente cambia la temperatura
-THERMAL_MASS = 50.0
-HEATING_SUN = 150.0  # Calore dal Sole
-HEATING_CPU_IDLE = 10.0  # Calore basale elettronica
-HEATING_CPU_LOAD = 80.0  # Calore extra quando il Pod lavora
-COOLING_K = 0.8  # Costante di dissipazione radiativa
+THERMAL_MASS = 40.0
+HEATING_SUN = 100.0
+HEATING_CPU_IDLE = 10.0
+HEATING_CPU_LOAD = 85.0
+COOLING_K = 4.0
 
-# Coefficienti Batteria (% al secondo)
-BATTERY_CHARGE_RATE = 2.5  # Velocità ricarica al sole
-BATTERY_DRAIN_IDLE = 0.5  # Consumo base
-BATTERY_DRAIN_LOAD = 3.5  # Consumo pesante (CPU al 100%)
+# Coefficienti Batteria
+BATTERY_CHARGE_RATE = 5.0
+BATTERY_DRAIN_IDLE = 1.0
+BATTERY_DRAIN_LOAD = 2.5
 
 # --- SETUP LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger("PhysicsEngine")
 
 
-# --- CLASSE SATELLITE ---
 class Satellite:
     def __init__(self, name, node_type, start_offset_deg=0):
         self.name = name
-        self.type = node_type  # 'ground' o 'satellite'
+        self.type = node_type
         self.offset = start_offset_deg
 
         # Stato Iniziale
@@ -49,198 +45,141 @@ class Satellite:
         self.temp = 20.0
         self.angle = 0
         self.in_eclipse = False
-        self.is_working = False  # True se ha il Pod
-
-        # Ground Station è sempre stabile
-        if self.type == 'ground':
-            self.temp = 22.0
+        self.is_working = False
 
     def update(self, elapsed_time, has_workload):
         self.is_working = has_workload
+        if self.type == 'ground': return
 
-        # SE È GROUND STATION: Parametri fissi
-        if self.type == 'ground':
-            self.battery = 100.0
-            self.temp = 22.0
-            return
-
-        # 1. CALCOLO ORBITA
-        # Calcoliamo l'angolo attuale (0-360) basandoci sul tempo trascorso e l'offset iniziale
+        # 1. Calcolo Orbita
         raw_angle = ((elapsed_time % ORBIT_PERIOD) / ORBIT_PERIOD * 360.0 + self.offset)
         self.angle = raw_angle % 360.0
 
-        # 2. RILEVAMENTO ECLISSI
-        # Controlliamo se siamo nel cono d'ombra
-        if ECLIPSE_START <= self.angle <= ECLIPSE_END:
-            self.in_eclipse = True
-        else:
-            self.in_eclipse = False
+        # 2. Eclissi
+        self.in_eclipse = (ECLIPSE_START <= self.angle <= ECLIPSE_END)
 
-        # 3. MODELLO TERMICO (Equazione Differenziale Semplificata)
-        # dT/dt = (P_in - P_out) / MassaTermica
-
-        # P_in (Input Calore)
+        # 3. Termica
         p_in = HEATING_CPU_LOAD if self.is_working else HEATING_CPU_IDLE
-        if not self.in_eclipse:
-            p_in += HEATING_SUN  # Aggiunge il sole
-
-        # P_out (Dissipazione) - Legge di Stefan-Boltzmann linearizzata per semplicità
-        # Il satellite cerca di raggiungere l'equilibrio con lo spazio profondo
-        # Più è caldo, più dissipa.
+        if not self.in_eclipse: p_in += HEATING_SUN
         p_out = COOLING_K * (self.temp - TEMP_SPACE) * 0.1
+        self.temp += (p_in - p_out) / THERMAL_MASS
 
-        delta_temp = (p_in - p_out) / THERMAL_MASS
-        self.temp += delta_temp
-
-        # 4. BILANCIO ENERGETICO (Batteria)
-        charge = 0.0
+        # 4. Batteria
+        charge = BATTERY_CHARGE_RATE if not self.in_eclipse else 0.0
         drain = BATTERY_DRAIN_LOAD if self.is_working else BATTERY_DRAIN_IDLE
-
-        if not self.in_eclipse:
-            charge = BATTERY_CHARGE_RATE
-
         self.battery += (charge - drain)
-
-        # Clamp valori (Limiti fisici)
         self.battery = max(0.0, min(100.0, self.battery))
-        # La temp non ha limiti hard, ma sotto i -50 o sopra i 100 si rompe (simulato dallo scheduler)
 
-    def get_telemetry(self):
-        """Restituisce il dizionario pronto per JSON/Redis"""
-        status_code = "IDLE"
-        if self.is_working: status_code = "ACTIVE"
+    def get_forecast(self, horizon_seconds=60):
+        """Simula il futuro per la dashboard (senza modificare lo stato attuale)"""
+        sim_angle = self.angle
+        sim_temp = self.temp
+        sim_batt = self.battery
+
+        dt = 1.0
+        deg_per_sec = 360.0 / ORBIT_PERIOD
+
+        for _ in range(horizon_seconds):
+            sim_angle = (sim_angle + deg_per_sec) % 360.0
+            in_eclipse = (ECLIPSE_START <= sim_angle <= ECLIPSE_END)
+
+            # Assumiamo che il carico di lavoro rimanga costante (Worst Case o Best Case attuale)
+            p_in = HEATING_CPU_LOAD if self.is_working else HEATING_CPU_IDLE
+            if not in_eclipse: p_in += HEATING_SUN
+            p_out = COOLING_K * (sim_temp - TEMP_SPACE) * 0.1
+            sim_temp += (p_in - p_out) / THERMAL_MASS
+
+            charge = BATTERY_CHARGE_RATE if not in_eclipse else 0.0
+            drain = BATTERY_DRAIN_LOAD if self.is_working else BATTERY_DRAIN_IDLE
+            sim_batt += (charge - drain)
 
         return {
+            "temp_60s": round(sim_temp, 1),
+            "bat_60s": max(0, min(100, int(sim_batt)))
+        }
+
+    def get_telemetry(self):
+        forecast = self.get_forecast(60)
+        return {
             "type": self.type,
-            "battery": round(self.battery, 2),
-            "temp": round(self.temp, 2),
+            "battery": round(self.battery, 1),
+            "temp": round(self.temp, 1),
             "angle": int(self.angle),
             "eclipse": self.in_eclipse,
-            "status": status_code,
-            "is_working": self.is_working
+            "is_working": self.is_working,
+            "forecast": forecast
         }
 
 
 # --- FUNZIONI DI SUPPORTO ---
-
 def connect_k8s():
-    """Tenta la connessione a Kubernetes (Locale o In-Cluster)"""
     try:
-        config.load_kube_config()  # Cerca ~/.kube/config
-        v1 = client.CoreV1Api()
-        logger.info("✅ K8s API Connected")
-        return v1
-    except Exception as e:
-        logger.error(f"❌ K8s Connection Failed: {e}")
+        config.load_kube_config()
+        return client.CoreV1Api()
+    except:
         return None
 
 
 def connect_redis():
-    """Connette a Redis (richiede port-forward)"""
     try:
         r = redis.Redis(host='localhost', port=6379, decode_responses=True, socket_connect_timeout=2)
         r.ping()
-        logger.info("✅ Redis Connected")
         return r
-    except Exception as e:
-        logger.warning(f"⚠️  Redis connection failed (Is port-forward running?): {e}")
+    except:
         return None
 
 
 def get_pod_node_map(v1_client):
-    """
-    Interroga K8s per trovare dove sono i Pod 'space-mission'.
-    Ritorna un set di nomi di nodi attivi.
-    """
     active_nodes = set()
     if not v1_client: return active_nodes
-
     try:
-        # Cerchiamo i pod con label 'app=space-mission'
         pods = v1_client.list_namespaced_pod(namespace="default", label_selector="app=space-mission")
         for pod in pods.items:
-            # Consideriamo il pod attivo solo se sta girando o si sta avviando
             if pod.status.phase in ["Running", "Pending"] and not pod.metadata.deletion_timestamp:
-                if pod.spec.node_name:
-                    active_nodes.add(pod.spec.node_name)
-    except Exception as e:
-        # Silenzioso per non spammare la console in caso di timeout
+                if pod.spec.node_name: active_nodes.add(pod.spec.node_name)
+    except:
         pass
-
     return active_nodes
 
 
-# --- MAIN LOOP ---
-
 def main():
-    print("\n🚀 AVVIO SIMULATORE FISICO ORBITALE...")
-    print("   Premi CTRL+C per arrestare.\n")
-
-    # 1. Inizializzazione Sistemi
+    print("\n🚀 PHYSICS ENGINE V4.1 STARTED.")
     k8s_api = connect_k8s()
     redis_db = connect_redis()
 
-    # 2. Creazione Flotta
-    # Offset: 0 = Inizia all'equatore lato Sole, 180 = Lato notte
+    # Flotta a 3 nodi + Ground
     fleet = [
         Satellite("minikube", "ground"),
-        Satellite("minikube-m02", "satellite", start_offset_deg=0),  # Parte al Sole
-        Satellite("minikube-m03", "satellite", start_offset_deg=160)  # Parte vicino all'ombra
+        Satellite("minikube-m02", "satellite", start_offset_deg=0),
+        Satellite("minikube-m03", "satellite", start_offset_deg=120),
+        Satellite("minikube-m04", "satellite", start_offset_deg=240)
     ]
 
     start_time = time.time()
 
-    try:
-        while True:
-            # A. Dove sta il carico?
-            active_nodes = get_pod_node_map(k8s_api)
+    while True:
+        active_nodes = get_pod_node_map(k8s_api)
+        elapsed = time.time() - start_time
+        telemetry_data = {}
+        console_log = "\r"
 
-            # B. Aggiorna Fisica di ogni nodo
-            elapsed = time.time() - start_time
-            telemetry_data = {}
+        for sat in fleet:
+            is_working = (sat.name in active_nodes)
+            sat.update(elapsed, is_working)
+            telemetry_data[sat.name] = sat.get_telemetry()
 
-            # Stringa di log per la console (stile Dashboard)
-            console_log = "\r"
+            # Console Log Minimal
+            icon = "⚙️ " if is_working else ""
+            console_log += f"[{sat.name[-3:]} {int(sat.battery)}%{icon}] "
 
-            for sat in fleet:
-                # Controlla se questo satellite sta lavorando
-                is_working = (sat.name in active_nodes)
+        if redis_db:
+            try:
+                redis_db.set("fleet_telemetry", json.dumps(telemetry_data))
+            except:
+                pass
 
-                # Calcola fisica
-                sat.update(elapsed, is_working)
-
-                # Prepara dati
-                telemetry_data[sat.name] = sat.get_telemetry()
-
-                # --- Visualizzazione Console ---
-                # Icone: 🌍(Terra) ☀️(Sole) 🌑(Ombra) ⚙️(Lavoro)
-                icon = "🌍" if sat.type == 'ground' else ("🌑" if sat.in_eclipse else "☀️ ")
-                work_indicator = "⚙️ " if is_working else "  "
-
-                # Colora output se c'è un problema (solo visivo per terminale)
-                # ANSI codes: \033[91m = Red, \033[0m = Reset
-                stats = f"B:{int(sat.battery)}% T:{int(sat.temp)}°"
-                if sat.battery < 20 or sat.temp > 80:
-                    stats = f"\033[91m{stats}\033[0m"  # Rosso se critico
-
-                name_short = sat.name.replace("minikube", "MK").replace("-", "")
-                console_log += f"[{name_short} {icon}{work_indicator} {stats}]  "
-
-            # C. Pubblica su Redis
-            if redis_db:
-                try:
-                    redis_db.set("fleet_telemetry", json.dumps(telemetry_data))
-                    # Opzionale: Pubblica anche un messaggio pub/sub per eventi real-time
-                    # redis_db.publish("telemetry_update", "new_data")
-                except Exception:
-                    pass  # Ignora errori temporanei di rete
-
-            # Stampa e attendi
-            print(console_log, end="", flush=True)
-            time.sleep(1.0)
-
-    except KeyboardInterrupt:
-        print("\n\n🛑 Simulazione Arrestata. Atterraggio completato.")
+        print(console_log, end="", flush=True)
+        time.sleep(1.0)
 
 
 if __name__ == "__main__":

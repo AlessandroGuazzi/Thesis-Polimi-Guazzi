@@ -7,7 +7,7 @@
 
 IMAGE_NAME="localhost/space-dashboard:native"
 TAR_FILE="space-mission.tar"
-NODES=("minikube-m02" "minikube-m03")
+NODES=("minikube-m02" "minikube-m03" "minikube-m04")
 
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'

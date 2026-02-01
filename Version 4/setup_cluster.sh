@@ -17,7 +17,7 @@ echo -e "${BLUE}>>> 🚀 SPACE CLOUD SETUP V6.1 (CONFLICT FIX) <<<${NC}"
 echo -e "${GREEN}[1/4] Avvio Cluster Base (CRI-O 1.24 + Runc)...${NC}"
 minikube delete --all
 minikube start \
-  --nodes 3 \
+  --nodes 4 \
   --driver=docker \
   --container-runtime=cri-o \
   --feature-gates=ContainerCheckpoint=true \
@@ -25,7 +25,7 @@ minikube start \
   --memory=2048 \
   --profile=minikube
 
-NODES=("minikube" "minikube-m02" "minikube-m03")
+NODES=("minikube" "minikube-m02" "minikube-m03" "minikube-m04")
 
 # 2. AGGIORNAMENTO IN-PLACE (CRI-O 1.30)
 # ------------------------------------------------------------------------------
@@ -93,10 +93,11 @@ done
 kubectl label node minikube type=ground-station --overwrite >/dev/null
 kubectl label node minikube-m02 type=satellite --overwrite >/dev/null
 kubectl label node minikube-m03 type=satellite --overwrite >/dev/null
+kubectl label node minikube-m04 type=satellite --overwrite >/dev/null
 
 minikube addons enable ingress -p minikube >/dev/null 2>&1 || true
 
-echo -e "${BLUE}>>> SETUP COMPLETATO (CRI-O 1.30 + RUNC + NO CONFLICTS) <<<${NC}"
+echo -e "${BLUE}>>> SETUP COMPLETATO (4 NODI ONLINE) <<<${NC}"
 kubectl get nodes -o wide
 echo -e "\n${BLUE}Verifica Versione e Runtime:${NC}"
 minikube ssh -n minikube "crio --version | head -n 1 && grep default_runtime /etc/crio/crio.conf.d/99-custom.conf"

@@ -102,9 +102,9 @@
 
     <script>
         // --- CONFIGURAZIONE ---
-        const REFRESH_RATE = 500;   // Aggiornamento ogni 0.5s
-        const FETCH_TIMEOUT = 2000; // Se il server non risponde in 2s, è un errore (evita blocchi infiniti)
-        const MAX_ERRORS_FOR_MIGRATION = 3; // Dopo 3 errori, consideriamo che stia migrando
+        const REFRESH_RATE = 500;
+        const FETCH_TIMEOUT = 2000;
+        const MAX_ERRORS_FOR_MIGRATION = 3;
 
         // --- COLORI & UTILS ---
         const C = { blue: '#007AFF', green: '#34C759', orange: '#FF9500', red: '#FF3B30', gray: '#8E8E93' };
@@ -130,50 +130,59 @@
             return { arrow, color };
         }
 
-        // --- CORE LOGIC (STATELESS) ---
+        // --- CORE LOGIC (SMART STARTUP) ---
         let errorCounter = 0;
+        let hasConnectedOnce = false; // <--- NUOVO FLAG FONDAMENTALE
 
         async function masterLoop() {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
 
             try {
-                // Cache busting + AbortSignal (Timeout)
+                // Cache busting
                 const res = await fetch(`/api/telemetry?t=${Date.now()}`, {
                     signal: controller.signal
                 });
-                clearTimeout(timeoutId); // Ferma il timeout se la risposta arriva
+                clearTimeout(timeoutId);
 
                 if (!res.ok) throw new Error("Server Error");
                 const data = await res.json();
 
-                // === SUCCESSO: ABBIAMO I DATI ===
-                errorCounter = 0; // Reset contatore errori
+                // === SUCCESSO: PRIMO CONTATTO ===
+                errorCounter = 0;
+                hasConnectedOnce = true; // <--- Ora sappiamo che il sistema è vivo!
 
-                // 1. DECISIONE STATO: Siamo in volo o a terra?
+                // 1. DECISIONE STATO
                 if (data.flight_mode === true) {
                     showMigrationUI();
                 } else {
-                    // Siamo ONLINE e STABILI
                     showOrbitUI();
                     updateDashboard(data);
                 }
 
             } catch (e) {
-                // === ERRORE: TIMEOUT O RETE ===
+                // === ERRORE DI RETE ===
                 errorCounter++;
-                // console.warn(`Ping fallito (${errorCounter}):`, e.name);
 
-                // Se fallisce troppe volte, assumiamo stia migrando (o sia morto)
-                if (errorCounter >= MAX_ERRORS_FOR_MIGRATION) {
-                    showMigrationUI();
-                } else {
-                    // Se è un piccolo glitch, mostra loader ma non l'aereo
+                // FIX LOGICA AVVIO:
+                // Se non ci siamo MAI connessi (hasConnectedOnce = false),
+                // significa che stiamo ancora avviando il tunnel. Mostra Loader, NON Migrazione.
+                if (!hasConnectedOnce) {
+                    // Stiamo ancora accendendo i motori...
                     document.getElementById('loader-overlay').style.display = 'flex';
+                    document.getElementById('mig-overlay').style.display = 'none';
+                }
+                else {
+                    // Ci eravamo già connessi, e ORA è caduta la linea -> È una migrazione vera!
+                    if (errorCounter >= MAX_ERRORS_FOR_MIGRATION) {
+                        showMigrationUI();
+                    } else {
+                        // Glitch momentaneo
+                        document.getElementById('loader-overlay').style.display = 'flex';
+                    }
                 }
             }
 
-            // Pianifica il prossimo frame SEMPRE, qualunque cosa succeda
             setTimeout(masterLoop, REFRESH_RATE);
         }
 
@@ -182,7 +191,6 @@
             const mig = document.getElementById('mig-overlay');
             const load = document.getElementById('loader-overlay');
 
-            // Mostra l'aereo solo se non è già visibile (evita flicker)
             if (mig.style.display !== 'flex') {
                 console.log("✈️ UI: Switching to Migration Mode");
                 mig.style.display = 'flex';
@@ -194,7 +202,6 @@
             const mig = document.getElementById('mig-overlay');
             const load = document.getElementById('loader-overlay');
 
-            // Nascondi tutto forzatamente
             if (mig.style.display !== 'none') {
                 console.log("✅ UI: Switching to Orbit Mode");
                 mig.style.display = 'none';
@@ -203,11 +210,9 @@
         }
 
         function updateDashboard(data) {
-            // Header
             document.getElementById('pod-id').innerText = data.satellite_id || "Searching...";
             document.getElementById('mission-clock').innerText = `T+${data.internal_state.mission_timer}s`;
 
-            // Rendering Griglia
             if (data.environment && data.environment.status !== "NO_DATA") {
                 renderFleet(data.environment);
             }
@@ -227,7 +232,6 @@
                 const active = sat.is_working;
                 if(active) activeName = name;
 
-                // Orbit Marker
                 if(sat.type !== 'ground') {
                     const arm = document.createElement('div');
                     arm.className = 'sat-arm'; arm.style.transform = `rotate(${sat.angle}deg)`;
@@ -237,7 +241,6 @@
                     arm.appendChild(tag); orbit.appendChild(arm);
                 }
 
-                // Card Stats
                 const batVal = sat.forecast?.bat_60s;
                 const tempVal = sat.forecast?.temp_60s;
                 const batTrend = getTrendAnalysis(sat.battery, batVal, 'bat');
@@ -270,7 +273,6 @@
             document.getElementById('active-node').innerText = activeName;
         }
 
-        // AVVIO
         masterLoop();
     </script>
 </body>

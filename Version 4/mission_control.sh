@@ -84,7 +84,7 @@ fi
         kubectl port-forward svc/space-mission 8080:80 >/dev/null 2>&1
 
         # Se cade (es. durante lo switchover istantaneo), riprova subito
-        sleep 0.2
+        sleep 0.1
     done
 ) &
 

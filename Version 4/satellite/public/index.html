@@ -101,10 +101,10 @@
     </div>
 
     <script>
-        // --- CONFIGURAZIONE ---
-        const REFRESH_RATE = 500;
-        const FETCH_TIMEOUT = 2000;
-        const MAX_ERRORS_FOR_MIGRATION = 3;
+        // --- CONFIGURAZIONE AGGRESSIVA ---
+        const REFRESH_RATE = 250;   // Controllo 4 volte al secondo
+        const FETCH_TIMEOUT = 1000; // Se non risponde in 1s, è morto
+        // Rimuoviamo MAX_ERRORS: se cade la linea, è una migrazione. Punto.
 
         // --- COLORI & UTILS ---
         const C = { blue: '#007AFF', green: '#34C759', orange: '#FF9500', red: '#FF3B30', gray: '#8E8E93' };
@@ -130,9 +130,8 @@
             return { arrow, color };
         }
 
-        // --- CORE LOGIC (SMART STARTUP) ---
-        let errorCounter = 0;
-        let hasConnectedOnce = false; // <--- NUOVO FLAG FONDAMENTALE
+        // --- CORE LOGIC ---
+        let hasConnectedOnce = false;
 
         async function masterLoop() {
             const controller = new AbortController();
@@ -148,51 +147,48 @@
                 if (!res.ok) throw new Error("Server Error");
                 const data = await res.json();
 
-                // === SUCCESSO: PRIMO CONTATTO ===
-                errorCounter = 0;
-                hasConnectedOnce = true; // <--- Ora sappiamo che il sistema è vivo!
+                // === SUCCESSO ===
+                hasConnectedOnce = true;
 
-                // 1. DECISIONE STATO
+                // 1. Il server ci dice esplicitamente che sta migrando?
                 if (data.flight_mode === true) {
                     showMigrationUI();
                 } else {
+                    // Tutto ok, mostra dati
                     showOrbitUI();
                     updateDashboard(data);
                 }
 
             } catch (e) {
                 // === ERRORE DI RETE ===
-                errorCounter++;
 
-                // FIX LOGICA AVVIO:
-                // Se non ci siamo MAI connessi (hasConnectedOnce = false),
-                // significa che stiamo ancora avviando il tunnel. Mostra Loader, NON Migrazione.
                 if (!hasConnectedOnce) {
-                    // Stiamo ancora accendendo i motori...
+                    // CASO 1: Avvio Iniziale
+                    // Non ci siamo mai connessi, quindi stiamo aprendo il tunnel.
+                    // Mostriamo il Loader classico.
                     document.getElementById('loader-overlay').style.display = 'flex';
                     document.getElementById('mig-overlay').style.display = 'none';
                 }
                 else {
-                    // Ci eravamo già connessi, e ORA è caduta la linea -> È una migrazione vera!
-                    if (errorCounter >= MAX_ERRORS_FOR_MIGRATION) {
-                        showMigrationUI();
-                    } else {
-                        // Glitch momentaneo
-                        document.getElementById('loader-overlay').style.display = 'flex';
-                    }
+                    // CASO 2: Eravamo connessi e ora è buio.
+                    // [FIX FAST MIGRATION] Non aspettiamo 3 errori.
+                    // Se la linea cade su localhost, è SICURAMENTE una migrazione (o un crash).
+                    // Mostriamo SUBITO l'aereo.
+                    showMigrationUI();
                 }
             }
 
             setTimeout(masterLoop, REFRESH_RATE);
         }
 
-        // --- GESTIONE UI ---
+        // --- GESTIONE UI (Semplificata) ---
         function showMigrationUI() {
             const mig = document.getElementById('mig-overlay');
             const load = document.getElementById('loader-overlay');
 
+            // Priorità assoluta all'aereo se c'è un errore runtime
             if (mig.style.display !== 'flex') {
-                console.log("✈️ UI: Switching to Migration Mode");
+                // console.log("✈️ UI: Switching to Migration Mode");
                 mig.style.display = 'flex';
             }
             load.style.display = 'none';
@@ -203,13 +199,14 @@
             const load = document.getElementById('loader-overlay');
 
             if (mig.style.display !== 'none') {
-                console.log("✅ UI: Switching to Orbit Mode");
+                // console.log("✅ UI: Switching to Orbit Mode");
                 mig.style.display = 'none';
             }
             load.style.display = 'none';
         }
 
         function updateDashboard(data) {
+            // Aggiorna solo se l'UI è visibile
             document.getElementById('pod-id').innerText = data.satellite_id || "Searching...";
             document.getElementById('mission-clock').innerText = `T+${data.internal_state.mission_timer}s`;
 

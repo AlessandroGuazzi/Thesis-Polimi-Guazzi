@@ -124,11 +124,9 @@ else
 fi
 
 # 5. RESTORE & WAKE UP
-echo -e "${CYAN}--- FASE 3: SWITCHOVER & WAKE UP (CLEAN TURBO) ---${NC}"
+echo -e "${CYAN}--- FASE 3: SWITCHOVER & WAKE UP (SMART LOCK) ---${NC}"
 
 # A. PREPARAZIONE CONFIGURAZIONE
-# Aggiungiamo "terminationGracePeriodSeconds: 0" alla patch.
-# Questo dice a K8s: "Quando spegni questo pod, fallo ISTANTANEAMENTE", senza creare zombie.
 PATCH_JSON=$(cat <<EOF
 {
   "spec": {
@@ -151,48 +149,66 @@ EOF
 
 # B. APPLICAZIONE PATCH
 echo "⚡ Applicazione Switchover..."
-# Applichiamo la patch. Kubernetes vedrà il cambio nodo e creerà il nuovo pod.
-# Vedrà anche terminationGracePeriodSeconds: 0 e ucciderà il vecchio pod istantaneamente.
 kubectl patch deployment space-mission --type='strategic' -p "$PATCH_JSON"
 
-# C. PULIZIA VECCHIO POD (Opzionale ma utile per velocità)
-# Usiamo delete SENZA --force. Questo rispetta il protocollo Kubelet ed evita gli zombie.
-# Avendo impostato grace-period: 0 nella patch sopra, sarà comunque istantaneo.
+# C. PULIZIA VECCHIO POD (Per accelerare)
 kubectl delete pod $POD_NAME --wait=false 2>/dev/null &
 
-echo "⏳ Attesa nuovo Pod..."
-# Loop di controllo
-for i in {1..20}; do
-    NEW_POD=$(kubectl get pod -l $POD_LABEL --field-selector spec.nodeName=$DEST_NODE -o jsonpath="{.items[0].metadata.name}")
-    # Controlliamo che il nuovo pod esista e non sia quello vecchio (che sta morendo)
-    if [ ! -z "$NEW_POD" ] && [ "$NEW_POD" != "$POD_NAME" ]; then
-        echo "   Pod rilevato: $NEW_POD"
-        break
+echo "⏳ Ricerca nuovo Pod ATTIVO su $DEST_NODE..."
+
+# VARIABILE TARGET DINAMICA
+TARGET_POD=""
+MAX_WAIT=60
+count=0
+
+# LOOP INTELLIGENTE:
+# Non ci accontentiamo di "un pod qualsiasi". Cerchiamo specificamente un pod che:
+# 1. Sia sul nodo di destinazione ($DEST_NODE)
+# 2. Abbia lo status.phase = 'Running' (evita Terminating, ContainerCreating, Pending)
+while [ $count -lt $MAX_WAIT ]; do
+
+    # Chiediamo a K8s: Dammi il nome del pod su QUESTO nodo che è GIA' in stato RUNNING
+    TARGET_POD=$(kubectl get pod -l $POD_LABEL --field-selector spec.nodeName=$DEST_NODE,status.phase=Running -o jsonpath="{.items[0].metadata.name}" 2>/dev/null)
+
+    if [ ! -z "$TARGET_POD" ]; then
+        # Verifica doppia: controlliamo che abbia anche il timestamp di avvio (è pronto davvero)
+        IS_STARTED=$(kubectl get pod $TARGET_POD -o jsonpath='{.status.containerStatuses[0].state.running.startedAt}' 2>/dev/null)
+
+        if [[ "$IS_STARTED" == *"20"* ]]; then
+            echo -e "${GREEN}   ✅ Agganciato Pod Operativo: $TARGET_POD${NC}"
+            break
+        fi
     fi
-    sleep 0.5
+
+    # Feedback visivo (sovrascrive la riga per non spammare)
+    echo -ne "   ...scansione orbita $DEST_NODE ($count/${MAX_WAIT}s)...\r"
+    sleep 1
+    ((count++))
+
+    # Se il target è vuoto, resetta la variabile per sicurezza
+    TARGET_POD=""
 done
+echo "" # A capo dopo il loop
 
-if [ -z "$NEW_POD" ]; then echo "❌ Errore avvio pod"; exit 1; fi
+if [ -z "$TARGET_POD" ]; then
+    echo -e "${RED}❌ Timeout: Nessun pod Running trovato su $DEST_NODE.${NC}"
+    echo "Stato attuale del cluster:"
+    kubectl get pods -o wide
+    exit 1
+fi
 
-# D. WAKE UP IMMEDIATO (ROBUST)
-echo "   Attesa ContainerRunning..."
+# D. WAKE UP (Usando il pod trovato dinamicamente)
+echo "🔔 WAKE UP (Invio segnale a $TARGET_POD)..."
 
-# 1. Primo check: Aspettiamo che Kubernetes segni il container come avviato
-until kubectl get pod $NEW_POD -o jsonpath='{.status.containerStatuses[0].state.running.startedAt}' 2>/dev/null | grep -q "20"; do
-    sleep 0.1
-done
-
-echo -e "${GREEN}🔔 WAKE UP!${NC}"
-
-# 2. Secondo check: Tentiamo l'EXEC finché il container non è VERAMENTE pronto
-MAX_RETRIES=20
+# Tentiamo l'EXEC con pazienza
+MAX_RETRIES=30
 COUNT=0
-until kubectl exec $NEW_POD -- touch /tmp/landed 2>/dev/null; do
-    echo "   ...connessione exec in corso..."
-    sleep 0.2
+until kubectl exec $TARGET_POD -- touch /tmp/landed 2>/dev/null; do
+    echo "   ...connessione neurale in corso ($COUNT/$MAX_RETRIES)..."
+    sleep 0.5
     ((COUNT++))
     if [ $COUNT -ge $MAX_RETRIES ]; then
-        echo -e "${RED}❌ Timeout Wake Up!${NC}"
+        echo -e "${RED}❌ Timeout Wake Up! Il container c'è ma non risponde.${NC}"
         exit 1
     fi
 done

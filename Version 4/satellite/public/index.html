@@ -10,7 +10,7 @@
             --ios-bg: #F5F5F7; --ios-card: #FFFFFF; --ios-text: #1D1D1F; --ios-subtext: #86868B;
             --ios-border: #E5E5EA; --blue: #007AFF; --green: #34C759; --orange: #FF9500; --red: #FF3B30;
             --radius-l: 24px; --radius-m: 20px;
-            --shadow-soft: 0 4px 12px rgba(0,0,0,0.03); --shadow-hover: 0 12px 32px rgba(0, 122, 255, 0.15);
+            --shadow-soft: 0 4px 12px rgba(0,0,0,0.03);
         }
         body { margin: 0; padding: 0; background-color: var(--ios-bg); font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif; height: 100vh; display: flex; flex-direction: column; color: var(--ios-text); overflow: hidden; }
 
@@ -19,6 +19,16 @@
         .brand { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; display: flex; gap: 10px; }
         .pill-stack { display: flex; gap: 12px; }
         .pill { background: var(--ios-bg); padding: 8px 16px; border-radius: 12px; font-size: 13px; font-weight: 600; color: var(--ios-subtext); display: flex; gap: 8px; align-items: center; }
+
+        /* Stile Timer Ingrandito */
+        #mission-clock {
+            color: var(--ios-text);
+            font-weight: 700;
+            font-feature-settings: "tnum";
+            font-family: monospace;
+            font-size: 18px;
+        }
+
         .pill-val { color: var(--ios-text); font-weight: 700; font-feature-settings: "tnum"; }
 
         /* CONTENT */
@@ -35,11 +45,27 @@
         .sat-tag { position: absolute; top: 0; left: 0; width: 36px; height: 36px; background: white; border-radius: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #1D1D1F; box-shadow: 0 2px 8px rgba(0,0,0,0.15); transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
         .sat-tag.active { background: var(--blue); color: white; transform: translate(-50%, -50%) scale(1.2); box-shadow: 0 8px 20px rgba(0, 122, 255, 0.4); z-index: 30; }
 
-        /* CARDS */
+        /* CARDS - STATICHE (NO HOVER EFFECT) */
         .cards-list { display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(2, 1fr); gap: 24px; overflow-y: auto; padding: 10px; }
         .cards-list::-webkit-scrollbar { width: 0; }
-        .apple-card { background: var(--ios-card); border-radius: var(--radius-m); padding: 32px; box-shadow: var(--shadow-soft); border: 1px solid transparent; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.4s ease, border-color 0.2s; cursor: default; }
-        .apple-card:hover { transform: translateY(-4px) scale(1.01); box-shadow: var(--shadow-hover); border-color: rgba(0, 122, 255, 0.3); z-index: 10; }
+
+        .apple-card {
+            background: var(--ios-card);
+            border-radius: var(--radius-m);
+            padding: 32px;
+            box-shadow: var(--shadow-soft);
+            border: 1px solid transparent;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: border-color 0.2s;
+            cursor: default;
+        }
+
+        .apple-card:hover {
+            border-color: rgba(0, 122, 255, 0.1);
+        }
+
         .apple-card.active-node { border: 2px solid rgba(0, 122, 255, 0.2); background: #F2F8FF; }
 
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
@@ -60,8 +86,11 @@
         .f-stat { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 
         /* OVERLAYS */
-        #mig-overlay, #loader-overlay { display: none; position: fixed; inset: 0; background: rgba(255,255,255,0.7); backdrop-filter: blur(20px); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
-        .mig-box { background: white; padding: 40px; border-radius: 32px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); text-align: center; border: 1px solid rgba(0,0,0,0.05); }
+        #mig-overlay, #loader-overlay { display: none; position: fixed; inset: 0; background: rgba(255,255,255,0.85); backdrop-filter: blur(25px); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
+
+        /* Box migrazione semplificato */
+        .mig-box { background: white; padding: 40px; border-radius: 32px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); text-align: center; border: 1px solid rgba(0,0,0,0.05); min-width: 320px; }
+
         .loader-spinner { width: 40px; height: 40px; border: 4px solid #E5E5EA; border-top: 4px solid var(--blue); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
@@ -83,9 +112,8 @@
     <header>
         <div class="brand"><span style="font-size:24px;">🛰️</span> SpaceCloud</div>
         <div class="pill-stack">
-            <div class="pill"><span>POD</span><span class="pill-val" id="pod-id">--</span></div>
             <div class="pill"><span>ACTIVE</span><span class="pill-val" id="active-node" style="color:var(--blue)">--</span></div>
-            <div class="pill"><span class="pill-val" id="mission-clock" style="font-family:monospace;">T+0s</span></div>
+            <div class="pill"><span id="mission-clock">T+0s</span></div>
         </div>
     </header>
 
@@ -101,10 +129,9 @@
     </div>
 
     <script>
-        // --- CONFIGURAZIONE AGGRESSIVA ---
-        const REFRESH_RATE = 250;   // Controllo 4 volte al secondo
-        const FETCH_TIMEOUT = 1000; // Se non risponde in 1s, è morto
-        // Rimuoviamo MAX_ERRORS: se cade la linea, è una migrazione. Punto.
+        // --- CONFIGURAZIONE ---
+        const REFRESH_RATE = 250;
+        const FETCH_TIMEOUT = 1000;
 
         // --- COLORI & UTILS ---
         const C = { blue: '#007AFF', green: '#34C759', orange: '#FF9500', red: '#FF3B30', gray: '#8E8E93' };
@@ -138,42 +165,26 @@
             const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
 
             try {
-                // Cache busting
-                const res = await fetch(`/api/telemetry?t=${Date.now()}`, {
-                    signal: controller.signal
-                });
+                const res = await fetch(`/api/telemetry?t=${Date.now()}`, { signal: controller.signal });
                 clearTimeout(timeoutId);
 
                 if (!res.ok) throw new Error("Server Error");
                 const data = await res.json();
 
-                // === SUCCESSO ===
                 hasConnectedOnce = true;
 
-                // 1. Il server ci dice esplicitamente che sta migrando?
                 if (data.flight_mode === true) {
                     showMigrationUI();
                 } else {
-                    // Tutto ok, mostra dati
                     showOrbitUI();
                     updateDashboard(data);
                 }
 
             } catch (e) {
-                // === ERRORE DI RETE ===
-
                 if (!hasConnectedOnce) {
-                    // CASO 1: Avvio Iniziale
-                    // Non ci siamo mai connessi, quindi stiamo aprendo il tunnel.
-                    // Mostriamo il Loader classico.
                     document.getElementById('loader-overlay').style.display = 'flex';
                     document.getElementById('mig-overlay').style.display = 'none';
-                }
-                else {
-                    // CASO 2: Eravamo connessi e ora è buio.
-                    // [FIX FAST MIGRATION] Non aspettiamo 3 errori.
-                    // Se la linea cade su localhost, è SICURAMENTE una migrazione (o un crash).
-                    // Mostriamo SUBITO l'aereo.
+                } else {
                     showMigrationUI();
                 }
             }
@@ -181,33 +192,21 @@
             setTimeout(masterLoop, REFRESH_RATE);
         }
 
-        // --- GESTIONE UI (Semplificata) ---
         function showMigrationUI() {
             const mig = document.getElementById('mig-overlay');
             const load = document.getElementById('loader-overlay');
-
-            // Priorità assoluta all'aereo se c'è un errore runtime
-            if (mig.style.display !== 'flex') {
-                // console.log("✈️ UI: Switching to Migration Mode");
-                mig.style.display = 'flex';
-            }
+            if (mig.style.display !== 'flex') mig.style.display = 'flex';
             load.style.display = 'none';
         }
 
         function showOrbitUI() {
             const mig = document.getElementById('mig-overlay');
             const load = document.getElementById('loader-overlay');
-
-            if (mig.style.display !== 'none') {
-                // console.log("✅ UI: Switching to Orbit Mode");
-                mig.style.display = 'none';
-            }
+            if (mig.style.display !== 'none') mig.style.display = 'none';
             load.style.display = 'none';
         }
 
         function updateDashboard(data) {
-            // Aggiorna solo se l'UI è visibile
-            document.getElementById('pod-id').innerText = data.satellite_id || "Searching...";
             document.getElementById('mission-clock').innerText = `T+${data.internal_state.mission_timer}s`;
 
             if (data.environment && data.environment.status !== "NO_DATA") {

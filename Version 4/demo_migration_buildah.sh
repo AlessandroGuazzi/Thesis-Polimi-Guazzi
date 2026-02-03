@@ -175,16 +175,21 @@ PATCH_JSON=$(cat <<EOF
 EOF
 )
 
-# B. APPLICAZIONE PATCH
-# Applica la patch al deployment per fare lo switchover
-echo "⚡ Applicazione Switchover..."
-kubectl patch deployment space-mission --type='strategic' -p "$PATCH_JSON"
+# B. AZZERAMENTO (KILL SWITCH)
+# Portiamo a 0 le repliche. Questo uccide il vecchio pod e impedisce la nascita di fantasmi.
+echo "📉 Spegnimento Deployment (Scale Down 0)..."
+kubectl scale deployment space-mission --replicas=0 >/dev/null
+sleep 2 # Breve attesa tecnica per permettere a K8s di recepire
 
-# C. PULIZIA VECCHIO POD
-# Cancella il vecchio pod senza attendere (più veloce)
-kubectl delete pod $POD_NAME --wait=false 2>/dev/null &
+# C. APPLICAZIONE PATCH
+echo "⚡ Applicazione Nuova Configurazione..."
+kubectl patch deployment space-mission --type='strategic' -p "$PATCH_JSON" >/dev/null
 
-echo "⏳ Ricerca nuovo Pod ATTIVO su $DEST_NODE..."
+# D. RIAVVIO (SCALE UP)
+echo "📈 Riavvio Deployment su $DEST_NODE (Scale Up 1)..."
+kubectl scale deployment space-mission --replicas=1 >/dev/null
+
+echo "⏳ Ricerca nuovo Pod RESTORED su $DEST_NODE..."
 
 # Variabili controllo ricerca pod ripristinato
 TARGET_POD=""

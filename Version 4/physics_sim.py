@@ -105,11 +105,13 @@ class Satellite:
             charge = BATTERY_CHARGE_RATE if not in_eclipse else 0.0
             drain = BATTERY_DRAIN_LOAD if self.is_working else BATTERY_DRAIN_IDLE
             sim_batt += (charge - drain)
+            # Impedisce alla batteria di superare il 100% "virtualmente" durante la simulazione
+            sim_batt = max(0.0, min(100.0, sim_batt))
 
         # Ritorna previsione arrotondata per dashboard
         return {
             "temp_60s": round(sim_temp, 1),
-            "bat_60s": max(0, min(100, int(sim_batt)))
+            "bat_60s": int(sim_batt)
         }
 
     def get_telemetry(self):

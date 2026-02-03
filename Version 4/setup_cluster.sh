@@ -27,13 +27,13 @@ minikube delete --all
 
 # Avvia un nuovo cluster con 4 nodi e configurazione specifica
 minikube start \
-  --nodes 4 \                       # numero di nodi
-  --driver=docker \                 # usa docker come driver
-  --container-runtime=cri-o \       # runtime container CRI-O
-  --feature-gates=ContainerCheckpoint=true \  # abilita checkpoint container
-  --cpus=2 \                        # CPU per nodo
-  --memory=2048 \                   # RAM per nodo (MB)
-  --profile=minikube                # nome profilo cluster
+  --nodes 4 \
+  --driver=docker \
+  --container-runtime=cri-o \
+  --feature-gates=ContainerCheckpoint=true \
+  --cpus=2 \
+  --memory=2048 \
+  --profile=minikube
 
 # Lista dei nodi che verranno patchati uno per uno
 NODES=("minikube" "minikube-m02" "minikube-m03" "minikube-m04")

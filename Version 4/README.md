@@ -147,5 +147,4 @@ This project uses **experimental features** of Kubernetes (`ContainerCheckpoint`
 
 ---
 
-**Author:** [Il Tuo Nome]
-**License:** MIT
+**Author:** Alessandro Guazzi

@@ -1,0 +1,33 @@
+# 1. SERVICE INTERNO
+apiVersion: v1
+kind: Service
+metadata:
+  name: space-dashboard-svc
+spec:
+  selector:
+    app: space-mission # Punta al Deployment creato sopra
+  ports:
+    - protocol: TCP
+      port: 80        # Porta del Service
+      targetPort: 80  # Porta del container sidecar-guardian
+  type: ClusterIP
+
+---
+# 2. INGRESS (Accesso HTTP)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: space-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: space-dashboard-svc
+            port:
+              number: 80

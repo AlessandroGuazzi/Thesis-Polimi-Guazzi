@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: space-mission
+  labels:
+    app: space-mission
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: space-mission
+  template:
+    metadata:
+      labels:
+        app: space-mission
+    spec:
+      # === VINCOLO SPAZIALE ===
+      # I workload girano solo sui satelliti (m02, m03, m04)
+      nodeSelector:
+        type: satellite
+
+      # === PERSISTENZA PER CRIU ===
+      # Mappiamo la directory dove Kubelet/CRI-O scrivono i checkpoint
+      volumes:
+        - name: checkpoint-storage
+          hostPath:
+            path: /var/lib/kubelet/checkpoints
+            type: DirectoryOrCreate
+
+      containers:
+      # -----------------------------------------------------------
+      # 1. IL GUARDIAN (State Sidecar)
+      # Ruolo: Memoria Persistente & Dashboard
+      # -----------------------------------------------------------
+      - name: sidecar-guardian
+        image: localhost/space-sidecar:latest
+        imagePullPolicy: Never # Usa immagine locale (Buildah)
+
+        ports:
+        - containerPort: 80 # Espone la Dashboard
+
+        # Variabili per identificazione
+        env:
+        - name: NODE_NAME
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+
+        # PRIVILEGI: Necessari per Checkpoint/Restore
+        securityContext:
+          privileged: true
+          appArmorProfile:
+            type: Unconfined
+
+        # Accesso ai dump della memoria su disco
+        volumeMounts:
+          - name: checkpoint-storage
+            mountPath: /var/lib/kubelet/checkpoints
+
+      # -----------------------------------------------------------
+      # 2. LA FENICE (Payload Workload)
+      # Ruolo: Calcolo effimero (Training AI)
+      # -----------------------------------------------------------
+      - name: payload-phoenix
+        image: localhost/space-workload:latest
+        imagePullPolicy: Never
+
+        # Configurazione: Parla col Sidecar via loopback
+        env:
+        - name: STATE_ENDPOINT
+          value: "http://localhost:80"
+
+        # Limiti risorse per simulare hardware limitato
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m" # Throttle se esagera
+            memory: "256Mi"

@@ -5,8 +5,8 @@ import logging
 from kubernetes import client, config
 
 # =============================================================================
-#  SPACE CLOUD V5.1 - ENVIRONMENT SIMULATOR (Pub/Sub Broadcaster)
-#  Ruolo: Simula la fisica e la trasmette sul Message Broker (Redis).
+#  SPACE CLOUD V5.2 - ENVIRONMENT SIMULATOR (Pure Pub/Sub)
+#  Ruolo: Simula la fisica e la trasmette ESCLUSIVAMENTE via Message Broker.
 # =============================================================================
 
 # --- CONFIGURAZIONE FISICA ---
@@ -129,7 +129,7 @@ def get_pod_node_map(v1_client):
 
 
 def main():
-    print("\n🌍 ENVIRONMENT SIMULATOR V5.1 ONLINE (PUB/SUB MODE).")
+    print("\n🌍 ENVIRONMENT SIMULATOR V5.2 ONLINE (PURE PUB/SUB MODE).")
     k8s_api = connect_k8s()
     redis_db = connect_redis()
 
@@ -146,7 +146,6 @@ def main():
         active_nodes = get_pod_node_map(k8s_api)
         elapsed = time.time() - start_time
 
-        global_telemetry = {}
         console_log = "\r"
 
         for sat in fleet:
@@ -154,26 +153,19 @@ def main():
             sat.update(elapsed, is_working)
             sat_data = sat.get_telemetry()
 
-            # --- V5.1: EVENT-DRIVEN PUBLISH ---
-            # Ogni satellite pubblica il proprio stato su un canale indipendente
+            # --- V5.2: PURE EVENT-DRIVEN PUBLISH ---
+            # Ogni satellite pubblica il proprio stato sul proprio canale.
+            # Rimosso completamente il salvataggio dello stato globale "fleet_telemetry"
             if redis_db:
                 try:
                     channel = f"telemetry/{sat.name}"
                     redis_db.publish(channel, json.dumps(sat_data))
                 except:
                     redis_db = connect_redis()
-            # ----------------------------------
+            # ---------------------------------------
 
-            global_telemetry[sat.name] = sat_data
             status_icon = "🔥" if is_working else ("🌑" if sat.in_eclipse else "☀️")
             console_log += f"[{sat.name[-3:]} {int(sat.battery)}% {int(sat.temp)}° {status_icon}] "
-
-        # Manteniamo la variabile globale per la Dashboard UI
-        if redis_db:
-            try:
-                redis_db.set("fleet_telemetry", json.dumps(global_telemetry))
-            except:
-                pass
 
         print(console_log, end="", flush=True)
         time.sleep(1.0)

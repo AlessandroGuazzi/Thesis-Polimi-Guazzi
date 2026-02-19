@@ -88,7 +88,7 @@ if __name__ == "__main__":
         decay = math.exp(-current_epoch / 500.0)
         noise = (random.random() - 0.5) * 0.05
         current_loss = max(0.1, (1.0 * decay) + noise)
-        current_accuracy = min(0.99, (1.0 - decay) + noise)
+        current_accuracy = max(0.0, min(0.99, (1.0 - decay) + noise))
 
         print(f"🧠 TRAIN: Epoch {current_epoch} | Loss: {current_loss:.4f} | Acc: {current_accuracy:.1%}", flush=True)
 

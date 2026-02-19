@@ -106,6 +106,8 @@ if [ ! -f "$TRANSIT_DIR/checkpoint.tar" ]; then
     echo -e "\n${RED}❌ ERRORE: File checkpoint non ricevuto.${NC}"
     exit 1
 fi
+FILE_SIZE=$(du -h "$TRANSIT_DIR/checkpoint.tar" | cut -f1)
+echo -e "   📦 Archivio Checkpoint (RAM): ${GREEN}$FILE_SIZE${NC}"
 echo -e "   ⬇️  Download completato.       "
 
 # B. Carica su Destinazione

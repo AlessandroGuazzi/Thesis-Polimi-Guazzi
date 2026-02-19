@@ -102,6 +102,8 @@ if [ ! -f "$TRANSIT_DIR/$ARCHIVE_NAME" ]; then
     echo -e "${RED}❌ Errore critico: File non scaricato.${NC}"
     exit 1
 fi
+FILE_SIZE=$(du -h "$TRANSIT_DIR/$ARCHIVE_NAME" | cut -f1)
+echo -e "📦 ${CYAN}Telemetria Payload:${NC} L'archivio di memoria pesa ${GREEN}$FILE_SIZE${NC}"
 
 # Copia il checkpoint sul nodo destinazione
 echo "⬆️  Caricamento su $DEST_NODE..."

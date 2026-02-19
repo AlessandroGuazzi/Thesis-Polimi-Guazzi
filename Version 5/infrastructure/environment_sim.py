@@ -5,8 +5,8 @@ import logging
 from kubernetes import client, config
 
 # =============================================================================
-#  SPACE CLOUD V5 - ENVIRONMENT SIMULATOR (Digital Twin)
-#  Ruolo: Simula la fisica (Orbita, Temp, Batteria) e la inietta nei nodi.
+#  SPACE CLOUD V5.1 - ENVIRONMENT SIMULATOR (Pub/Sub Broadcaster)
+#  Ruolo: Simula la fisica e la trasmette sul Message Broker (Redis).
 # =============================================================================
 
 # --- CONFIGURAZIONE FISICA ---
@@ -18,7 +18,7 @@ TEMP_SPACE = -270.0
 THERMAL_MASS = 40.0
 HEATING_SUN = 100.0
 HEATING_CPU_IDLE = 10.0
-HEATING_CPU_LOAD = 85.0  # Carico termico quando il Payload è attivo
+HEATING_CPU_LOAD = 85.0
 COOLING_K = 4.0
 
 BATTERY_CHARGE_RATE = 5.0
@@ -63,7 +63,6 @@ class Satellite:
         self.battery = max(0.0, min(100.0, self.battery))
 
     def get_forecast(self, horizon_seconds=60):
-        """Simulazione Monte Carlo semplificata per la dashboard"""
         sim_angle = self.angle
         sim_temp = self.temp
         sim_batt = self.battery
@@ -97,8 +96,6 @@ class Satellite:
         }
 
 
-# --- CONNESSIONI INFRASTRUTTURA ---
-
 def connect_k8s():
     try:
         config.load_kube_config()
@@ -118,14 +115,11 @@ def connect_redis():
 
 
 def get_pod_node_map(v1_client):
-    """Mappa su quale nodo sta girando il Pod Space Mission"""
     active_nodes = set()
     if not v1_client: return active_nodes
     try:
-        # Cerca il pod con la label definita in pod-dual-container.yaml
         pods = v1_client.list_namespaced_pod(namespace="default", label_selector="app=space-mission")
         for pod in pods.items:
-            # Considera il carico attivo solo se il pod è Running o Pending (avvio)
             if pod.status.phase in ["Running", "Pending"] and not pod.metadata.deletion_timestamp:
                 if pod.spec.node_name:
                     active_nodes.add(pod.spec.node_name)
@@ -135,11 +129,10 @@ def get_pod_node_map(v1_client):
 
 
 def main():
-    print("\n🌍 ENVIRONMENT SIMULATOR V5 ONLINE.")
+    print("\n🌍 ENVIRONMENT SIMULATOR V5.1 ONLINE (PUB/SUB MODE).")
     k8s_api = connect_k8s()
     redis_db = connect_redis()
 
-    # Definizione Costellazione
     fleet = [
         Satellite("minikube", "ground"),
         Satellite("minikube-m02", "satellite", start_offset_deg=0),
@@ -150,29 +143,37 @@ def main():
     start_time = time.time()
 
     while True:
-        # 1. Rilevamento Carico (Dove si trova il Pod?)
         active_nodes = get_pod_node_map(k8s_api)
-
         elapsed = time.time() - start_time
-        telemetry_data = {}
+
+        global_telemetry = {}
         console_log = "\r"
 
-        # 2. Aggiornamento Fisica
         for sat in fleet:
             is_working = (sat.name in active_nodes)
             sat.update(elapsed, is_working)
-            telemetry_data[sat.name] = sat.get_telemetry()
+            sat_data = sat.get_telemetry()
 
-            # Icona stato
+            # --- V5.1: EVENT-DRIVEN PUBLISH ---
+            # Ogni satellite pubblica il proprio stato su un canale indipendente
+            if redis_db:
+                try:
+                    channel = f"telemetry/{sat.name}"
+                    redis_db.publish(channel, json.dumps(sat_data))
+                except:
+                    redis_db = connect_redis()
+            # ----------------------------------
+
+            global_telemetry[sat.name] = sat_data
             status_icon = "🔥" if is_working else ("🌑" if sat.in_eclipse else "☀️")
             console_log += f"[{sat.name[-3:]} {int(sat.battery)}% {int(sat.temp)}° {status_icon}] "
 
-        # 3. Broadcasting su Redis (Bus Dati)
+        # Manteniamo la variabile globale per la Dashboard UI
         if redis_db:
             try:
-                redis_db.set("fleet_telemetry", json.dumps(telemetry_data))
+                redis_db.set("fleet_telemetry", json.dumps(global_telemetry))
             except:
-                redis_db = connect_redis()  # Tentativo riconnessione
+                pass
 
         print(console_log, end="", flush=True)
         time.sleep(1.0)

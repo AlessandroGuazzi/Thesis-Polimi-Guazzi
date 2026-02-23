@@ -1,0 +1,30 @@
+// Definiamo la versione del linguaggio (usiamo l'ultima, la 3)
+syntax = "proto3";
+
+// Diamo un nome al nostro "pacchetto" per evitare conflitti
+package spacecloud;
+
+// =================================================================
+// 1. IL SERVIZIO (Il "Lavoro" che il nodo sa fare)
+// =================================================================
+service FileTransfer {
+  // Metodo StreamCheckpoint:
+  // - Riceve: "stream Chunk" (Un flusso continuo di pezzettini di file)
+  // - Restituisce: "TransferStatus" (Una ricevuta singola alla fine)
+  rpc StreamCheckpoint (stream Chunk) returns (TransferStatus) {}
+}
+
+// =================================================================
+// 2. I MESSAGGI (La forma dei dati che viaggiano)
+// =================================================================
+
+// Rappresenta un "Pezzo" (Chunk) del file .tar (es. 1 Megabyte)
+message Chunk {
+  bytes content = 1;  // Un array di byte grezzi
+}
+
+// Rappresenta la "Ricevuta di ritorno" inviata dal nodo di destinazione
+message TransferStatus {
+  bool success = 1;   // Vero o Falso (tutto ok o c'è stato un errore?)
+  string message = 2; // Un messaggio di testo ("Upload completato da 50MB")
+}

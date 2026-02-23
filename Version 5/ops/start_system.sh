@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ==============================================================================
-# SPACE CLOUD V5 - MISSION CONTROL LAUNCHER
-# Avvia: Redis, Digital Twin, MPC Controller e Dashboard Tunnel
+# SPACE CLOUD V5.2 - MISSION CONTROL LAUNCHER (P2P EDITION)
+# Avvia: Redis, Agenti di Nodo, Dashboard e i Cervelli della missione
+# Opzione: Protocollo TABULA RASA per ripartire da zero.
 # ==============================================================================
 
 GREEN='\033[0;32m'
@@ -17,11 +18,33 @@ if [ ! -d "./infrastructure" ]; then
     exit 1
 fi
 
-echo -e "${BLUE}🚀 INIZIALIZZAZIONE MISSIONE V5 (MICROSERVICES)...${NC}"
+echo -e "${BLUE}>>> 🚀 INIZIALIZZAZIONE MISSIONE V5.2 (PEER-TO-PEER) <<<${NC}"
 
-# 1. PULIZIA AUTOMATICA
+# ==============================================================================
+# PROTOCOLLO TABULA RASA (Opzionale)
+# ==============================================================================
+read -p "❓ Desideri eseguire una TABULA RASA (pulizia completa) prima di iniziare? (s/N): " choice
+if [[ "$choice" =~ ^([sS][ìÌyY])$ ]]; then
+    echo -e "${RED}🧹 Esecuzione Tabula Rasa in corso...${NC}"
+    # Rimuove tutti i componenti della missione
+    kubectl delete deployment space-mission --ignore-not-found=true
+    kubectl delete daemonset space-node-agent --ignore-not-found=true
+    kubectl delete deployment system-redis --ignore-not-found=true
+    kubectl delete service space-dashboard-svc system-redis --ignore-not-found=true
+    kubectl delete ingress space-ingress --ignore-not-found=true
+    # Rimuove l'immagine 'restored' dai nodi per forzare un avvio pulito
+    NODES=("minikube-m02" "minikube-m03" "minikube-m04")
+    for NODE in "${NODES[@]}"; do
+        echo -e "   ✨ Pulizia immagini residue su $NODE..."
+        minikube ssh -n $NODE "sudo buildah rmi localhost/space-sidecar:restored" >/dev/null 2>&1
+    done
+    echo -e "${GREEN}✅ Cluster pulito. Pronto per il decollo.${NC}\n"
+    sleep 2
+fi
+
+# 1. PULIZIA AUTOMATICA (SIGINT)
 cleanup() {
-    echo -e "\n${RED}🛑 ABORT: Chiusura sottosistemi...${NC}"
+    echo -e "\n${RED}🛑 ABORT: Chiusura sottosistemi locali...${NC}"
     kill $(jobs -p) 2>/dev/null
     exit
 }
@@ -31,9 +54,9 @@ trap cleanup SIGINT SIGTERM EXIT
 echo -e "${YELLOW}[1/5] Applicazione Configurazioni Orbitali (K8s)...${NC}"
 kubectl apply -f k8s/service-redis.yaml
 kubectl apply -f k8s/service-dashboard.yaml
-# Nota: Il pod dual-container viene lanciato per ultimo o manualmente se preferisci
+kubectl apply -f infrastructure/daemonset-agent.yaml
 kubectl apply -f k8s/pod-dual-container.yaml
-echo -e "${GREEN}   -> Manifesti applicati.${NC}"
+echo -e "${GREEN}   -> Manifesti applicati (incluso P2P Agent).${NC}"
 
 # 3. ATTESA REDIS & TUNNEL
 echo -e "${YELLOW}[2/5] Attesa Bus Dati (Redis)...${NC}"
@@ -68,7 +91,6 @@ fi
 echo -e "\n${BLUE}ℹ️  Stabilizzazione Link Dashboard (Port 8080)...${NC}"
 (
     while true; do
-        # Punta al servizio definito in k8s/service-dashboard.yaml
         kubectl port-forward svc/space-dashboard-svc 8080:80 >/dev/null 2>&1
         sleep 1
     done
@@ -76,10 +98,9 @@ echo -e "\n${BLUE}ℹ️  Stabilizzazione Link Dashboard (Port 8080)...${NC}"
 
 echo -e "\n${GREEN}✅ SISTEMA V5 OPERATIVO!${NC}"
 echo "---------------------------------------------------"
-echo -e "🖥️  Cockpit: http://localhost:8080"
-echo -e "🛡️  Guardian:  Ready (Stateful Sidecar)"
-echo -e "🔥 Payload:   Ready (Stateless Worker)"
+echo -e "🖥️  Cockpit:  http://localhost:8080"
+echo -e "🕵️  P2P Agent: Ready (DaemonSet gRPC)"
+echo -e "🛡️  Guardian:   Ready (Stateful Sidecar)"
 echo "---------------------------------------------------"
 
-# Mantieni vivo lo script
 wait $SCHED_PID

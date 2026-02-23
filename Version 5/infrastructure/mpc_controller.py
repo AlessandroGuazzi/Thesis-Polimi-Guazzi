@@ -2,12 +2,11 @@ import time
 import json
 import redis
 import logging
-import subprocess
 import os
 
 # =============================================================================
-#  SPACE CLOUD V5.1 - MPC CONTROLLER (Event-Driven Brain)
-#  Ruolo: Ascolta i sensori via Pub/Sub e decide in modo reattivo.
+#  SPACE CLOUD V5.2 - MPC CONTROLLER (Event-Driven Brain)
+#  Ruolo: Ascolta i sensori via Pub/Sub e trasmette ordini via Redis.
 # =============================================================================
 
 # Soglie di Sicurezza
@@ -88,8 +87,7 @@ def find_best_target(fleet_state, current_node):
         score -= data['temp']
         if not data['eclipse']: score += 50
 
-        logger.info(f"   Target {name}: Bat={data['battery']}% Temp={data['temp']}° -> Score={score:.1f}")
-
+        # Rimosso il log dettagliato di ogni singolo target per tenere la console più pulita
         if score > best_score:
             best_score = score
             best_node = name
@@ -97,34 +95,40 @@ def find_best_target(fleet_state, current_node):
     return best_node
 
 
-def trigger_migration(source, dest):
-    logger.warning(f"🚨 ACTION: MIGRAZIONE SIDECAR {source} -> {dest}")
-    script_path = "./ops/migrate_sidecar.sh"
+# =============================================================================
+# V5.2: COMMAND PUBLISH (Addio Script Bash!)
+# =============================================================================
+def trigger_migration(redis_client, source, dest):
+    logger.warning(f"🚨 ACTION: ORDINE DI MIGRAZIONE {source} -> {dest}")
 
-    if not os.path.exists(script_path):
-        logger.error(f"❌ Script critico mancante: {script_path}")
-        return
+    # Prepariamo l'ordine in formato JSON
+    payload = {
+        "action": "MIGRATE",
+        "target_node": dest
+    }
 
-    cmd = [script_path, source, dest]
+    # Pubblichiamo l'ordine sul canale di ascolto dell'Agente del nodo sotto sforzo
+    channel = f"commands/{source}"
     try:
-        subprocess.run(cmd, check=True)
-        logger.info("✅ Migrazione Sidecar completata.")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Errore Migrazione (Code {e.returncode})")
+        redis_client.publish(channel, json.dumps(payload))
+        logger.info(f"✅ Ordine trasmesso con successo sul canale '{channel}'.")
+    except Exception as e:
+        logger.error(f"❌ Impossibile trasmettere l'ordine: {e}")
 
 
 def watchdog(current_temp):
     if current_temp > FUSION_TEMP:
         logger.critical(f"🔥 MELTDOWN IMMINENTE ({current_temp}°C). EMERGENCY KILL.")
-        subprocess.run(["kubectl", "delete", "deployment", "space-mission"], stdout=subprocess.DEVNULL)
+        # Sostituito subprocess con os.system per pulizia dei moduli
+        os.system("kubectl delete deployment space-mission > /dev/null 2>&1")
         return True
     return False
 
 
 def main():
-    logger.info("🧠 MPC BRAIN V5.1 ONLINE. Attesa Link Sensori (Pub/Sub)...")
+    logger.info("🧠 MPC BRAIN V5.2 ONLINE. Attesa Link Sensori (Pub/Sub)...")
 
-    fleet_state = {}  # Mappa mentale locale dello stato della costellazione
+    fleet_state = {}
     last_migration_time = 0
 
     while True:
@@ -134,22 +138,18 @@ def main():
             continue
 
         try:
-            # Sottoscrizione al Broker Eventi
             pubsub = r.pubsub()
             pubsub.psubscribe('telemetry/*')
             logger.info("📡 Link stabilito. Iscritto ai canali telemetry/*")
 
-            # Loop Reattivo (Bloccante: attende i messaggi)
             for message in pubsub.listen():
                 if message['type'] == 'pmessage':
                     channel = message['channel']
-                    node_name = channel.split('/')[1]  # Estrae 'minikube-m02'
+                    node_name = channel.split('/')[1]
 
-                    # Aggiorna la mappa locale con l'ultimo pacchetto
                     node_data = json.loads(message['data'])
                     fleet_state[node_name] = node_data
 
-                    # Trova il nodo attualmente in lavoro (se esiste)
                     active_node = None
                     for name, data in fleet_state.items():
                         if data.get('is_working', False):
@@ -158,33 +158,28 @@ def main():
 
                     if not active_node: continue
 
-                    # === LOGICA REATTIVA ===
-                    # Processa l'MPC solo quando arriva un tick dal nodo attualmente sotto sforzo.
-                    # Questo evita di ricalcolare previsioni per nodi in idle.
                     if node_name == active_node:
                         current_data = fleet_state[active_node]
 
                         if watchdog(current_data['temp']): continue
 
-                        # Predizione MPC
                         sim = VirtualSatellite(current_data)
                         is_safe, reason = sim.predict_future(PREDICTION_HORIZON)
 
                         if not is_safe:
                             time_since = time.time() - last_migration_time
                             if time_since < MIGRATION_COOLDOWN:
-                                logger.info(
-                                    f"⚠️  Risk: {reason} (Cooldown active: {int(MIGRATION_COOLDOWN - time_since)}s)")
+                                logger.info(f"⚠️  Risk: {reason} (Cooldown: {int(MIGRATION_COOLDOWN - time_since)}s)")
                             else:
                                 logger.warning(f"🔮 PREDICTION SUL NODO {active_node}: {reason}")
                                 target = find_best_target(fleet_state, active_node)
                                 if target:
-                                    trigger_migration(active_node, target)
+                                    # Passiamo l'oggetto connessione 'r' alla funzione
+                                    trigger_migration(r, active_node, target)
                                     last_migration_time = time.time()
                                 else:
                                     logger.error("😱 NO SAFE TARGETS! BRACE FOR IMPACT.")
                         else:
-                            # Stampa di OK ogni 10 secondi per rassicurare l'operatore
                             if int(time.time()) % 10 == 0:
                                 logger.info(f"✅ Nodo {active_node} Operativo. Prediction: SAFE.")
 

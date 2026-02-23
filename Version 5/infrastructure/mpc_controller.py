@@ -14,7 +14,7 @@ CRITICAL_BATTERY = 30.0
 CRITICAL_TEMP_HIGH = 80.0
 FUSION_TEMP = 120.0
 PREDICTION_HORIZON = 60
-MIGRATION_COOLDOWN = 20
+MIGRATION_COOLDOWN = 30  # Cooldown post-atterraggio
 
 # Parametri fisici
 ORBIT_PERIOD = 120.0
@@ -74,7 +74,6 @@ class VirtualSatellite:
 
 
 # --- LOGICA DI CONTROLLO ---
-
 def find_best_target(fleet_state, current_node):
     best_node = None
     best_score = -9999
@@ -87,7 +86,6 @@ def find_best_target(fleet_state, current_node):
         score -= data['temp']
         if not data['eclipse']: score += 50
 
-        # Rimosso il log dettagliato di ogni singolo target per tenere la console più pulita
         if score > best_score:
             best_score = score
             best_node = name
@@ -95,19 +93,9 @@ def find_best_target(fleet_state, current_node):
     return best_node
 
 
-# =============================================================================
-# V5.2: COMMAND PUBLISH (Addio Script Bash!)
-# =============================================================================
 def trigger_migration(redis_client, source, dest):
     logger.warning(f"🚨 ACTION: ORDINE DI MIGRAZIONE {source} -> {dest}")
-
-    # Prepariamo l'ordine in formato JSON
-    payload = {
-        "action": "MIGRATE",
-        "target_node": dest
-    }
-
-    # Pubblichiamo l'ordine sul canale di ascolto dell'Agente del nodo sotto sforzo
+    payload = {"action": "MIGRATE", "target_node": dest}
     channel = f"commands/{source}"
     try:
         redis_client.publish(channel, json.dumps(payload))
@@ -119,17 +107,27 @@ def trigger_migration(redis_client, source, dest):
 def watchdog(current_temp):
     if current_temp > FUSION_TEMP:
         logger.critical(f"🔥 MELTDOWN IMMINENTE ({current_temp}°C). EMERGENCY KILL.")
-        # Sostituito subprocess con os.system per pulizia dei moduli
         os.system("kubectl delete deployment space-mission > /dev/null 2>&1")
         return True
     return False
 
 
+# =============================================================================
+# IL CERVELLO (Loop Principale)
+# =============================================================================
 def main():
     logger.info("🧠 MPC BRAIN V5.2 ONLINE. Attesa Link Sensori (Pub/Sub)...")
 
     fleet_state = {}
+
+    # Variabili di Stato
     last_migration_time = 0
+    migrating_to = None
+    migration_start_time = 0
+    MIGRATION_TIMEOUT = 120  # Se la migrazione fallisce e passano 2 minuti, resetta.
+
+    system_start_time = time.time()
+    BOOT_GRACE_PERIOD = 45
 
     while True:
         r = connect_redis()
@@ -156,8 +154,34 @@ def main():
                             active_node = name
                             break
 
+                    # -----------------------------------------------------------------
+                    # 1. GESTIONE STATO: "IN TRANSITO"
+                    # -----------------------------------------------------------------
+                    if migrating_to:
+                        if active_node == migrating_to:
+                            logger.info(
+                                f"🛬 SBARCO CONFERMATO su {active_node}! Avvio Cooldown di sicurezza ({MIGRATION_COOLDOWN}s).")
+                            migrating_to = None
+                            last_migration_time = time.time()  # IL COOLDOWN PARTE SOLO ORA!
+
+                        elif time.time() - migration_start_time > MIGRATION_TIMEOUT:
+                            logger.error(f"❌ TIMEOUT: {migrating_to} disperso nello spazio. Reset sensori.")
+                            migrating_to = None
+                            last_migration_time = time.time()
+
+                        else:
+                            # Stampa un avviso di transito solo ogni 2 secondi per non riempire la console
+                            if node_name == migrating_to and int(time.time()) % 2 == 0:
+                                logger.info(f"🚀 IN TRANSITO... Attesa telemetria dal nuovo pod su {migrating_to}...")
+
+                        continue  # IGNORA TUTTE LE ALTRE REGOLE E SALTA IL RESTO DEL LOOP
+
+                    # Se non c'è nessun pod attivo e non stiamo migrando, aspetta.
                     if not active_node: continue
 
+                    # -----------------------------------------------------------------
+                    # 2. GESTIONE STATO: "OPERATIVO" (Controllo Rischi)
+                    # -----------------------------------------------------------------
                     if node_name == active_node:
                         current_data = fleet_state[active_node]
 
@@ -167,16 +191,25 @@ def main():
                         is_safe, reason = sim.predict_future(PREDICTION_HORIZON)
 
                         if not is_safe:
+                            time_since_boot = time.time() - system_start_time
+                            if time_since_boot < BOOT_GRACE_PERIOD:
+                                if int(time.time()) % 5 == 0:
+                                    logger.info(
+                                        f"⏳ Boot Sequence: Ignoro rischio '{reason}' per altri {int(BOOT_GRACE_PERIOD - time_since_boot)}s")
+                                continue
+
                             time_since = time.time() - last_migration_time
                             if time_since < MIGRATION_COOLDOWN:
-                                logger.info(f"⚠️  Risk: {reason} (Cooldown: {int(MIGRATION_COOLDOWN - time_since)}s)")
+                                logger.info(
+                                    f"⚠️  Risk: {reason} (Cooldown di stabilizzazione: {int(MIGRATION_COOLDOWN - time_since)}s)")
                             else:
                                 logger.warning(f"🔮 PREDICTION SUL NODO {active_node}: {reason}")
                                 target = find_best_target(fleet_state, active_node)
                                 if target:
-                                    # Passiamo l'oggetto connessione 'r' alla funzione
                                     trigger_migration(r, active_node, target)
-                                    last_migration_time = time.time()
+                                    # CAMBIO DI STATO
+                                    migrating_to = target
+                                    migration_start_time = time.time()
                                 else:
                                     logger.error("😱 NO SAFE TARGETS! BRACE FOR IMPACT.")
                         else:

@@ -1,6 +1,19 @@
 # =============================================================================
-# 1. PERMESSI (RBAC) - "La Tessera Magnetica dell'Agente"
+#  SPACE CLOUD V5.2 - DISTRIBUTED NODE AGENT & RBAC
+#  Description:
+#  This manifest handles the deployment of the 'Agent' on every satellite.
+#  It is divided into two sections:
+#  1. RBAC: The "security clearance" allowing the agent to manipulate
+#     the cluster (scale deployments, exec into pods, etc.).
+#  2. DaemonSet: Ensures that exactly one Agent instance runs on every
+#     node labeled 'satellite'.
 # =============================================================================
+
+# --- 1. PERMISSIONS (RBAC) - The Agent's Security Clearance ---
+# We define a ServiceAccount, a Role, and a Binding. This is what allows
+# the Python script in node_agent.py to call 'kubectl patch' or 'kubectl exec'
+# without being blocked by Kubernetes security.
+
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -13,6 +26,7 @@ metadata:
   name: space-agent-role
 rules:
 - apiGroups: ["", "apps"]
+  # Resources the agent must control to perform P2P migration
   resources: ["pods", "pods/exec", "deployments", "deployments/scale", "nodes", "nodes/proxy"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
@@ -29,9 +43,9 @@ roleRef:
   name: space-agent-role
   apiGroup: rbac.authorization.k8s.io
 
-# =============================================================================
-# 2. IL DAEMONSET - "Il dispiegamento su tutta la flotta"
-# =============================================================================
+# --- 2. THE DAEMONSET - Fleet-wide Deployment ---
+# Unlike a Deployment, a DaemonSet automatically scales with the cluster:
+# if you add a new satellite node, a new Agent is born there automatically.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -48,9 +62,11 @@ spec:
       labels:
         app: space-node-agent
     spec:
+      # Attaches the security clearance defined above to the pod
       serviceAccountName: space-agent-sa
 
-      # NECESSARI PER BUILDAH E MANIPOLAZIONE NODI
+      # HIGH PRIVILEGE NETWORKING:
+      # Allows the agent to see the node's real IP for P2P gRPC streaming
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
 
@@ -63,6 +79,7 @@ spec:
         imagePullPolicy: Never
 
         securityContext:
+          # Required for Buildah to commit new images locally
           privileged: true
 
         env:
@@ -70,25 +87,26 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        # ---> LA FIX E' QUI: Usiamo il nome di rete breve! <---
+
+        # Internal DNS resolution to find the Ground Station Redis broker
         - name: REDIS_HOST
           value: "system-redis"
 
+        # === DIRECT SYSTEM ACCESS ===
+        # The agent needs to talk to the local container engine and kubelet
+        # to manage the .tar memory dumps.
         volumeMounts:
         - name: containers-storage
-          mountPath: /var/lib/containers
+          mountPath: /var/lib/containers # Where Buildah stores layers
         - name: kubelet-dir
-          mountPath: /var/lib/kubelet
+          mountPath: /var/lib/kubelet    # Where CRIU checkpoints are stored
         - name: run-dir
-          mountPath: /run
+          mountPath: /run                # Required for container runtime sockets
 
       volumes:
       - name: containers-storage
-        hostPath:
-          path: /var/lib/containers
+        hostPath: { path: /var/lib/containers }
       - name: kubelet-dir
-        hostPath:
-          path: /var/lib/kubelet
+        hostPath: { path: /var/lib/kubelet }
       - name: run-dir
-        hostPath:
-          path: /run
+        hostPath: { path: /run }

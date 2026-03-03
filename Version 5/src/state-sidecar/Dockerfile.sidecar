@@ -1,13 +1,10 @@
-# ============================================================
+# =============================================================
 # GUARDIAN MODULE (State Sidecar)
 # Base: Debian 12 (Bookworm) - CRITICAL for CRIU Support
-# ============================================================
+# =============================================================
 FROM node:20-bookworm
 
-# 1. Installazione Tool di Sistema (Kit di Sopravvivenza)
-# [cite_start]criu: Il cuore della migrazione (Checkpoint/Restore) [cite: 367, 406]
-# [cite_start]iproute2/iptables: Necessari per ricostruire la rete post-migrazione [cite: 192]
-# procps: Per debug dei processi
+# 1. System Survival Kit
 RUN apt-get update && apt-get install -y \
     criu \
     iproute2 \
@@ -17,28 +14,21 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# 2. Dipendenze Node.js
-# express: Server API
-# redis: Client per telemetria sistema
-# body-parser: Per ricevere JSON pesanti dal Payload
+# 2. Node.js Dependencies
 RUN npm install express redis body-parser
 
-# 3. Copia del "Cervello" del Guardian
+# 3. Guardian Brain & Logic
 COPY state_manager.js .
 COPY entrypoint.sh .
 
-# 4. Copia della Dashboard (Interfaccia Utente)
-# NOTA: La cartella ora si chiama 'dashboard-ui' come da nuova struttura
+# 4. Dashboard UI
 COPY dashboard-ui/ ./dashboard-ui/
 
-# 5. Configurazione Script di Avvio
+# 5. Execution Permissions
 RUN chmod +x entrypoint.sh
 
-# 6. Preparazione Directory Critiche per CRIU
-# Qui CRIU scriverà i dump della memoria RAM
+# 6. Critical Directory Preparation for CRIU
 RUN mkdir -p /var/lib/kubelet/checkpoints /tmp/restore
 
 # 7. Entrypoint
-# Questo script parte solo al "Cold Start".
-# Durante il restore, CRIU bypassa questo CMD.
 ENTRYPOINT ["/app/entrypoint.sh"]

@@ -1,31 +1,33 @@
-# ============================================================
+# =============================================================
 # NODE AGENT (gRPC + Redis)
-# Ruolo: Esecutore di Migrazione Peer-to-Peer sui Nodi
-# ============================================================
+# Role: Peer-to-Peer Migration Executor on Satellite Nodes
+# =============================================================
 FROM python:3.9-slim
 
-# Evita il buffering dei log Python
+# Prevents Python from buffering logs, ensuring immediate visibility in 'kubectl logs'
 ENV PYTHONUNBUFFERED=1
 
-# 1. Installazione dipendenze di sistema e Buildah
+# 1. System Dependencies & Buildah Installation
 RUN apt-get update && apt-get install -y \
     curl \
     buildah \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Installazione di Kubectl (Per parlare con il cluster)
+# 2. Kubectl Installation
+# Necessary for the agent to perform 'patch' and 'scale' operations on the cluster.
 RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
     chmod +x kubectl && mv kubectl /usr/local/bin/
 
-# 3. Installazione Dipendenze Python (gRPC e Redis)
+# 3. Python Dependencies (gRPC, Redis, Requests)
+# Installs the communication stack for P2P streaming and command listening.
 RUN pip install --no-cache-dir grpcio grpcio-tools redis requests
 
 WORKDIR /agent
 
-# 4. Copia del codice sorgente e delle impalcature protobuf
+# 4. Source Code and Protobuf Stubs
 COPY node_agent.py .
 COPY checkpoint_transfer_pb2.py .
 COPY checkpoint_transfer_pb2_grpc.py .
 
-# 5. Avvio del Demone
+# 5. Daemon Launch
 CMD ["python", "node_agent.py"]

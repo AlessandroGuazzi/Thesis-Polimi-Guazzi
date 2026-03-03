@@ -1,20 +1,35 @@
+# =============================================================================
+#  SPACE CLOUD V5.2 - INFRASTRUCTURE BACKBONE (Redis)
+#  Description:
+#  This manifest deploys the central Message Broker (Redis).
+#  In our event-driven architecture, Redis is the "Ether" through which
+#  telemetry and commands travel. It is intentionally pinned to the
+#  Ground Station to ensure it remains a stable, non-migrating reference
+#  point for all orbital nodes.
+# =============================================================================
+
+# --- 1. REDIS SERVICE (The Internal DNS Endpoint) ---
+# This provides a stable hostname 'system-redis' for the entire cluster.
+# Satellites connect to 'redis://system-redis:6379' instead of tracking
+# volatile IP addresses.
 apiVersion: v1
 kind: Service
 metadata:
   name: system-redis
 spec:
   ports:
-    - port: 6379
-      targetPort: 6379
+    - port: 6379        # The standard Redis port exposed to the cluster
+      targetPort: 6379  # The port mapped to the Redis container
   selector:
     app: system-redis
 ---
+# --- 2. REDIS DEPLOYMENT (The Messaging Engine) ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: system-redis
 spec:
-  replicas: 1
+  replicas: 1           # Only one central broker is needed for this constellation
   selector:
     matchLabels:
       app: system-redis
@@ -23,12 +38,18 @@ spec:
       labels:
         app: system-redis
     spec:
-      # Redis gira SOLO sulla stazione di terra (Minikube master node)
-      # per disaccoppiarlo dalla migrazione dei satelliti
+      # === GROUND ANCHORING (Strategic Placement) ===
+      # We force Redis to run ONLY on the 'ground-station' node.
+      # This decouples the communication infrastructure from the
+      # satellite nodes, ensuring the "radio" doesn't disappear
+      # during a satellite thermal migration.
       nodeSelector:
         type: ground-station
+
       containers:
         - name: redis
+          # Using the lightweight Alpine-based image to minimize
+          # Ground Station resource consumption.
           image: docker.io/library/redis:alpine
           ports:
-            - containerPort: 6379
+            - containerPort: 6379 # Internal container port

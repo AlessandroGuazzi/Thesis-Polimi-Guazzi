@@ -1,31 +1,28 @@
-# ============================================================
+# =============================================================
 # PAYLOAD MODULE (Phoenix Compute)
-# Base: Python 3.9 Slim - Ottimizzato per velocità e leggerezza
-# ============================================================
+# Base: Python 3.9 Slim - Optimized for speed and low overhead
+# =============================================================
 FROM python:3.9-slim
 
-# Evita che Python bufferizzi stdout/stderr (Log immediati su kubectl)
+# Ensure immediate logging to the Ground Station
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# 1. Installazione Dipendenze OS minime
+# 1. Minimal OS Dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Copia dei Requisiti
+# 2. Requirements Copy
 COPY requirements.txt .
 
-# 3. Installazione Librerie Python
-# requests: Per parlare con il Sidecar
-# numpy: Per simulazione calcolo matriciale (opzionale ma consigliato per carico reale)
+# 3. Python Library Installation
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir numpy
 
-# 4. Copia del Codice di Training
+# 4. Training Loop Code
 COPY train_loop.py .
 
-# 5. Avvio
-# Il payload parte, chiede lo stato al sidecar e inizia a lavorare
+# 5. Launch Sequence
 CMD ["python", "train_loop.py"]

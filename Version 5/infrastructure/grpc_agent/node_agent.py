@@ -9,46 +9,53 @@ import requests
 import grpc
 import redis
 
-# Importiamo le impalcature generate nella Fase 1
+# Importing generated gRPC and Protocol Buffer stubs for Peer-to-Peer communication
 import checkpoint_transfer_pb2
 import checkpoint_transfer_pb2_grpc
 
-# Configurazione Ambiente
+# Environment Configuration
+# NODE_NAME: Current physical satellite host
+# REDIS_HOST: Central message broker address
 NODE_NAME = os.getenv("NODE_NAME", "minikube-m02")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 GRPC_PORT = "50051"
 
 
 # ==============================================================================
-# 2.1 IL RICEVITORE (gRPC Server) - Gestisce i pacchetti in arrivo
+# 2.1 THE RECEIVER (gRPC Server) - Handles incoming memory dumps
 # ==============================================================================
 class FileTransferServicer(checkpoint_transfer_pb2_grpc.FileTransferServicer):
 
     def StreamCheckpoint(self, request_iterator, context):
-        print(f"\n📥 [gRPC SERVER] Inizio ricezione flusso dati verso {NODE_NAME}...")
+        """Receives a binary stream of the memory dump and saves it to disk."""
+        print(f"\n📥 [gRPC SERVER] Incoming data stream directed to {NODE_NAME}...")
         save_path = "/tmp/checkpoint.tar"
 
-        # Riceve i chunk in streaming e li incolla su disco
+        # Sequential writing of incoming chunks to a TAR archive
         with open(save_path, "wb") as f:
             for chunk in request_iterator:
                 f.write(chunk.content)
 
-        print(f"✅ [gRPC SERVER] File ricevuto! Avvio ricostruzione in background...")
-        # Avviamo il processo Kube/Buildah in un thread separato
-        # per liberare subito la connessione gRPC
+        print(f"✅ [gRPC SERVER] File received! Triggering background reconstruction...")
+
+        # We launch the local deployment logic in a separate thread to immediately
+        # release the gRPC connection while the node works on the restore
         threading.Thread(target=self.rebuild_and_deploy, args=(save_path,)).start()
 
-        return checkpoint_transfer_pb2.TransferStatus(success=True, message="Ricezione completata!")
+        return checkpoint_transfer_pb2.TransferStatus(success=True, message="Reception completed!")
 
     # ==============================================================================
-    # 2.2 ORCHESTRATORE LOCALE (Buildah + Kube)
+    # 2.2 LOCAL ORCHESTRATOR (Buildah + Kube) - Restores the workload locally
     # ==============================================================================
     def rebuild_and_deploy(self, tar_path):
+        """Converts the TAR memory dump into a K8s-ready container image."""
         t_start_total = time.time()
 
-        # --- CRONOMETRO 3: BUILDAH ---
+        # --- STEP 1: BUILDAH IMAGE RECONSTRUCTION ---
         t0 = time.time()
-        print("🔨 [BUILDAH] Ricostruzione immagine in corso...")
+        print("🔨 [BUILDAH] Reconstructing container image from memory dump...")
+        # We use Buildah to create a new image 'localhost/space-sidecar:restored'
+        # based on the incoming memory pages
         build_script = f"""
         buildah rm restoration-lab 2>/dev/null || true
         buildah from --name restoration-lab scratch
@@ -60,11 +67,12 @@ class FileTransferServicer(checkpoint_transfer_pb2_grpc.FileTransferServicer):
         """
         subprocess.run(build_script, shell=True, check=False)
         t_buildah = time.time() - t0
-        print(f"⏱️  [TIMING] Compilazione Buildah completata in {t_buildah:.2f} secondi.")
+        print(f"⏱️  [TIMING] Buildah compilation completed in {t_buildah:.2f} seconds.")
 
-        # --- CRONOMETRO 4: SWITCH K8S ---
+        # --- STEP 2: K8S DEPLOYMENT SWITCH ---
         t0 = time.time()
-        print("⚡ [K8S] Patching Deployment per eseguire lo switch...")
+        print("⚡ [K8S] Patching Deployment to switch execution to this node...")
+        # Patching JSON to update nodeSelector and image name to the 'restored' version
         patch_json = {
             "spec": {
                 "template": {
@@ -80,65 +88,65 @@ class FileTransferServicer(checkpoint_transfer_pb2_grpc.FileTransferServicer):
             }
         }
         patch_str = json.dumps(patch_json)
-        subprocess.run(f"kubectl patch deployment space-mission --type='strategic' -p '{patch_str}'", shell=True)
 
-        # 1. Diciamo al deployment di non aspettarsi più nessun Pod
+        # Sequence to force-refresh the Pod on the current node
+        # 1. Scale down to zero
         subprocess.run("kubectl scale deployment space-mission --replicas=0", shell=True)
-        # 2. Polverizziamo istantaneamente il vecchio Pod (bypassa il blocco 'Terminating')
+        # 2. Force delete any lingering pod from the previous node (bypasses 'Terminating' delay)
         subprocess.run("kubectl delete pod -l app=space-mission --force --grace-period=0", shell=True,
                        stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        # 3. Aggiorniamo le coordinate e l'immagine
+        # 3. Apply the patch with new coordinates
         subprocess.run(f"kubectl patch deployment space-mission --type='strategic' -p '{patch_str}'", shell=True)
-        # 4. Riaccendiamo i motori
+        # 4. Scale up to one to spawn the pod on this node
         subprocess.run("kubectl scale deployment space-mission --replicas=1", shell=True)
 
         t_patch = time.time() - t0
-        print(f"⏱️  [TIMING] Riprogrammazione K8s inviata in {t_patch:.2f} secondi.")
+        print(f"⏱️  [TIMING] K8s reprogramming sent in {t_patch:.2f} seconds.")
 
-        # --- CRONOMETRO 5: ATTESA INTELLIGENTE POD E CONTAINER ---
+        # --- STEP 3: INTELLIGENT WAIT FOR CONTAINER AWAKENING ---
         t0 = time.time()
-        print("⏳ [K8S] In attesa del riavvio del Pod e risveglio container...")
+        print("⏳ [K8S] Waiting for Pod restart and container awakening...")
         success = False
 
+        # Polling loop to detect when the pod is ready to receive commands
         for _ in range(40):
             try:
-                # 1. Trova il nome del nuovo pod (ora siamo sicuri che il vecchio è morto)
+                # Get the name of the newly created pod on this node
                 output = subprocess.check_output(
                     f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[0].metadata.name}}'",
                     shell=True, stderr=subprocess.DEVNULL)
                 pod_name = output.decode('utf-8').strip()
 
                 if pod_name:
-                    # 2. Tenta di lanciare il comando exec. Finché il container non è fisicamente nato, questo fallirà in silenzio.
+                    # Attempt to trigger the internal 'landed' state in the Sidecar Guardian
                     exec_cmd = f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/landed"
                     res = subprocess.run(exec_cmd, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
-                    # Se il comando ha successo (exit code 0), significa che il container è vivo e pronto!
+                    # Return code 0 means the container is up and the file was successfully created
                     if res.returncode == 0:
                         success = True
                         break
             except Exception:
                 pass
 
-            # Aspetta 1 secondo e riprova
             time.sleep(1)
 
         t_wait = time.time() - t0
 
         if success:
-            print(f"⏱️  [TIMING] Pod emerso e container risvegliato in {t_wait:.2f} secondi!")
+            print(f"⏱️  [TIMING] Pod emerged and container awakened in {t_wait:.2f} seconds!")
         else:
-            print(f"❌ [TIMING] Timeout! Il Pod non si è risvegliato dopo {t_wait:.2f} secondi.")
+            print(f"❌ [TIMING] Timeout! Pod did not wake up after {t_wait:.2f} seconds.")
 
         t_total = time.time() - t_start_total
-        print(f"🎉 [ORCHESTRATOR] Migrazione completata localmente in {t_total:.2f}s totali!")
+        print(f"🎉 [ORCHESTRATOR] Migration completed locally in {t_total:.2f}s total!")
 
 
 # ==============================================================================
-# 2.3 IL MITTENTE (gRPC Client) - Congela e spedisce
+# 2.3 THE SENDER (gRPC Client) - Freezes and ships the state
 # ==============================================================================
 def generate_chunks(filepath, chunk_size=1024 * 1024):
-    """Spezza il file in chunk da 1MB per lo streaming"""
+    """Generator to split the memory TAR into 1MB chunks for binary streaming."""
     with open(filepath, 'rb') as f:
         while True:
             data = f.read(chunk_size)
@@ -147,98 +155,104 @@ def generate_chunks(filepath, chunk_size=1024 * 1024):
 
 
 def execute_migration_sender(target_node):
+    """Orchestrates the local checkpointing and P2P streaming to the target satellite."""
     t_start_total = time.time()
-    print(f"\n🚀 [MITTENTE] Esecuzione ordine! Congelamento verso {target_node}...")
+    print(f"\n🚀 [SENDER] Executing order! Freezing and shipping to {target_node}...")
 
+    # Identify local pod name to target the checkpoint
     pod_name = subprocess.check_output(
         f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[0].metadata.name}}'",
         shell=True).decode('utf-8').strip()
-    subprocess.run(f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/prepare_jump", shell=True)
-    time.sleep(3)  # Tempo fisiologico per disconnettere i client
 
-    # --- CRONOMETRO 1: CHECKPOINT ---
+    # Notify the Sidecar Guardian to prepare for migration (close sockets, etc.)
+    subprocess.run(f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/prepare_jump", shell=True)
+    time.sleep(1)  # Grace period for the app to disconnect safely
+
+    # --- PHASE 1: CRIU CHECKPOINT ---
     t0 = time.time()
-    print("📸 [MITTENTE] Richiesta Snapshot RAM a Kubelet...")
+    print("📸 [SENDER] Requesting RAM Snapshot from Kubelet API...")
+    # Open a local proxy to securely communicate with the K8s API
     proxy_proc = subprocess.Popen(["kubectl", "proxy", "--port=8001"], stdout=subprocess.DEVNULL)
     time.sleep(2)  # Attesa start proxy
 
     api_url = f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy/checkpoint/default/{pod_name}/sidecar-guardian"
     response = requests.post(api_url)
-    proxy_proc.terminate()
+    proxy_proc.terminate()  # Close proxy immediately after the request
 
     if "items" not in response.json():
-        print(f"❌ [MITTENTE] Errore API: {response.text}")
+        print(f"❌ [SENDER] API Error: {response.text}")
         return
 
     checkpoint_path = response.json()["items"][0]
     t_checkpoint = time.time() - t0
-    print(f"⏱️  [TIMING] Checkpoint generato in {t_checkpoint:.2f} secondi.")
-    print(f"📦 [MITTENTE] Path: {checkpoint_path}")
+    print(f"⏱️  [TIMING] Checkpoint generated in {t_checkpoint:.2f} seconds.")
 
+    # Find the IP address of the target Node Agent for Peer-to-Peer transfer
     target_ip = subprocess.check_output(
         f"kubectl get pod -l app=space-node-agent --field-selector spec.nodeName={target_node} -o jsonpath='{{.items[0].status.podIP}}'",
         shell=True).decode('utf-8').strip()
 
-    # --- CRONOMETRO 2: TRASFERIMENTO GRPC ---
+    # --- PHASE 2: gRPC STREAMING TRANSFER ---
     t0 = time.time()
-    print(f"📡 [MITTENTE] Apertura streaming gRPC verso {target_ip}:{GRPC_PORT}...")
+    print(f"📡 [SENDER] Opening gRPC stream towards {target_ip}:{GRPC_PORT}...")
     channel = grpc.insecure_channel(f"{target_ip}:{GRPC_PORT}")
     stub = checkpoint_transfer_pb2_grpc.FileTransferStub(channel)
 
+    # Send the memory dump chunk by chunk over the binary tunnel
     status = stub.StreamCheckpoint(generate_chunks(checkpoint_path))
     t_transfer = time.time() - t0
-    print(f"⏱️  [TIMING] Trasferimento gRPC 50MB completato in {t_transfer:.2f} secondi.")
+    print(f"⏱️  [TIMING] gRPC 50MB transfer completed in {t_transfer:.2f} seconds.")
 
     t_total = time.time() - t_start_total
-    print(f"🏁 [MITTENTE] Operazioni di invio concluse in {t_total:.2f}s totali!")
+    print(f"🏁 [SENDER] Outbound operations concluded in {t_total:.2f}s total!")
 
 
 # ==============================================================================
-# IL SISTEMA NERVOSO (Redis Listener)
+# THE NERVOUS SYSTEM (Redis Listener) - Listens for central commands
 # ==============================================================================
 def redis_listener():
+    """Subscribes to the specific node channel to receive migration triggers."""
     channel = f"commands/{NODE_NAME}"
-    print(f"📻 [REDIS] Avvio fase di aggancio al canale: {channel}...")
+    print(f"📻 [REDIS] Subscribing to command channel: {channel}...")
 
     while True:
         try:
-            # Tenta la connessione
             r = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True, socket_connect_timeout=3)
-            r.ping()  # Testa se il server è veramente pronto
+            r.ping()  # Connection check
 
             pubsub = r.pubsub()
             pubsub.subscribe(channel)
-            print(f"✅ [REDIS] Connesso al DB Centrale! In ascolto di comandi...")
+            print(f"✅ [REDIS] Connected to Central DB! Listening for migration orders...")
 
-            # Loop bloccante che intercetta i messaggi
+            # Blocking loop waiting for JSON commands from the MPC Controller
             for message in pubsub.listen():
                 if message['type'] == 'message':
                     data = json.loads(message['data'])
                     if data.get('action') == 'MIGRATE':
                         target = data.get('target_node')
-                        # Quando arriva un ordine, innesca il Mittente in un thread
+                        # Trigger the sender logic in a new thread for non-blocking execution
                         threading.Thread(target=execute_migration_sender, args=(target,)).start()
 
         except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
-            print(f"⚠️ [REDIS] Segnale da {REDIS_HOST} assente. Riprovo tra 3 secondi...")
+            print(f"⚠️ [REDIS] Connection lost with {REDIS_HOST}. Retrying in 3s...")
             time.sleep(3)
         except Exception as e:
-            print(f"❌ [REDIS] Errore imprevisto nel ricevitore: {e}")
+            print(f"❌ [REDIS] Unexpected receiver error: {e}")
             time.sleep(3)
 
 
 # ==============================================================================
-# INIZIALIZZATORE
+# INITIALIZER
 # ==============================================================================
 if __name__ == '__main__':
-    # 1. Accende il Ricevitore gRPC
+    # 1. Start the gRPC Receiver Server
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     checkpoint_transfer_pb2_grpc.add_FileTransferServicer_to_server(FileTransferServicer(), server)
     server.add_insecure_port(f'[::]:{GRPC_PORT}')
     server.start()
-    print(f"🛡️  [AGENT] gRPC Server attivo sulla porta {GRPC_PORT}.")
+    print(f"🛡️  [AGENT] gRPC Server active on port {GRPC_PORT}.")
 
-    # 2. Accende l'ascolto su Redis (Bloccante)
+    # 2. Start the Redis Listener (Blocking main loop)
     try:
         redis_listener()
     except KeyboardInterrupt:

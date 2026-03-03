@@ -1,3 +1,14 @@
+# =============================================================================
+#  SPACE CLOUD V5.2 - KUBERNETES MISSION DEPLOYMENT
+#  Description:
+#  This manifest defines the "Dual-Container Pod" architecture. It orchestrates
+#  the co-location of the 'Sidecar Guardian' (Stateful/Persistent) and the
+#  'Payload Phoenix' (Stateless/Compute).
+#  Crucially, it configures the security contexts and host-path volumes
+#  required for CRIU (Checkpoint/Restore In Userspace) to capture and
+#  reanimate the memory state during inter-satellite migrations.
+# =============================================================================
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,6 +16,8 @@ metadata:
   labels:
     app: space-mission
 spec:
+  # The system is designed for high-availability via migration,
+  # so we keep 1 active replica that "jumps" between nodes.
   replicas: 1
   selector:
     matchLabels:
@@ -14,13 +27,16 @@ spec:
       labels:
         app: space-mission
     spec:
-      # === VINCOLO SPAZIALE ===
-      # I workload girano solo sui satelliti (m02, m03, m04)
+      # === ORBITAL CONSTRAINT (Node Selection) ===
+      # Ensures the workload only runs on nodes labeled as 'satellite'.
+      # The MPC Controller will update the hostname inside this selector during migration.
       nodeSelector:
         type: satellite
 
-      # === PERSISTENZA PER CRIU ===
-      # Mappiamo la directory dove Kubelet/CRI-O scrivono i checkpoint
+      # === CRIU PERSISTENCE LAYER ===
+      # We map the physical host directory where the Kubelet and CRI-O
+      # engine store memory dumps. This allows the Node Agent to find
+      # the .tar files generated during a checkpoint.
       volumes:
         - name: checkpoint-storage
           hostPath:
@@ -29,50 +45,59 @@ spec:
 
       containers:
       # -----------------------------------------------------------
-      # 1. IL GUARDIAN (State Sidecar)
-      # Ruolo: Memoria Persistente & Dashboard
+      # 1. THE GUARDIAN (Stateful Sidecar)
+      # Role: Persistent Memory, Event Bus Broker & Dashboard UI.
+      # This container is the one actually 'frozen' and 'migrated'.
       # -----------------------------------------------------------
       - name: sidecar-guardian
+        # 'latest' is used for cold starts, 'restored' for migrations.
         image: localhost/space-sidecar:latest
-        imagePullPolicy: Never # Usa immagine locale (Buildah)
+        # Prevents K8s from trying to pull from DockerHub; uses local Buildah images.
+        imagePullPolicy: Never
 
         ports:
-        - containerPort: 80 # Espone la Dashboard
+        - containerPort: 80 # Exposes the Mission Control Dashboard
 
-        # Variabili per identificazione
         env:
+        # Self-awareness: The container knows which satellite it is currently orbiting.
         - name: NODE_NAME
           valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
 
-        # PRIVILEGI: Necessari per Checkpoint/Restore
+        # === CRITICAL: ELEVATED PRIVILEGES ===
+        # CRIU requires low-level access to the Linux Kernel (ptrace, cap_checkpoint_restore).
+        # 'privileged: true' and 'Unconfined' profile allow the process to be frozen.
         securityContext:
           privileged: true
           appArmorProfile:
             type: Unconfined
 
-        # Accesso ai dump della memoria su disco
+        # Mounts the host's checkpoint folder into the container for P2P gRPC streaming.
         volumeMounts:
           - name: checkpoint-storage
             mountPath: /var/lib/kubelet/checkpoints
 
       # -----------------------------------------------------------
-      # 2. LA FENICE (Payload Workload)
-      # Ruolo: Calcolo effimero (Training AI)
+      # 2. PHOENIX (Stateless Payload)
+      # Role: Ephemeral AI Training.
+      # This container is intentionally discarded during migration
+      # and starts fresh (Warm Boot) on the destination node.
       # -----------------------------------------------------------
       - name: payload-phoenix
         image: localhost/space-workload:latest
         imagePullPolicy: Never
 
-        # Configurazione: Parla col Sidecar via loopback
         env:
+        # Communication via Pod Loopback: Phoenix talks to Guardian as if it were on localhost.
         - name: STATE_ENDPOINT
           value: "http://localhost:80"
 
-        # Limiti risorse per simulare hardware limitato
+        # === RESOURCE QUOTAS ===
+        # Simulates the limited hardware resources of a CubeSat.
+        # Throttling the CPU ensures the thermal simulation stays realistic.
         resources:
           requests:
-            cpu: "100m"
+            cpu: "100m"   # Reserved capacity
             memory: "128Mi"
           limits:
-            cpu: "500m" # Throttle se esagera
+            cpu: "500m"   # Maximum burst (prevents thermal runaway in seconds)
             memory: "256Mi"

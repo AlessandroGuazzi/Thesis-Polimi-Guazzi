@@ -5,6 +5,7 @@ import subprocess
 import threading
 from concurrent import futures
 import requests
+import socket
 
 import grpc
 import redis
@@ -107,29 +108,32 @@ class FileTransferServicer(checkpoint_transfer_pb2_grpc.FileTransferServicer):
         t0 = time.time()
         print("⏳ [K8S] Waiting for Pod restart and container awakening...")
         success = False
+        pod_name = None
 
         # Polling loop to detect when the pod is ready to receive commands
-        for _ in range(40):
-            try:
-                # Get the name of the newly created pod on this node
-                output = subprocess.check_output(
-                    f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[0].metadata.name}}'",
-                    shell=True, stderr=subprocess.DEVNULL)
-                pod_name = output.decode('utf-8').strip()
+        for _ in range(50):
+            if not pod_name:
+                try:
+                    output = subprocess.check_output(
+                        f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[0].metadata.name}}'",
+                        shell=True, stderr=subprocess.DEVNULL)
+                    found_name = output.decode('utf-8').strip()
+                    if found_name:
+                        pod_name = found_name
+                except Exception:
+                    pass
 
-                if pod_name:
-                    # Attempt to trigger the internal 'landed' state in the Sidecar Guardian
+            if pod_name:
+                try:
                     exec_cmd = f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/landed"
                     res = subprocess.run(exec_cmd, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-
-                    # Return code 0 means the container is up and the file was successfully created
                     if res.returncode == 0:
                         success = True
                         break
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
-            time.sleep(1)
+            time.sleep(0.1)
 
         t_wait = time.time() - t0
 
@@ -166,31 +170,51 @@ def execute_migration_sender(target_node):
 
     # Notify the Sidecar Guardian to prepare for migration (close sockets, etc.)
     subprocess.run(f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/prepare_jump", shell=True)
-    time.sleep(1)  # Grace period for the app to disconnect safely
+    time.sleep(0.5)  # Grace period for the app to disconnect safely
 
     # --- PHASE 1: CRIU CHECKPOINT ---
     t0 = time.time()
     print("📸 [SENDER] Requesting RAM Snapshot from Kubelet API...")
     # Open a local proxy to securely communicate with the K8s API
     proxy_proc = subprocess.Popen(["kubectl", "proxy", "--port=8001"], stdout=subprocess.DEVNULL)
-    time.sleep(2)  # Attesa start proxy
+
+    health_url = f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy/healthz"
+    for _ in range(30):  # Massimo 3 secondi di attesa (30 * 0.1s)
+        try:
+            # Se il Kubelet risponde "ok" tramite il proxy, il tunnel è perfettamente allineato
+            if requests.get(health_url, timeout=0.2).status_code == 200:
+                break
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(0.1)
 
     api_url = f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy/checkpoint/default/{pod_name}/sidecar-guardian"
     response = requests.post(api_url)
     proxy_proc.terminate()  # Close proxy immediately after the request
 
-    if "items" not in response.json():
-        print(f"❌ [SENDER] API Error: {response.text}")
+    if response.status_code != 200:
+        print(f"❌ [SENDER] Kubelet API rejected the request (Status {response.status_code}): {response.text}")
         return
 
-    checkpoint_path = response.json()["items"][0]
+    try:
+        data = response.json()
+    except Exception as e:
+        print(f"❌ [SENDER] Kubelet didn't answer in JSON. Raw answer: {response.text}")
+        return
+
+    checkpoint_path = data["items"][0]
     t_checkpoint = time.time() - t0
     print(f"⏱️  [TIMING] Checkpoint generated in {t_checkpoint:.2f} seconds.")
 
     # Find the IP address of the target Node Agent for Peer-to-Peer transfer
-    target_ip = subprocess.check_output(
-        f"kubectl get pod -l app=space-node-agent --field-selector spec.nodeName={target_node} -o jsonpath='{{.items[0].status.podIP}}'",
-        shell=True).decode('utf-8').strip()
+    print(f"🔍 [SENDER] IP request fo node: {target_node}...")
+    try:
+        target_ip = subprocess.check_output(
+            f"kubectl get node {target_node} -o jsonpath='{{.status.addresses[?(@.type==\"InternalIP\")].address}}'",
+            shell=True).decode('utf-8').strip()
+    except Exception as e:
+        print(f"❌ [SENDER] Error in recovery of IP: {e}")
+        return
 
     # --- PHASE 2: gRPC STREAMING TRANSFER ---
     t0 = time.time()
@@ -199,9 +223,15 @@ def execute_migration_sender(target_node):
     stub = checkpoint_transfer_pb2_grpc.FileTransferStub(channel)
 
     # Send the memory dump chunk by chunk over the binary tunnel
+    try:
+        file_size_bytes = os.path.getsize(checkpoint_path)
+        file_size_mb = file_size_bytes / (1024 * 1024)
+    except Exception:
+        file_size_mb = 0.0
+
     status = stub.StreamCheckpoint(generate_chunks(checkpoint_path))
     t_transfer = time.time() - t0
-    print(f"⏱️  [TIMING] gRPC 50MB transfer completed in {t_transfer:.2f} seconds.")
+    print(f"⏱️  [TIMING] gRPC {file_size_mb:.2f}MB transfer completed in {t_transfer:.2f} seconds.")
 
     t_total = time.time() - t_start_total
     print(f"🏁 [SENDER] Outbound operations concluded in {t_total:.2f}s total!")

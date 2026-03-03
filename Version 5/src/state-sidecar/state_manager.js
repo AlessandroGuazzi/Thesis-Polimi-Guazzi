@@ -168,7 +168,7 @@ function setupWatcher() {
                     }
 
                     console.log("🔒 GUARDIAN READY FOR CRIU FREEZE.");
-                }, 2000);
+                }, 200);
             }
         });
     } catch (e) {}

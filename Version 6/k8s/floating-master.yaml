@@ -1,0 +1,135 @@
+# =============================================================================
+#  SPACE CLOUD V6 - FLOATING MASTER (Topology Engine + Dashboard Sidecar)
+#  Description:
+#  The Floating Master is a MIGRATABLE Pod containing two co-located containers:
+#
+#  1. topology-redis: A RAM-only Redis instance that stores the live ISL mesh
+#     graph (node:* Hashes, adj:* Sets) pushed by each satellite's Node Agent.
+#     The Lua Dijkstra script runs atomically inside this process via EVALSHA.
+#
+#  2. topology-dashboard: A lightweight Python SSE server that reads the mesh
+#     graph from the co-located Redis (localhost:6379) and renders a live ISL
+#     topology graph for the operator. Both containers move together during
+#     satellite migrations — the "brain" and its "eyes" travel as one unit.
+#
+#  KEY ARCHITECTURAL CHOICE (§1.3):
+#  nodeSelector uses 'type: satellite' — NOT 'type: ground-station'.
+#  The Floating Master rides on satellite nodes. When a satellite overheats,
+#  the Node Agent can patch the Deployment's hostname selector to migrate
+#  the Floating Master to a cooler satellite, keeping topology data close
+#  to the decision-making edge agents.
+# =============================================================================
+
+# ─── RBAC for Floating Master ────────────────────────────────────────────────
+# The topology-dashboard sidecar needs no special permissions (it only reads
+# co-located Redis). No ClusterRole needed beyond the default pod execution.
+
+# ─── Service: topology-master ─────────────────────────────────────────────────
+# Stable ClusterIP DNS name used by all Node Agents for EVALSHA queries.
+apiVersion: v1
+kind: Service
+metadata:
+  name: topology-master   # This hostname is baked into node_agent.py as TOPOLOGY_REDIS_HOST
+  labels:
+    app: topology-master
+spec:
+  ports:
+    - name:       redis
+      port:       6379
+      targetPort: 6379
+  selector:
+    app: topology-master
+
+---
+# ─── Service: topology-dashboard ─────────────────────────────────────────────
+# Exposes the sidecar topology dashboard for operator access.
+apiVersion: v1
+kind: Service
+metadata:
+  name: topology-dashboard
+  labels:
+    app: topology-master
+spec:
+  type: NodePort   # Accessible from the host via minikube service topology-dashboard
+  ports:
+    - name:       dashboard
+      port:       8081
+      targetPort: 8081
+  selector:
+    app: topology-master
+
+---
+# ─── Deployment: Floating Master Pod ─────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: topology-master
+  labels:
+    app: topology-master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: topology-master
+  template:
+    metadata:
+      labels:
+        app: topology-master
+    spec:
+      # === SATELLITE NODE AFFINITY (§1.3) ===
+      # The Floating Master rides on a satellite, not the ground station.
+      # This allows it to be migrated alongside the swarm during thermal events.
+      # The Node Agent can patch 'kubernetes.io/hostname' to force-move it to
+      # a cooler node, keeping topology queries on-orbit and low-latency.
+      nodeSelector:
+        type: satellite
+
+      containers:
+
+      # ────────────────────────────────────────────────────────────────────────
+      # Container 1: topology-redis
+      # The topology engine — RAM-only Redis that holds the live ISL graph.
+      # Node Agents push HSET node:<name> and SADD adj:<name> to this instance.
+      # The Lua Dijkstra script is loaded here at agent startup via SCRIPT LOAD.
+      # ────────────────────────────────────────────────────────────────────────
+      - name: topology-redis
+        image: docker.io/library/redis:alpine
+        ports:
+          - containerPort: 6379
+            name: redis
+        # Disable ALL disk persistence — this must be a pure RAM store.
+        # The topology graph is ephemeral: Node Agents repopulate it after any restart.
+        args: ["redis-server", "--save", "", "--appendonly", "no"]
+        resources:
+          requests:
+            cpu:    "50m"
+            memory: "64Mi"
+          limits:
+            cpu:    "200m"
+            memory: "128Mi"
+
+      # ────────────────────────────────────────────────────────────────────────
+      # Container 2: topology-dashboard
+      # The ISL mesh graph visualizer — reads co-located Redis via localhost:6379
+      # and serves a live D3-style canvas graph with edge weights on port 8081.
+      # Shares the Pod network namespace: no networking config needed.
+      # ────────────────────────────────────────────────────────────────────────
+      - name: topology-dashboard
+        image: localhost/space-topology-dashboard:latest
+        imagePullPolicy: Never
+        ports:
+          - containerPort: 8081
+            name: dashboard
+        env:
+          # Temperature thresholds for the edge weight computation display
+          - name: T_SAFE
+            value: "80.0"
+          - name: T_FUSE
+            value: "120.0"
+        resources:
+          requests:
+            cpu:    "50m"
+            memory: "64Mi"
+          limits:
+            cpu:    "200m"
+            memory: "128Mi"

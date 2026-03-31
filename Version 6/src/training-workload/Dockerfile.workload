@@ -1,0 +1,30 @@
+# =============================================================
+# TINYSML WORKER — SAMKNN 2D Wildfire Tracker (Space Cloud V6)
+# Base: Python 3.9 Slim — minimal footprint for CRIU compatibility
+# =============================================================
+FROM python:3.9-slim
+
+# Show Python logs immediately in 'kubectl logs' without buffering
+ENV PYTHONUNBUFFERED=1
+
+# Guardian HTTP endpoint — injected by the K8s Pod spec at runtime
+ENV STATE_ENDPOINT=http://localhost:80
+
+WORKDIR /app
+
+# 1. Minimal OS dependencies (curl for health-check scripts only)
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Install ONLY 'requests' — every other dependency is Python stdlib.
+#    This is intentional: no numpy, sklearn, torch, or river.
+#    Pure-Python SAMKNN + struct/zlib are CRIU-safe (no C-extension threads).
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 3. Copy the SAMKNN wildfire tracker worker
+COPY tinysml_worker.py .
+
+# 4. Start the SAMKNN streaming classifier
+CMD ["python", "tinysml_worker.py"]

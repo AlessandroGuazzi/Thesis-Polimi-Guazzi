@@ -1,0 +1,36 @@
+# =============================================================
+# NODE AGENT — Distributed Edge MPC (Space Cloud V6)
+# Role: Autonomous onboard decision engine on each satellite node.
+#       Replaces the gRPC-based V5 agent. No gRPC, no protobuf.
+# =============================================================
+FROM python:3.9-slim
+
+# Show logs immediately in 'kubectl logs' without buffering
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /agent
+
+# 1. System tools: curl, buildah, and bash (for relay_transfer.sh)
+#    Buildah is needed to reconstruct the container image from the checkpoint TAR.
+RUN apt-get update && apt-get install -y \
+    curl \
+    buildah \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Kubectl — required for patch/scale operations and CRIU checkpoint API calls
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    chmod +x kubectl && mv kubectl /usr/local/bin/
+
+# 3. Python dependencies — only redis and requests (no gRPC or protobuf)
+#    redis: connects to Ground Redis (telemetry) and Floating Master (Dijkstra EVALSHA)
+#    requests: makes HTTP calls to the Kubelet checkpoint API and Guardian /state
+RUN pip install --no-cache-dir redis requests
+
+# 4. Copy the Node Agent source and the Dijkstra Lua script
+#    The Lua script is loaded into the Floating Master Redis at startup via SCRIPT LOAD
+COPY node_agent.py .
+COPY ../dijkstra.lua .
+
+# 5. Start the autonomous edge MPC agent
+CMD ["python", "node_agent.py"]

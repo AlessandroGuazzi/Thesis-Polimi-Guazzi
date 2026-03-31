@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Cloud V6 — SML Payload Dashboard</title>
+    <style>
+        /* ====================================================================
+           GLOBAL LAYOUT & THEME
+           Dark space theme matching the satellite hardware context.
+           ==================================================================== */
+        :root {
+            --bg-deep:    #0a0e1a;   /* Deep space black */
+            --bg-panel:   #111827;   /* Panel background */
+            --bg-card:    #1a2236;   /* Card / grid backgrounds */
+            --accent-fire:  #ff6b35; /* Fire orange */
+            --accent-pred:  #00d4ff; /* Predicted fire cyan */
+            --accent-green: #00ff88; /* Nominal status */
+            --accent-warn:  #ffcc00; /* Warning yellow */
+            --text-primary: #e2e8f0;
+            --text-dim:     #64748b;
+            --border:       #1e3a5f;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg-deep);
+            color: var(--text-primary);
+            font-family: 'Courier New', monospace;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        /* ====================================================================
+           HEADER BAR
+           ==================================================================== */
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 22px;
+            margin-bottom: 20px;
+        }
+
+        .header-title {
+            font-size: 1.1rem;
+            font-weight: bold;
+            letter-spacing: 2px;
+            color: var(--accent-pred);
+        }
+
+        /* Status pill — green when nominal, red during migration */
+        #status-pill {
+            padding: 5px 16px;
+            border-radius: 20px;
+            font-size: 0.78rem;
+            letter-spacing: 1px;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        .status-nominal    { background: rgba(0,255,136,0.15); color: var(--accent-green); border: 1px solid var(--accent-green); }
+        .status-migrating  { background: rgba(255,107,53,0.2);  color: var(--accent-fire);  border: 1px solid var(--accent-fire); animation: pulse 0.8s infinite alternate; }
+
+        @keyframes pulse { from { opacity: 1; } to { opacity: 0.4; } }
+
+        /* ====================================================================
+           MAIN GRID LAYOUT
+           Three columns: current fire mask | predicted fire mask | stats panels
+           ==================================================================== */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 320px;
+            gap: 16px;
+        }
+
+        /* On narrow screens, stack vertically */
+        @media (max-width: 1100px) {
+            .dashboard-grid { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 700px) {
+            .dashboard-grid { grid-template-columns: 1fr; }
+        }
+
+        /* ====================================================================
+           FIRE MASK CANVAS PANELS
+           ==================================================================== */
+        .panel {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .panel-title {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--text-dim);
+            margin-bottom: 12px;
+        }
+
+        .canvas-wrapper {
+            position: relative; /* Needed for CoM crosshair overlay */
+            display: inline-block;
+            width: 100%;
+        }
+
+        /* The canvas fills its container — CSS scales it, JS draws at device resolution */
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            image-rendering: pixelated; /* Keep pixels sharp when scaled up */
+            border-radius: 4px;
+            border: 1px solid var(--border);
+        }
+
+        /* Center of Mass crosshair overlay — positioned absolutely on the canvas */
+        #com-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Don't block mouse events on the canvas */
+        }
+
+        /* ====================================================================
+           STATS PANELS (right column)
+           ==================================================================== */
+        .stats-column {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* Single metric display */
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.82rem;
+        }
+
+        .metric-label { color: var(--text-dim); }
+        .metric-value { font-weight: bold; font-size: 0.9rem; }
+
+        .val-fire    { color: var(--accent-fire);  }
+        .val-pred    { color: var(--accent-pred);  }
+        .val-nominal { color: var(--accent-green); }
+        .val-warning { color: var(--accent-warn);  }
+
+        /* ====================================================================
+           MEMORY UTILISATION BARS (STM / LTM gauges)
+           ==================================================================== */
+        .mem-bar-container {
+            margin-top: 6px;
+        }
+
+        .mem-bar-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            margin-bottom: 4px;
+        }
+
+        .mem-bar-bg {
+            background: var(--bg-card);
+            border-radius: 4px;
+            height: 10px;
+            overflow: hidden;
+            margin-bottom: 10px;
+            border: 1px solid var(--border);
+        }
+
+        /* The fill bar — width is set dynamically by JS */
+        .mem-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+
+        .stm-fill { background: linear-gradient(90deg, #00d4ff, #0088aa); }
+        .ltm-fill { background: linear-gradient(90deg, #ff6b35, #cc3300); }
+
+        /* ====================================================================
+           FLEET TELEMETRY TABLE (satellite hardware status)
+           ==================================================================== */
+        .fleet-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.78rem;
+        }
+
+        .fleet-table th {
+            color: var(--text-dim);
+            text-align: left;
+            padding: 6px 4px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.68rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .fleet-table td {
+            padding: 7px 4px;
+            border-bottom: 1px solid rgba(30, 58, 95, 0.4);
+            vertical-align: middle;
+        }
+
+        /* Temperature cell is color-coded by severity */
+        .temp-ok   { color: var(--accent-green); }
+        .temp-warm { color: var(--accent-warn); }
+        .temp-hot  { color: var(--accent-fire); }
+
+        /* Active satellite indicator dot */
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+        }
+        .dot-active  { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+        .dot-inactive { background: var(--text-dim); }
+
+        /* ====================================================================
+           MIGRATION EVENT LOG
+           ==================================================================== */
+        #event-log {
+            font-size: 0.72rem;
+            color: var(--text-dim);
+            max-height: 140px;
+            overflow-y: auto;
+            line-height: 1.6;
+        }
+
+        .log-thermal { color: var(--accent-warn); }
+        .log-lateral { color: var(--accent-pred); }
+        .log-land    { color: var(--accent-green); }
+    </style>
+</head>
+<body>
+
+<!-- ====================================================================
+     HEADER
+     ==================================================================== -->
+<header>
+    <div class="header-title">🛰️ SPACE CLOUD V6 — SML PAYLOAD DASHBOARD</div>
+    <div>
+        <span style="color: var(--text-dim); font-size:0.75rem;">GUARDIAN: </span>
+        <span id="guardian-id" style="color:var(--accent-pred); font-size:0.8rem;">—</span>
+    </div>
+    <div id="status-pill" class="status-nominal">● NOMINAL</div>
+</header>
+
+<!-- ====================================================================
+     MAIN DASHBOARD GRID
+     ==================================================================== -->
+<div class="dashboard-grid">
+
+    <!-- -----------------------------------------------------------------
+         PANEL 1: Current Fire Mask (PrevFireMask from the incoming frame)
+         Shows WHERE fire is RIGHT NOW according to the sensor data.
+         ----------------------------------------------------------------- -->
+    <div class="panel">
+        <div class="panel-title">📡 Current Fire Mask (Sensor Input)</div>
+        <div class="canvas-wrapper">
+            <!--
+                64×64 pixels — each pixel is ONE 1km² ground cell.
+                The canvas is drawn at 64×64 native resolution and scaled up by CSS.
+                Color: black = no fire, orange gradient = active fire intensity.
+            -->
+            <canvas id="canvas-current" width="64" height="64"></canvas>
+        </div>
+        <div style="margin-top:8px; font-size:0.7rem; color:var(--text-dim);">
+            Source: PrevFireMask channel (ground truth from sensor)
+        </div>
+    </div>
+
+    <!-- -----------------------------------------------------------------
+         PANEL 2: Predicted Fire Mask (SAMKNN output)
+         Shows WHERE fire is predicted to be TOMORROW.
+         The CoM crosshair shows the centroid of predicted fire pixels.
+         If the CoM drifts to the edge, Trigger B fires and the workload
+         migrates to a laterally adjacent satellite.
+         ----------------------------------------------------------------- -->
+    <div class="panel">
+        <div class="panel-title">🔮 Predicted Fire Mask (SAMKNN Output)</div>
+        <div class="canvas-wrapper">
+            <!--
+                62×62 pixels (interior only — border excluded by 3×3 sliding window).
+                Overlaid with a cyan crosshair marking the Center of Mass.
+                A red pulsing border appears when CoM approaches the swath edge.
+            -->
+            <canvas id="canvas-predicted" width="62" height="62"></canvas>
+            <!-- Crosshair SVG layer — positioned on top of the canvas -->
+            <svg id="com-overlay" viewBox="0 0 62 62" xmlns="http://www.w3.org/2000/svg">
+                <!-- Horizontal crosshair line -->
+                <line id="com-h" x1="0" y1="31" x2="62" y2="31"
+                      stroke="#00d4ff" stroke-width="0.5" opacity="0.7"/>
+                <!-- Vertical crosshair line -->
+                <line id="com-v" x1="31" y1="0" x2="31" y2="62"
+                      stroke="#00d4ff" stroke-width="0.5" opacity="0.7"/>
+                <!-- Center of Mass marker circle -->
+                <circle id="com-dot" cx="31" cy="31" r="2"
+                        fill="none" stroke="#00d4ff" stroke-width="1"/>
+            </svg>
+        </div>
+        <!-- CoM position readout -->
+        <div style="margin-top:8px; font-size:0.75rem; color:var(--text-dim); display:flex; justify-content:space-between;">
+            <span>CoM: (<span id="com-x">—</span>, <span id="com-y">—</span>)</span>
+            <span id="com-warning" style="color:var(--accent-fire); display:none;">⚠ LATERAL EDGE</span>
+        </div>
+    </div>
+
+    <!-- -----------------------------------------------------------------
+         PANEL 3: Stats & Telemetry (right column)
+         ----------------------------------------------------------------- -->
+    <div class="stats-column">
+
+        <!-- SAMKNN Performance Metrics -->
+        <div class="panel">
+            <div class="panel-title">🧠 SAMKNN Model State</div>
+
+            <div class="metric-row">
+                <span class="metric-label">Frames Processed</span>
+                <span class="metric-value val-pred" id="sample-count">0</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">Fire Pixels Predicted</span>
+                <span class="metric-value val-fire" id="fire-count">0</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">Worker Status</span>
+                <span class="metric-value val-nominal" id="worker-status">—</span>
+            </div>
+
+            <!-- STM Memory Gauge -->
+            <div class="mem-bar-container" style="margin-top:14px;">
+                <div class="mem-bar-label">
+                    <span>STM (Short-Term Memory)</span>
+                    <span id="stm-label">0 / 5000</span>
+                </div>
+                <div class="mem-bar-bg">
+                    <div class="mem-bar-fill stm-fill" id="stm-bar" style="width:0%"></div>
+                </div>
+
+                <!-- LTM Memory Gauge -->
+                <div class="mem-bar-label">
+                    <span>LTM (Long-Term Memory)</span>
+                    <span id="ltm-label">0 / 15000</span>
+                </div>
+                <div class="mem-bar-bg">
+                    <div class="mem-bar-fill ltm-fill" id="ltm-bar" style="width:0%"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Fleet Hardware Telemetry Table -->
+        <div class="panel">
+            <div class="panel-title">🛰️ Constellation Hardware</div>
+            <table class="fleet-table">
+                <thead>
+                    <tr>
+                        <th>Node</th>
+                        <th>Temp</th>
+                        <th>Battery</th>
+                        <th>Eclipse</th>
+                    </tr>
+                </thead>
+                <tbody id="fleet-tbody">
+                    <!-- Populated dynamically by JavaScript -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Migration Event Log -->
+        <div class="panel">
+            <div class="panel-title">📋 Migration Event Log</div>
+            <div id="event-log">
+                <div style="color:var(--text-dim)">Waiting for events...</div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ====================================================================
+     JAVASCRIPT — Real-time SSE rendering
+     ==================================================================== -->
+<script>
+// ============================================================================
+// CANVAS RENDERING
+// Draws 64×64 and 62×62 pixel grids on HTML5 canvas elements.
+// Each 1-unit canvas pixel = one geographic grid cell.
+// ============================================================================
+
+const ctxCurrent   = document.getElementById('canvas-current').getContext('2d');
+const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
+
+/**
+ * Draws a flattened fire mask array onto a canvas element.
+ *
+ * flatMask: 1D array of values (binary 0/1 or float 0-1)
+ * ctx:      CanvasRenderingContext2D to draw on
+ * width:    grid width in pixels (64 for current, 62 for predicted)
+ * colorFn:  function(value) → CSS color string for each pixel
+ */
+function drawFireMask(flatMask, ctx, width, colorFn) {
+    if (!flatMask || flatMask.length === 0) return;
+
+    const height = Math.floor(flatMask.length / width);
+    // Draw each cell as a single pixel on the canvas
+    // (CSS will scale this up to fill the panel)
+    for (let i = 0; i < height; i++) {
+        for (let j = 0; j < width; j++) {
+            const val = flatMask[i * width + j] || 0;
+            ctx.fillStyle = colorFn(val);
+            ctx.fillRect(j, i, 1, 1);   // 1×1 pixel at (col, row)
+        }
+    }
+}
+
+/**
+ * Color function for the Current Fire Mask (PrevFireMask sensor input).
+ * 0 = no fire (dark grey), 1 = active fire (bright orange).
+ */
+function currentFireColor(val) {
+    if (val <= 0) return '#0a0e1a';     // No fire — near-black
+    const intensity = Math.min(1, val); // Clamp to [0, 1]
+    const r = Math.round(255 * intensity);
+    const g = Math.round(107 * intensity);
+    return `rgb(${r}, ${g}, 0)`;        // Orange-to-black gradient
+}
+
+/**
+ * Color function for the Predicted Fire Mask (SAMKNN output).
+ * Binary: 0 = no fire, 1 = predicted fire (cyan/blue to distinguish from input).
+ * Using a different colour makes it immediately clear which is "sensor" vs "prediction".
+ */
+function predictedFireColor(val) {
+    if (val <= 0) return '#0a0e1a';     // No predicted fire — near-black
+    return '#005580';                   // Predicted fire — deep cyan
+}
+
+/**
+ * Updates the Center of Mass crosshair on the SVG overlay.
+ * comX, comY: pixel coordinates within the 62×62 predicted grid.
+ */
+function updateCoMCrosshair(comX, comY) {
+    const INNER = 62;  // The predicted grid is 62×62 (border pixels excluded)
+    const THRESH = 8;  // Trigger B lateral edge threshold
+
+    // Clamp to valid range
+    const x = Math.max(0, Math.min(INNER - 1, comX || INNER / 2));
+    const y = Math.max(0, Math.min(INNER - 1, comY || INNER / 2));
+
+    // Move crosshair lines to the CoM position
+    document.getElementById('com-h').setAttribute('y1', y);
+    document.getElementById('com-h').setAttribute('y2', y);
+    document.getElementById('com-v').setAttribute('x1', x);
+    document.getElementById('com-v').setAttribute('x2', x);
+    document.getElementById('com-dot').setAttribute('cx', x);
+    document.getElementById('com-dot').setAttribute('cy', y);
+
+    // Update the readout text
+    document.getElementById('com-x').textContent = x.toFixed(1);
+    document.getElementById('com-y').textContent = y.toFixed(1);
+
+    // Show the lateral edge warning if the CoM is close to the swath boundary
+    const nearEdge = x < THRESH || x > (INNER - THRESH);
+    const warning = document.getElementById('com-warning');
+    warning.style.display = nearEdge ? 'inline' : 'none';
+
+    // Change crosshair color to red when approaching the edge (Trigger B imminent)
+    const comColor = nearEdge ? '#ff3333' : '#00d4ff';
+    ['com-h', 'com-v', 'com-dot'].forEach(id =>
+        document.getElementById(id).setAttribute('stroke', comColor)
+    );
+}
+
+
+// ============================================================================
+// MEMORY GAUGE UPDATER
+// ============================================================================
+
+function updateMemoryGauges(stm_size, ltm_size) {
+    const STM_MAX = 5000;
+    const LTM_MAX = 15000;
+
+    const stmPct = Math.min(100, (stm_size / STM_MAX) * 100);
+    const ltmPct = Math.min(100, (ltm_size / LTM_MAX) * 100);
+
+    document.getElementById('stm-bar').style.width   = stmPct + '%';
+    document.getElementById('ltm-bar').style.width   = ltmPct + '%';
+    document.getElementById('stm-label').textContent = `${stm_size} / ${STM_MAX}`;
+    document.getElementById('ltm-label').textContent = `${ltm_size} / ${LTM_MAX}`;
+}
+
+
+// ============================================================================
+// FLEET TELEMETRY TABLE RENDERER
+// ============================================================================
+
+/**
+ * Renders a row in the fleet hardware telemetry table for one satellite.
+ * Temperature colour-coded: green ≤60°C, yellow ≤80°C, red >80°C.
+ */
+function renderFleetTable(environment) {
+    const tbody = document.getElementById('fleet-tbody');
+    tbody.innerHTML = '';  // Clear and redraw
+
+    Object.entries(environment).forEach(([nodeName, data]) => {
+        const isWorking = data.is_working;
+        const temp      = data.temp || 0;
+        const battery   = data.battery || 0;
+        const eclipse   = data.eclipse;
+
+        // Pick temperature color based on severity
+        let tempClass = 'temp-ok';
+        if (temp > 80) tempClass = 'temp-hot';
+        else if (temp > 60) tempClass = 'temp-warm';
+
+        const shortName = nodeName.replace('minikube-', '');
+        const eclipseIcon = eclipse ? '🌑' : '☀️';
+
+        tbody.innerHTML += `
+            <tr>
+                <td>
+                    <span class="dot ${isWorking ? 'dot-active' : 'dot-inactive'}"></span>
+                    ${shortName}
+                </td>
+                <td class="${tempClass}">${temp}°C</td>
+                <td>${battery}%</td>
+                <td>${eclipseIcon}</td>
+            </tr>
+        `;
+    });
+}
+
+
+// ============================================================================
+// EVENT LOG
+// ============================================================================
+
+let migrationCount = 0;
+let lastFlightMode = false;
+
+function logEvent(message, cssClass) {
+    const log = document.getElementById('event-log');
+    const ts  = new Date().toLocaleTimeString();
+    // Prepend newest events at the top
+    log.innerHTML = `<div class="${cssClass}">[${ts}] ${message}</div>` + log.innerHTML;
+}
+
+
+// ============================================================================
+// SSE CONNECTION — receives real-time state from the Guardian
+// ============================================================================
+
+const eventSource = new EventSource('/api/stream');
+
+eventSource.onmessage = function(event) {
+    let data;
+    try {
+        data = JSON.parse(event.data);
+    } catch (e) {
+        return;  // Skip malformed packets
+    }
+
+    const state      = data.internal_state || {};
+    const env        = data.environment    || {};
+    const flightMode = data.flight_mode;
+
+    // ---- Update header ----
+    document.getElementById('guardian-id').textContent = data.guardian_id || '—';
+
+    // ---- Migration status pill ----
+    const pill = document.getElementById('status-pill');
+    if (flightMode) {
+        pill.className = 'status-migrating';
+        pill.textContent = '⚡ MIGRATING';
+        // Log the migration event the first time flightMode becomes true
+        if (!lastFlightMode) {
+            migrationCount++;
+            logEvent(`Migration #${migrationCount} initiated`, 'log-thermal');
+        }
+    } else {
+        // Detect landing (flightMode went from true → false)
+        if (lastFlightMode) {
+            logEvent(`Migration #${migrationCount} complete — landed on ${data.guardian_id}`, 'log-land');
+        }
+        pill.className = 'status-nominal';
+        pill.textContent = '● NOMINAL';
+    }
+    lastFlightMode = flightMode;
+
+    // ---- Draw Current Fire Mask (PrevFireMask from the sensor frame) ----
+    // The Guardian stores this in predicted_fire_mask for display convenience.
+    // In a future version, the streamer could push PrevFireMask separately.
+    const currentMask = state.prev_fire_mask || state.predicted_fire_mask || [];
+    if (currentMask.length > 0) {
+        drawFireMask(currentMask, ctxCurrent, 64, currentFireColor);
+    }
+
+    // ---- Draw Predicted Fire Mask (SAMKNN binary output) ----
+    const predictedMask = state.predicted_fire_mask || [];
+    if (predictedMask.length > 0) {
+        drawFireMask(predictedMask, ctxPredicted, 62, predictedFireColor);
+    }
+
+    // ---- Update CoM crosshair ----
+    const com = state.center_of_mass || {};
+    updateCoMCrosshair(com.x, com.y);
+
+    // ---- Update SAMKNN stats ----
+    document.getElementById('sample-count').textContent = state.sample_count || 0;
+    document.getElementById('fire-count').textContent   = state.fire_pixel_count || 0;
+    document.getElementById('worker-status').textContent = state.status || '—';
+
+    updateMemoryGauges(state.stm_size || 0, state.ltm_size || 0);
+
+    // ---- Update fleet hardware table ----
+    if (Object.keys(env).length > 0) {
+        renderFleetTable(env);
+    }
+};
+
+eventSource.onerror = function() {
+    // SSE connection dropped — the Guardian may be in flight (CRIU migrating)
+    document.getElementById('status-pill').textContent = '⏳ RECONNECTING...';
+};
+</script>
+
+</body>
+</html>

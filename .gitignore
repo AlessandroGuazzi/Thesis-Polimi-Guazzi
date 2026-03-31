@@ -40,3 +40,7 @@ Desktop.ini
 # --- File di Log ---
 # Se i tuoi script generano log su file
 *.log
+
+# --- Extractor ---
+Extractor/
+sample_fire_data.json

@@ -1,0 +1,65 @@
+# =============================================================================
+#  SPACE CLOUD V6 - GROUND REDIS (Telemetry Pub/Sub Broker)
+#  Description:
+#  The Ground Station Redis — renamed from 'system-redis' to 'ground-redis'.
+#  Role: Pure RAM-only telemetry message broker for environment_sim.py broadcasts.
+#  Channels: telemetry/<node_name>
+#  Consumers: Guardian sidecar (fleet dashboard), Node Agents (own channel only)
+#
+#  NOTE: The Floating Master (topology-master Redis) is defined separately in
+#  k8s/floating-master.yaml. It runs on a satellite node, not here.
+#
+#  Both Redis instances have ALL disk persistence disabled (§1.1):
+#  --save "" --appendonly no
+#  This guarantees sub-millisecond Pub/Sub latency with no fsync blocking.
+# =============================================================================
+
+# ─── Service ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: ground-redis   # V6: renamed from 'system-redis' (§1.2)
+  labels:
+    app: ground-redis
+spec:
+  ports:
+    - port:       6379
+      targetPort: 6379
+  selector:
+    app: ground-redis
+
+---
+# ─── Deployment ──────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ground-redis
+  labels:
+    app: ground-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ground-redis
+  template:
+    metadata:
+      labels:
+        app: ground-redis
+    spec:
+      # Anchored to the ground station — survives all satellite migrations
+      nodeSelector:
+        type: ground-station
+      containers:
+        - name: redis
+          image: docker.io/library/redis:alpine
+          ports:
+            - containerPort: 6379
+          # Disable ALL persistence (§1.1): pure RAM broker, no fsync blocking
+          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          resources:
+            requests:
+              cpu:    "50m"
+              memory: "64Mi"
+            limits:
+              cpu:    "200m"
+              memory: "128Mi"

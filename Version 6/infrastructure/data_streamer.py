@@ -169,8 +169,8 @@ def encode_frame(sample_dict):
 
     # We must pack the channels in the exact order the Worker expects to receive them
     CHANNELS = [
-        "elevation", "th", "vs", "tmmn", "tmmx", "sph",
-        "pr", "pdsi", "NDVI", "population", "erc", "PrevFireMask", "FireMask"
+        "PrevFireMask", "sph", "th", "elevation", "pdsi", "pr",
+        "population", "erc", "NDVI", "tmmn", "vs", "tmmx", "FireMask"
     ]
 
     # Create an empty array of bytes
@@ -180,6 +180,10 @@ def encode_frame(sample_dict):
         # Extract the flat list of 4096 numbers for this specific channel
         channel_data = sample_dict.get(ch, {})
         flat = channel_data.get("values", [0.0] * (GRID_W * GRID_H))
+
+        flat = flat[:(GRID_W * GRID_H)]
+        while len(flat) < (GRID_W * GRID_H):
+            flat.append(0.0)
 
         # Pack each number into a 4-byte network-byte-order Float32 ('!f')
         for val in flat:

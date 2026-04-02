@@ -20,10 +20,14 @@ import socket
 import struct
 import zlib
 import json
+import tensorflow as tf
 import time
 import os
-import subprocess
 import sys
+
+# Use the official Kubernetes Python client instead of subprocess('kubectl')
+# to avoid the O(fork+exec) syscall cost per frame (Issue #1: subprocess bottleneck)
+from kubernetes import client, config
 
 # =============================================================================
 # CONFIGURATION
@@ -69,26 +73,65 @@ LABEL_CHANNEL = "FireMask"
 
 
 # =============================================================================
-# WORKER POD DISCOVERY
+# WORKER POD DISCOVERY (via K8s Python Client — not subprocess)
+# Issue #1 fix: The old implementation spawned 'kubectl get pod...' via
+# subprocess.check_output() inside the while-loop, forking a new OS process
+# every single frame. This has ~50ms overhead per call due to fork+exec+kubectl
+# startup. Using the Python client reuses a persistent HTTP connection.
 # =============================================================================
+
+# Initialise the K8s API client once at module load (reuses TCP connection)
+try:
+    config.load_kube_config()       # Minikube host — reads ~/.kube/config
+except Exception:
+    config.load_incluster_config()  # Fallback: running inside a Pod
+_k8s_v1 = client.CoreV1Api()
+
+
+# Define the exact shapes and types expected by the Kaggle dataset
+def _parse_tfrecord(example_proto):
+    # The dataset features 12 input channels and 1 label channel, all 64x64 grids
+    feature_description = {
+        'PrevFireMask': tf.io.FixedLenFeature([64, 64], tf.float32),
+        'sph':          tf.io.FixedLenFeature([64, 64], tf.float32),
+        'th':           tf.io.FixedLenFeature([64, 64], tf.float32),
+        'elevation':    tf.io.FixedLenFeature([64, 64], tf.float32),
+        'pdsi':         tf.io.FixedLenFeature([64, 64], tf.float32),
+        'pr':           tf.io.FixedLenFeature([64, 64], tf.float32),
+        'population':   tf.io.FixedLenFeature([64, 64], tf.float32),
+        'erc':          tf.io.FixedLenFeature([64, 64], tf.float32),
+        'NDVI':         tf.io.FixedLenFeature([64, 64], tf.float32),
+        'tmmn':         tf.io.FixedLenFeature([64, 64], tf.float32),
+        'vs':           tf.io.FixedLenFeature([64, 64], tf.float32),
+        'tmmx':         tf.io.FixedLenFeature([64, 64], tf.float32),
+        'FireMask':     tf.io.FixedLenFeature([64, 64], tf.float32),
+    }
+    return tf.io.parse_single_example(example_proto, feature_description)
+
 
 def get_worker_pod_ip():
     """
     Queries the Kubernetes API to find the current IP address of the satellite
     pod hosting the tinySML worker. Returns None if no pod is currently running
     (expected during migrations — the streamer will simply skip that frame).
+
+    Uses the official K8s Python client instead of subprocess('kubectl') to
+    avoid the O(fork+exec) overhead. The API client maintains a persistent
+    HTTP connection pool, so repeated calls are near-zero cost.
     """
     try:
-        output = subprocess.check_output(
-            "kubectl get pod -l app=space-mission"
-            " -o jsonpath='{.items[0].status.podIP}'",
-            shell=True,
-            stderr=subprocess.DEVNULL,
-            timeout=3
+        pods = _k8s_v1.list_namespaced_pod(
+            namespace="default",
+            label_selector="app=space-mission",
+            _request_timeout=3
         )
-        ip = output.decode("utf-8").strip().strip("'")
-        # An empty string means no pod is running right now
-        return ip if ip else None
+        for pod in pods.items:
+            # Only use pods that are Running (not Pending/Terminating)
+            if (pod.status.phase == "Running"
+                    and not pod.metadata.deletion_timestamp
+                    and pod.status.pod_ip):
+                return pod.status.pod_ip
+        return None
     except Exception:
         return None
 
@@ -162,38 +205,44 @@ def encode_frame(sample):
 
 def load_dataset():
     """
-    Loads all JSON sample files from DATASET_DIR.
-    Each file represents one 64×64 geographic region at one timestamp.
-    Returns a list of sample dicts, or raises if the directory is empty.
-
-    To generate these files: run the companion extract_tfrecord.py script on
-    the Kaggle next_day_wildfire_spread dataset to convert .tfrecord → .json
+    Loads all .tfrecord sample files from DATASET_DIR.
+    Each file represents one 64x64 geographic region at one timestamp.
     """
     samples = []
 
     if not os.path.isdir(DATASET_DIR):
         print(f"⚠️  STREAMER: Dataset directory not found: {DATASET_DIR}")
-        print(f"   → Using sample_fire_data.json from project root as single-frame loop.")
-        # Fall back to the provided example file for testing
-        sample_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "sample_fire_data.json"
-        )
-        if os.path.exists(sample_path):
-            with open(sample_path, "r") as f:
-                samples.append(json.load(f))
         return samples
 
-    # Load all JSON files in the dataset directory
-    for fname in sorted(os.listdir(DATASET_DIR)):
-        if fname.endswith(".json"):
-            fpath = os.path.join(DATASET_DIR, fname)
-            try:
-                with open(fpath, "r") as f:
-                    samples.append(json.load(f))
-            except Exception as e:
-                print(f"⚠️  STREAMER: Could not load {fname}: {e}")
+    # Find all .tfrecord files instead of .json
+    tfrecord_files = [os.path.join(DATASET_DIR, f) for f in sorted(os.listdir(DATASET_DIR)) if f.endswith('.tfrecord')]
+    
+    if not tfrecord_files:
+        print(f"❌ STREAMER: No .tfrecord files found in {DATASET_DIR}.")
+        return samples
 
-    print(f"📂 STREAMER: Loaded {len(samples)} observation frames from dataset.", flush=True)
+    print(f"📂 STREAMER: Found {len(tfrecord_files)} TFRecord files. Parsing natively...")
+    
+    # Load and parse the dataset using TensorFlow
+    raw_dataset = tf.data.TFRecordDataset(tfrecord_files)
+    parsed_dataset = raw_dataset.map(_parse_tfrecord)
+    
+    for parsed_record in parsed_dataset:
+        sample_dict = {}
+        for key in parsed_record.keys():
+            # Flatten the 64x64 tensor into a 1D list of 4096 floats
+            flat_values = parsed_record[key].numpy().flatten().tolist()
+            
+            # Format exactly like sample_fire_data.json
+            sample_dict[key] = {
+                "data_type": "float_list",
+                "total_length": 4096,
+                "values": flat_values
+            }
+            
+        samples.append(sample_dict)
+        
+    print(f"✅ STREAMER: Successfully extracted {len(samples)} frames directly from TFRecords.")
     return samples
 
 

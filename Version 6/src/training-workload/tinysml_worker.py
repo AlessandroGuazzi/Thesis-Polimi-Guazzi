@@ -24,6 +24,7 @@ import signal
 import sys
 import threading
 import collections
+import queue          # Issue #5: async UDP ingestion buffer
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -427,13 +428,35 @@ def sync_state_to_guardian():
     """
     Periodically sends our state to the Guardian via a localhost HTTP POST.
     This runs in its own daemon thread and does not block frame processing.
+
+    Issue #4 fix: If the Guardian returns 503 (flightMode), we save the
+    payload in a one-slot retry buffer (_pending_state) instead of discarding
+    it silently. On the next sync cycle after warm boot, the buffered state
+    is retried first, ensuring the ML delta generated during the freeze
+    window is never lost.
     """
+    _pending_state = None  # One-slot retry buffer for 503 rejections
+
     while running:
         try:
-            payload = build_state_payload()
-            requests.post(f"{GUARDIAN_URL}/state", json=payload, timeout=1)
+            # If there is a buffered state from a previous 503, retry it first
+            payload = _pending_state if _pending_state else build_state_payload()
+
+            resp = requests.post(f"{GUARDIAN_URL}/state", json=payload, timeout=1)
+
+            if resp.status_code == 503:
+                # Guardian is in flightMode — buffer this payload for retry
+                # instead of silently dropping it (Issue #4)
+                if _pending_state is None:
+                    _pending_state = payload
+                    print("⚠️ WORKER: Guardian returned 503 — state buffered for retry.", flush=True)
+            else:
+                # Success (200) or any other code — clear the retry buffer
+                _pending_state = None
+
         except requests.exceptions.RequestException:
-            # Guardian is temporarily unavailable (e.g. during CRIU freeze or boot)
+            # Guardian is temporarily unavailable (e.g., during CRIU freeze or boot)
+            # Keep the pending state if it exists; it will be retried next cycle
             pass
         time.sleep(STATE_SYNC_INTERVAL)
 
@@ -526,8 +549,45 @@ def start_flush_server():
 
 
 # =============================================================================
-# SECTION 8: MAIN UDP INGESTION LOOP
+# SECTION 8: ASYNC UDP INGESTION (Issue #5 fix)
+# Decouples network I/O from SAMKNN compute using a producer-consumer queue.
+# The background thread drains the OS UDP buffer as fast as the kernel delivers
+# datagrams; the main thread pulls frames at its own pace.
 # =============================================================================
+
+# Bounded queue: keeps at most 4 frames in flight (1 current + 3 buffered).
+# If SAMKNN falls behind, older frames are silently dropped at the queue level
+# rather than at the OS UDP buffer level (where we have no control or visibility).
+_udp_queue = queue.Queue(maxsize=4)
+
+
+def _udp_ingestion_thread(sock):
+    """
+    Background thread that continuously reads UDP datagrams and pushes them
+    into the queue. Runs until the 'running' flag is cleared by SIGTERM.
+
+    If the queue is full (SAMKNN is too slow), the oldest frame is popped
+    and the new one is inserted — this implements a 'latest-N' policy.
+    """
+    while running:
+        try:
+            raw_data, addr = sock.recvfrom(512 * 1024)
+            try:
+                _udp_queue.put_nowait(raw_data)
+            except queue.Full:
+                # Queue is full — drop the oldest frame and insert the new one.
+                # This ensures we always process the MOST RECENT data.
+                try:
+                    _udp_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                _udp_queue.put_nowait(raw_data)
+        except socket.timeout:
+            continue  # No data arrived — loop back
+        except Exception:
+            if not running:
+                break
+
 
 def handle_sigterm(signum, frame):
     """Catches Kubernetes SIGTERM for graceful shutdown."""
@@ -561,7 +621,15 @@ def main():
     sock.bind(("0.0.0.0", UDP_PORT))
     print(f"📡 WORKER: Listening for wildfire frames on UDP port {UDP_PORT}", flush=True)
 
-    # --- Main Ingestion Loop ---
+    # Step 5 (Issue #5): Start background UDP ingestion thread
+    # This thread drains the OS UDP buffer continuously, preventing kernel drops
+    # when SAMKNN inference takes longer than the stream interval.
+    ingestion = threading.Thread(target=_udp_ingestion_thread, args=(sock,), daemon=True)
+    ingestion.start()
+    print("📡 WORKER: Async UDP ingestion thread started.", flush=True)
+
+    # --- Main Processing Loop ---
+    # Pulls pre-received frames from the queue instead of blocking on recvfrom()
     while running:
         # If the Guardian has triggered a pre-freeze flush, pause and wait
         if flush_requested.is_set():
@@ -572,9 +640,10 @@ def main():
             continue
 
         try:
-            # Block for up to 1 second waiting for a UDP datagram
-            raw_data, addr = sock.recvfrom(512 * 1024)  # Buffer up to 512 KB
-        except socket.timeout:
+            # Pull the next frame from the async ingestion queue
+            # Timeout of 1s ensures we check flush_requested regularly
+            raw_data = _udp_queue.get(timeout=1.0)
+        except queue.Empty:
             continue  # No data arrived — loop back to check flush flag
 
         # Decode the compressed binary frame into structured channel grids

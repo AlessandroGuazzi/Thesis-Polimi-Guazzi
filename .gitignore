@@ -43,4 +43,5 @@ Desktop.ini
 
 # --- Extractor ---
 Extractor/
+wildfire_data/
 sample_fire_data.json

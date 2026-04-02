@@ -60,11 +60,12 @@ def read_topology(r):
     nodes = {}
     edges = []
 
-    # Read all node Hash entries (pushed by each Node Agent)
-    node_keys = r.keys("node:*")
-    for key in node_keys:
-        name = key[5:]  # Strip "node:" prefix
-        data = r.hgetall(key)
+    # Issue #3 cascade: Use 'active_fleet' Set instead of KEYS 'node:*'.
+    # Each Node Agent SADDs its name to this Set alongside HSET node:<name>.
+    # SMEMBERS is O(M) where M = fleet size; KEYS is O(N) against all keys.
+    fleet_members = r.smembers("active_fleet")
+    for name in fleet_members:
+        data = r.hgetall(f"node:{name}")
         if data:
             nodes[name] = {
                 "temp":        float(data.get("temp", 999)),

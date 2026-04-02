@@ -2,7 +2,8 @@ import time
 import json
 import redis
 import logging
-from kubernetes import client, config
+import threading
+from kubernetes import client, config, watch
 
 # =============================================================================
 #  SPACE CLOUD V6 - ENVIRONMENT SIMULATOR (Digital Twin, Pure Pub/Sub)
@@ -136,28 +137,74 @@ def connect_redis():
         return None
 
 
-def get_pod_node_map(v1_client):
-    """Queries K8s to find which nodes are currently hosting the SAMKNN workload pod."""
-    active_nodes = set()
-    if not v1_client:
-        return active_nodes
-    try:
-        # Filter by label 'app=space-mission' — our tinySML dual-container pod
-        pods = v1_client.list_namespaced_pod(namespace="default", label_selector="app=space-mission")
-        for pod in pods.items:
-            # Only count pods that are actively running, not being deleted
-            if pod.status.phase in ["Running", "Pending"] and not pod.metadata.deletion_timestamp:
-                if pod.spec.node_name:
-                    active_nodes.add(pod.spec.node_name)
-    except Exception as e:
-        logger.error(f"K8s API Error: {e}")
-    return active_nodes
+# =============================================================================
+# Issue #7 fix: K8s WATCH API for pod placement (replaces per-second polling)
+# The old implementation called list_namespaced_pod() every second in the main
+# loop, generating a full etcd read each time. The Watch API holds a single
+# long-poll HTTP connection and receives push notifications when pods change.
+# =============================================================================
+
+# Thread-safe set of node names currently hosting the space-mission pod
+_active_nodes = set()
+_active_nodes_lock = threading.Lock()
+
+
+def _pod_watcher_thread(v1_client):
+    """
+    Background thread that watches for space-mission pod events.
+    Updates the shared _active_nodes set on every ADDED/MODIFIED/DELETED event.
+    Automatically reconnects on watch timeout or API errors.
+    """
+    w = watch.Watch()
+    while True:
+        try:
+            for event in w.stream(
+                v1_client.list_namespaced_pod,
+                namespace="default",
+                label_selector="app=space-mission",
+                timeout_seconds=60  # Reconnect every 60s to prevent stale watches
+            ):
+                pod = event["object"]
+                event_type = event["type"]
+                node_name = pod.spec.node_name
+                phase = pod.status.phase if pod.status else None
+                deleting = pod.metadata.deletion_timestamp is not None
+
+                with _active_nodes_lock:
+                    if event_type in ("ADDED", "MODIFIED"):
+                        if phase in ("Running", "Pending") and not deleting and node_name:
+                            _active_nodes.add(node_name)
+                        elif node_name and node_name in _active_nodes:
+                            _active_nodes.discard(node_name)
+                    elif event_type == "DELETED":
+                        if node_name:
+                            _active_nodes.discard(node_name)
+
+        except Exception as e:
+            logger.warning(f"Pod watcher error: {e}. Reconnecting in 3s...")
+            time.sleep(3)
+
+
+def get_active_nodes():
+    """Returns a snapshot of the currently active node set (thread-safe)."""
+    with _active_nodes_lock:
+        return set(_active_nodes)
 
 
 def main():
     print("\n🌍 ENVIRONMENT SIMULATOR V6 ONLINE (Forecast-Free, Orbit-Plane-Aware).")
     k8s_api  = connect_k8s()
     redis_db = connect_redis()
+
+    # Issue #7: Start the K8s Watch thread for event-driven pod tracking.
+    # This replaces the per-second list_namespaced_pod() call that was 
+    # stressing the K8s control plane (etcd) with unnecessary reads.
+    if k8s_api:
+        watcher = threading.Thread(target=_pod_watcher_thread, args=(k8s_api,), daemon=True)
+        watcher.start()
+        print("👁️  WATCH: Pod watcher thread started (event-driven, no polling).")
+    else:
+        print("⚠️  WATCH: K8s API unavailable — workload detection disabled.")
 
     # Define the fleet: 1 ground station + 3 satellites in separate orbital planes.
     # Each satellite gets a different orbit_plane label ("A", "B", "C") so the
@@ -173,8 +220,8 @@ def main():
     start_time = time.time()
 
     while True:
-        # Step 1: Check which nodes are currently hosting the mission workload
-        active_nodes = get_pod_node_map(k8s_api)
+        # Issue #7: Read from the event-driven watcher instead of polling the API
+        active_nodes = get_active_nodes()
         elapsed = time.time() - start_time
 
         console_log = "\r"

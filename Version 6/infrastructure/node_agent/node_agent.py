@@ -246,6 +246,11 @@ def push_telemetry_to_floating_master(topology_redis, telemetry, last_pushed):
                 "updated_at":  int(now)
             })
 
+            # Issue #3 fix: Register this node in the 'active_fleet' Set so the Lua
+            # Dijkstra script can discover nodes via SMEMBERS instead of KEYS *.
+            # SADD is idempotent — repeated calls are harmless and O(1).
+            topology_redis.sadd("active_fleet", NODE_NAME)
+
             # Also update adjacency: compute which satellites are currently in range
             # (In production this comes from ephemeris data; here we use static config)
             _update_adjacency(topology_redis, telemetry)
@@ -363,8 +368,11 @@ def trigger_local_migration(topology_redis, migration_type):
 def _criu_checkpoint():
     """
     Requests a CRIU checkpoint of the 'sidecar-guardian' container from the Kubelet.
-    Opens a kubectl proxy on port 8001, POSTs to the checkpoint API, and returns
-    the path to the generated checkpoint TAR file.
+
+    Issue #2 fix: Instead of spawning a background 'kubectl proxy' process (which
+    can become a zombie leaking port 8001 on crash), we use the ServiceAccount
+    token mounted at /var/run/secrets/kubernetes.io/serviceaccount/ to authenticate
+    directly to the Kubelet REST API. This is cleaner, faster, and leak-proof.
     """
     print("📸 AGENT: Requesting CRIU checkpoint from Kubelet...", flush=True)
 
@@ -380,31 +388,31 @@ def _criu_checkpoint():
         print(f"❌ AGENT: Cannot find local pod: {e}", flush=True)
         return None
 
-    # Proxy to the Kubelet API (required for the /checkpoint endpoint)
-    proxy = subprocess.Popen(
-        ["kubectl", "proxy", "--port=8001"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
+    # Read the ServiceAccount token (mounted by K8s into every Pod)
+    token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    try:
+        with open(token_path, "r") as f:
+            sa_token = f.read().strip()
+    except FileNotFoundError:
+        print("⚠️  AGENT: No ServiceAccount token found — falling back to kubectl proxy.", flush=True)
+        return _criu_checkpoint_via_proxy(pod_name)
 
-    # Wait up to 3 seconds for the proxy to be ready
-    health_url = f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy/healthz"
-    for _ in range(30):
-        try:
-            if requests.get(health_url, timeout=0.2).status_code == 200:
-                break
-        except Exception:
-            pass
-        time.sleep(0.1)
-
-    # Submit the checkpoint request to the Kubelet
+    # POST directly to the Kubelet checkpoint API using the ServiceAccount bearer token.
+    # This eliminates the need for a background 'kubectl proxy' process entirely.
+    # The API server proxies the request to the Kubelet on the correct node.
     api_url = (
-        f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy"
+        f"https://kubernetes.default.svc/api/v1/nodes/{NODE_NAME}/proxy"
         f"/checkpoint/default/{pod_name}/sidecar-guardian"
     )
+    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
     try:
-        resp = requests.post(api_url, timeout=30)
-        proxy.terminate()
+        resp = requests.post(
+            api_url,
+            headers={"Authorization": f"Bearer {sa_token}"},
+            verify=ca_path,
+            timeout=30
+        )
 
         if resp.status_code != 200:
             print(f"❌ AGENT: Checkpoint API returned {resp.status_code}: {resp.text}", flush=True)
@@ -416,9 +424,60 @@ def _criu_checkpoint():
         return path
 
     except Exception as e:
-        proxy.terminate()
         print(f"❌ AGENT: Checkpoint exception: {e}", flush=True)
         return None
+
+
+def _criu_checkpoint_via_proxy(pod_name):
+    """
+    Fallback: Uses kubectl proxy when ServiceAccount token is not available
+    (e.g., running outside the cluster during development). Includes proper
+    cleanup via try/finally to prevent zombie proxy processes.
+    """
+    proxy = subprocess.Popen(
+        ["kubectl", "proxy", "--port=8001"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    try:
+        # Wait up to 3 seconds for the proxy to be ready
+        health_url = f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy/healthz"
+        for _ in range(30):
+            try:
+                if requests.get(health_url, timeout=0.2).status_code == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+        # Submit the checkpoint request to the Kubelet
+        api_url = (
+            f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy"
+            f"/checkpoint/default/{pod_name}/sidecar-guardian"
+        )
+        resp = requests.post(api_url, timeout=30)
+
+        if resp.status_code != 200:
+            print(f"❌ AGENT: Checkpoint API returned {resp.status_code}: {resp.text}", flush=True)
+            return None
+
+        data = resp.json()
+        path = data["items"][0]
+        print(f"✅ AGENT: Checkpoint created at {path}", flush=True)
+        return path
+
+    except Exception as e:
+        print(f"❌ AGENT: Checkpoint exception: {e}", flush=True)
+        return None
+
+    finally:
+        # Always terminate the proxy — this prevents the port 8001 zombie leak
+        proxy.terminate()
+        try:
+            proxy.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proxy.kill()
 
 
 # =============================================================================

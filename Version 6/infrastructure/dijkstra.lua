@@ -19,8 +19,13 @@ local T_fuse     = tonumber(ARGV[3])
 -- -----------------------------------------------------------------------
 -- STEP 1: Load all node telemetry from the Floating Master's Redis Hashes.
 -- Each satellite pushes its own data: HSET node:<name> temp <T> battery <B>
+--
+-- Issue #3 fix: Replaced 'KEYS node:*' with 'SMEMBERS active_fleet'.
+-- KEYS is O(N) against the ENTIRE Redis keyspace and BLOCKS the single-threaded
+-- event loop during execution. With SMEMBERS, we read only from a dedicated Set
+-- that each Node Agent populates via SADD. This is O(M) where M = fleet size.
 -- -----------------------------------------------------------------------
-local node_keys = redis.call('KEYS', 'node:*')   -- Discover all registered nodes
+local fleet_members = redis.call('SMEMBERS', 'active_fleet')
 
 -- Tables that will hold each node's physics data
 local temps    = {}  -- Hardware temperature per node
@@ -28,15 +33,13 @@ local batts    = {}  -- Battery level per node (0-100)
 local planes   = {}  -- Orbital plane identifier per node (for lateral routing)
 local all_nodes = {} -- Complete list of node names
 
-for _, key in ipairs(node_keys) do
-    -- Extract "minikube-m02" from "node:minikube-m02"
-    local name = string.sub(key, 6)
+for _, name in ipairs(fleet_members) do
     table.insert(all_nodes, name)
 
-    -- Read the Hash fields for this node
-    local t = redis.call('HGET', key, 'temp')
-    local b = redis.call('HGET', key, 'battery')
-    local p = redis.call('HGET', key, 'orbit_plane')   -- "A", "B", "C", ...
+    -- Read the Hash fields for this node (key format: node:<name>)
+    local t = redis.call('HGET', 'node:' .. name, 'temp')
+    local b = redis.call('HGET', 'node:' .. name, 'battery')
+    local p = redis.call('HGET', 'node:' .. name, 'orbit_plane')   -- "A", "B", "C", ...
 
     temps[name]  = tonumber(t) or 999
     batts[name]  = tonumber(b) or 0

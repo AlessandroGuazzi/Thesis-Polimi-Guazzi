@@ -76,8 +76,8 @@ async function initRedisSub() {
         await redisSubscriber.pSubscribe('telemetry/*', (message, channel) => {
             const nodeName = channel.split('/')[1];
             fleetState[nodeName] = JSON.parse(message);
-            // Push the updated fleet snapshot to all dashboard browsers
-            broadcastToClients();
+            // TODO Push the updated fleet snapshot to all dashboard browsers
+            //broadcastToClients();
         });
         console.log("📡 Guardian subscribed to Ground Redis telemetry bus.");
     } catch (e) {
@@ -99,8 +99,8 @@ app.post('/state', (req, res) => {
     // Merge the incoming state with a timestamp (spread operator keeps all fields)
     guardianMemory = { ...req.body, last_contact: Date.now() };
 
-    // Relay the new state to any open dashboard browser windows in real-time
-    broadcastToClients();
+    // TODO Relay the new state to any open dashboard browser windows in real-time
+    //broadcastToClients();
     res.json({ status: "SAVED" });
 });
 
@@ -331,3 +331,10 @@ function callWorkerFlush() {
 startServer();
 initRedisSub();
 setupWatcher();
+
+// The Pacemaker: Broadcasts to the browser exactly once per second
+setInterval(() => {
+    if (!flightMode) {
+        broadcastToClients();
+    }
+}, 1000);

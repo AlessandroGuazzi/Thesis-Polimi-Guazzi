@@ -47,9 +47,9 @@ HEARTBEAT_INTERVAL = 5.0
 
 # SAMKNN memory bounds — strictly enforced to guarantee the ≤ 25 MB RAM budget.
 # Each instance = 108 float64 + 1 label = 865 bytes → 20,000 × 865 ≈ 17 MB
-MAX_INSTANCES = 20_000
-STM_MAX = 5_000    # Short-Term Memory window size
-LTM_MAX = 15_000   # Long-Term Memory maximum size
+MAX_INSTANCES = 700
+STM_MAX = 200    # Short-Term Memory window size
+LTM_MAX = 500   # Long-Term Memory maximum size
 
 # kNN inference parameter
 K_NEIGHBOURS = 5

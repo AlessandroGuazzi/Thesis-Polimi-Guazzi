@@ -12,7 +12,11 @@
 #   - PATH_AGENT updated to infrastructure/node_agent/ (gRPC agent directory removed)
 #   - Added PATH_TOPO_DASH + image build for the Floating Master sidecar (§1.8)
 #   - Added Dockerfile for topology dashboard
+#   - ADDED: export DOCKER_BUILDKIT=0 to force legacy builder compatibility
 # ==============================================================================
+
+# Force Docker to use the legacy builder (bypasses missing buildx plugin errors)
+export DOCKER_BUILDKIT=0
 
 # --- CONFIGURATION ---
 NODES=(minikube-m02 minikube-m03 minikube-m04)

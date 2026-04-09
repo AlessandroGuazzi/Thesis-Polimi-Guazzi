@@ -10,6 +10,7 @@
 #   - Global Swarm Dashboard launched (infrastructure/global_dashboard.py)
 #   - Port-forward: ground-redis on 6379, topology-master on 6380 (debug)
 #   - Dashboard tunnel updated to health-check loop for persistence
+#   - ADDED: UDP NodePort Service for Ground-to-Space Data Streaming
 # ==============================================================================
 
 GREEN='\033[0;32m'
@@ -38,7 +39,7 @@ if [[ "$choice" =~ ^([yY])$ ]]; then
     kubectl delete deployment space-mission topology-master ground-redis --ignore-not-found=true
     kubectl delete daemonset  space-node-agent --ignore-not-found=true
     kubectl delete service    ground-redis topology-master topology-dashboard \
-                              space-dashboard-svc --ignore-not-found=true
+                              space-dashboard-svc space-udp-uplink --ignore-not-found=true
 
     # Clean restored images from satellite nodes
     for NODE in minikube-m02 minikube-m03 minikube-m04; do
@@ -65,10 +66,11 @@ trap cleanup SIGINT SIGTERM EXIT
 # BLOCK 3: KUBERNETES DEPLOYMENT
 # Deploys all manifests in the correct dependency order:
 #   1. ground-redis first (other pods need it running)
-#   2. floating-master (topology engine + dashboard sidecar)
-#   3. Node Agent DaemonSet
-#   4. Mission Pod (Guardian + tinySML Worker)
-#   5. Dashboard Service (for the Guardian's SSE UI port-forward)
+#   2. Floating Master (topology engine + dashboard sidecar)
+#   3. Space UDP Uplink (NodePort for Data Streamer)
+#   4. Node Agent DaemonSet
+#   5. Mission Pod (Guardian + tinySML Worker)
+#   6. Dashboard Service (for the Guardian's SSE UI port-forward)
 # =============================================================================
 echo -e "${YELLOW}[1/6] Deploying K8s manifests...${NC}"
 
@@ -77,6 +79,23 @@ kubectl apply -f k8s/service-redis.yaml
 
 # Floating Master (topology-redis + topology-dashboard sidecar) — on satellite node
 kubectl apply -f k8s/floating-master.yaml
+
+# THE SPACE POST OFFICE (UDP NodePort for Data Streaming)
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: space-udp-uplink
+spec:
+  type: NodePort
+  selector:
+    app: space-mission
+  ports:
+    - protocol: UDP
+      port: 5005
+      targetPort: 5005
+      nodePort: 32005
+EOF
 
 # Dashboard K8s Service (port 80 → NodePort for Guardian dashboard)
 kubectl apply -f k8s/service-dashboard.yaml
@@ -119,6 +138,14 @@ sleep 1
     done
 ) &
 
+# ISL Topology Dashboard (persistent — port 8081)
+(
+    while true; do
+        kubectl port-forward svc/topology-dashboard 8081:8081 > /dev/null 2>&1
+        sleep 1
+    done
+) &
+
 # =============================================================================
 # BLOCK 6: LOCAL GROUND STATION PROCESSES
 # Launches the Digital Twin, Data Streamer, and Global Dashboard on the host.
@@ -132,7 +159,8 @@ sleep 2
 echo -e "${YELLOW}[6/6] Launching UDP Data Streamer (Wildfire Dataset)...${NC}"
 # Reads Kaggle wildfire JSON samples and streams 64x64 frames to the active pod
 # via UDP:5005. Fires into the void during migrations — UDP handles this gracefully.
-python3 infrastructure/data_streamer.py > /dev/null 2>&1 &
+# Note: We NO LONGER silence the output so we can see the data flowing!
+python3 infrastructure/data_streamer.py &
 
 echo -e "${GREEN}[+] Launching Global Swarm Dashboard (port 8090)...${NC}"
 # Stateless "God's Eye" operator dashboard — subscribes to telemetry/* on ground-redis
@@ -147,7 +175,7 @@ echo -e "\n${GREEN}✅ SPACE CLOUD V6 OPERATIONAL!${NC}"
 echo "─────────────────────────────────────────────────────"
 echo -e "🖥️  SML Payload Dashboard:      http://localhost:8080   (Guardian SSE, follows migrations)"
 echo -e "🌍  Global Swarm Dashboard:      http://localhost:8090   (Ground Station overview)"
-echo -e "🌐  ISL Topology Dashboard:      minikube service topology-dashboard"
+echo -e "🌐  ISL Topology Dashboard:      http://localhost:8081   (Floating Master SSE)"
 echo -e "📡  Ground Redis (debug):         redis-cli -p 6379"
 echo -e "🗺️  Topology Redis (debug):       redis-cli -p 6380"
 echo "─────────────────────────────────────────────────────"

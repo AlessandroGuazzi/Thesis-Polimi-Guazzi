@@ -5,657 +5,410 @@ Role: This is the satellite's scientific payload — it receives 64×64 sensor g
       from the Ground Station via UDP, runs a sliding-window feature extraction,
       and feeds each pixel's neighbourhood into a SAMKNN streaming classifier.
 
-The state (STM + LTM + current fire mask) is the object that CRIU will freeze
-and restore across multi-hop migrations. It must stay ≤ 25 MB total.
-
-Dependencies: stdlib only — socket, json, struct, zlib, math, http.server,
-              threading, signal, time, os, collections, requests.
-              NO numpy, sklearn, torch, or any C-extension. CRIU-safe.
+Dependencies: stdlib + requests + numpy.
+Note: NumPy is safe here because the Python worker performs a cold boot on
+      the new node and downloads state from the Guardian, avoiding hardware
+      register mismatches during CRIU restores.
 """
 
 import socket
 import struct
 import zlib
 import json
-import math
 import time
 import os
 import signal
 import sys
 import threading
 import collections
-import queue          # Issue #5: async UDP ingestion buffer
+import queue
 import requests
+import random
+import numpy as np
 from http.server import HTTPServer, BaseHTTPRequestHandler
-
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# Port where this worker listens for incoming 64×64 UDP data frames
 UDP_PORT = 5005
-
-# Port where the Guardian sidecar lives (same Pod, same network namespace)
 GUARDIAN_URL = os.getenv("STATE_ENDPOINT", "http://localhost:80")
-
-# How often (in seconds) we push our state to the Guardian's RAM
 STATE_SYNC_INTERVAL = 2.0
 
-# How often (seconds) we push a state update while idle (heartbeat)
-HEARTBEAT_INTERVAL = 5.0
-
-# SAMKNN memory bounds — strictly enforced to guarantee the ≤ 25 MB RAM budget.
-# Each instance = 108 float64 + 1 label = 865 bytes → 20,000 × 865 ≈ 17 MB
-MAX_INSTANCES = 700
-STM_MAX = 200    # Short-Term Memory window size
-LTM_MAX = 500   # Long-Term Memory maximum size
-
-# kNN inference parameter
+MAX_INSTANCES = 20000
+STM_MAX = 5000
+LTM_MAX = 15000
 K_NEIGHBOURS = 5
 
-# The 12 input channel names, in the order they are packed by the streamer.
-# These names match the Kaggle "Next Day Wildfire Spread" dataset exactly.
 FEATURE_CHANNELS = [
-    "PrevFireMask",  # Previous day's fire presence (0 or 1)
-    "sph",           # Specific humidity
-    "th",            # Wind direction (potential temperature proxy)
-    "elevation",     # Terrain height above sea level
-    "pdsi",          # Palmer Drought Severity Index (moisture deficit)
-    "pr",            # Precipitation
-    "population",    # Population density near the pixel
-    "erc",           # Energy Release Component (fire behavior)
-    "NDVI",          # Vegetation greenness index
-    "tmmn",          # Minimum daily temperature
-    "vs",            # Wind speed
-    "tmmx",          # Maximum daily temperature
+    "PrevFireMask", "sph", "th", "elevation", "pdsi", "pr", "population",
+    "erc", "NDVI", "tmmn", "vs", "tmmx"
 ]
 
-# The 13th channel is the ground-truth label (next-day fire spread)
 LABEL_CHANNEL = "FireMask"
-
-# Grid dimensions
 GRID_W = 64
 GRID_H = 64
-N_CHANNELS = len(FEATURE_CHANNELS)  # 12
-
-# Lateral tracking threshold: if Center of Mass crosses this many pixels from
-# the edge, the Node Agent will initiate a lateral migration (see §4.2)
-LATERAL_THRESHOLD = 8  # pixels from the border
-
+N_CHANNELS = len(FEATURE_CHANNELS)
 
 # =============================================================================
-# GLOBAL STATE — this is what CRIU serializes across migrations
+# GLOBAL STATE
 # =============================================================================
 
-# SAMKNN Short-Term Memory: deque of (feature_108, label) tuples
-# A deque automatically discards the oldest instance when full
 stm = collections.deque(maxlen=STM_MAX)
-
-# SAMKNN Long-Term Memory: list of (feature_108, label) tuples
-# Manually capped at LTM_MAX to prevent unbounded growth
 ltm = []
-
-# Latest predicted fire mask (62×62 flattened into a list of ints)
-# Initialized to all-zeros (no fire detected yet)
 predicted_fire_mask = [0] * (GRID_W - 2) * (GRID_H - 2)
-
-# Current Center of Mass of fire-positive pixels
 center_of_mass = {"x": 0.0, "y": 0.0}
 
-# Statistics counters
-sample_count = 0          # Total frames processed since boot / last migration restore
-fire_pixel_count = 0      # Number of fire-positive pixels in the latest prediction
+sample_count = 0
+fire_pixel_count = 0
+instances_trained = 0
 
-# Controls the flush endpoint: when True, UDP ingestion is paused for state sync
 flush_requested = threading.Event()
 flush_done = threading.Event()
-
-# Controls the main loop: set to False by SIGTERM
 running = True
 
-
 # =============================================================================
-# SECTION 1: PURE-PYTHON SAMKNN IMPLEMENTATION
-# Self-Adjusting Memory k-Nearest Neighbor streaming classifier.
-# Works on concept-drifting streams by maintaining separate STM and LTM.
+# SECTION 1: ULTRA-FAST SAMKNN IMPLEMENTATION (Algebra Optimized)
 # =============================================================================
 
-def euclidean_distance_sq(a, b):
+def fast_knn_predict_batch(Q, X, y, X_sq, k=K_NEIGHBOURS):
     """
-    Computes the squared Euclidean distance between two equal-length lists.
-    We use squared distance to avoid the sqrt call — safe for KNN ranking.
+    Vectorized NumPy prediction for multiple query points simultaneously.
+    Q: (M, F) query matrix
+    X: (N, F) support matrix
+    y: (N,) support labels
+    X_sq: (N,) pre-squared X
+    Returns: (M,) array of predictions (-1 if empty)
     """
-    d = 0.0
-    for x, y in zip(a, b):
-        diff = x - y
-        d += diff * diff
-    return d
+    M = Q.shape[0]
+    if len(y) == 0:
+        return np.full(M, -1, dtype=int)
 
+    Q_sq = np.sum(Q ** 2, axis=1, keepdims=True)
+    Xq = np.dot(Q, X.T)
+    distances = X_sq - (2 * Xq) + Q_sq
 
-def knn_predict(query_vector, memory_pool, k=K_NEIGHBOURS):
-    """
-    Performs k-Nearest Neighbour classification over a given memory pool.
+    k_actual = min(k, len(y))
+    nearest_idx = np.argpartition(distances, k_actual - 1, axis=1)[:, :k_actual]
 
-    query_vector: 108-float feature vector for the pixel being classified
-    memory_pool:  list/deque of (feature_108, label) tuples
-    Returns:      0 or 1 (majority vote among k nearest neighbours),
-                  or -1 if the pool is empty
-    """
-    if not memory_pool:
-        return -1  # No memory yet — cannot classify
+    votes = y[nearest_idx]
+    pred = np.where(np.sum(votes, axis=1) >= (k_actual / 2.0), 1, 0)
+    return pred
 
-    # Sort all instances by distance to the query point
-    distances = []
-    for feat, label in memory_pool:
-        dist_sq = euclidean_distance_sq(query_vector, feat)
-        distances.append((dist_sq, label))
+def fast_samknn_predict_batch(Q, stm_X, stm_y, stm_X_sq, ltm_X, ltm_y, ltm_X_sq):
+    stm_pred = fast_knn_predict_batch(Q, stm_X, stm_y, stm_X_sq)
+    ltm_pred = fast_knn_predict_batch(Q, ltm_X, ltm_y, ltm_X_sq)
 
-    distances.sort(key=lambda x: x[0])
-
-    # Majority vote among the k closest instances
-    votes = [lbl for _, lbl in distances[:k]]
-    return 1 if sum(votes) >= (k / 2.0) else 0
-
-
-def samknn_predict(query_vector):
-    """
-    SAMKNN prediction combining STM and LTM.
-
-    The STM captures recent concept; the LTM captures historical patterns.
-    We query both independently and combine via weighted majority vote:
-    - STM vote is weighted 2× (recent data is more reliable on a drifting stream)
-    - LTM vote is weighted 1×
-    """
-    stm_pred = knn_predict(query_vector, stm, K_NEIGHBOURS)
-    ltm_pred = knn_predict(query_vector, ltm, K_NEIGHBOURS)
-
-    if stm_pred == -1 and ltm_pred == -1:
-        return 0  # No memory at all → default to "no fire"
-    if stm_pred == -1:
-        return ltm_pred
-    if ltm_pred == -1:
-        return stm_pred
-
-    # Weighted vote: STM is twice as important as LTM
-    return 1 if (stm_pred * 2 + ltm_pred) >= 2 else 0
-
+    M = Q.shape[0]
+    final_pred = np.zeros(M, dtype=int)
+    
+    for i in range(M):
+        sp = stm_pred[i]
+        lp = ltm_pred[i]
+        if sp == -1 and lp == -1: final_pred[i] = 0
+        elif sp == -1: final_pred[i] = lp
+        elif lp == -1: final_pred[i] = sp
+        else: final_pred[i] = 1 if (sp * 2 + lp) >= 2 else 0
+        
+    return final_pred
 
 def samknn_train(feature_vector, label):
-    """
-    Adds a new labelled instance to the Short-Term Memory.
-
-    The deque automatically evicts the oldest instance once maxlen is reached.
-    Every CLEAN_CYCLE new STM instances, we run the LTM cleaning step.
-    """
-    global ltm
-
-    # Add to STM (deque auto-evicts oldest if full)
+    global ltm, instances_trained
     stm.append((feature_vector, label))
+    instances_trained += 1
 
-    # Periodically move stable STM knowledge to Long-Term Memory
-    # We do this every 500 new instances to amortise the cost
-    if len(stm) % 500 == 0 and len(stm) == STM_MAX:
+    if instances_trained % 1000 == 0:
         _stm_to_ltm_cleaning()
 
-
 def _stm_to_ltm_cleaning():
-    """
-    Moves consistently classified STM instances to LTM, discards noisy ones.
-
-    Algorithm:
-    1. For each instance in STM, classify it using the *rest of STM* (leave-one-out).
-    2. If its label matches the STM prediction → "consistent" → migrate to LTM.
-    3. If it contradicts → "noisy" → discard it.
-    This step removes contradictory instances that would corrupt the LTM.
-    """
+    """Moves NEW memories to LTM using the Infinity Trick AND Algebra Optimization."""
     global ltm
     consistent = []
+    
+    stm_list_full = list(stm)
+    n_full = len(stm_list_full)
+    if n_full == 0:
+        return
 
-    stm_list = list(stm)   # Snapshot for the leave-one-out check
+    stm_X_full = np.array([item[0] for item in stm_list_full])
+    stm_y_full = np.array([item[1] for item in stm_list_full])
+    stm_X_full_sq = np.sum(stm_X_full ** 2, axis=1)
 
-    for i, (feat, lbl) in enumerate(stm_list):
-        # Build a temporary pool excluding this instance
-        others = stm_list[:i] + stm_list[i+1:]
-        pred = knn_predict(feat, others, K_NEIGHBOURS)
+    k_actual = min(K_NEIGHBOURS, n_full - 1)
+    if k_actual == 0:
+        return
+
+    # Process only the newly added items since the last 1000 threshold
+    start_idx = max(0, n_full - 1000)
+    for i in range(start_idx, n_full):
+        feat = stm_X_full[i]
+        lbl = stm_y_full[i]
+
+        # Fast algebraic distance
+        q_sq = stm_X_full_sq[i]
+        Xq = np.dot(stm_X_full, feat)
+        distances = stm_X_full_sq - (2 * Xq) + q_sq
+
+        # The Infinity Trick
+        distances[i] = np.inf
+
+        nearest_idx = np.argpartition(distances, k_actual - 1)[:k_actual]
+        votes = stm_y_full[nearest_idx]
+        pred = 1 if np.sum(votes) >= (k_actual / 2.0) else 0
+
         if pred == lbl:
-            # This instance is consistent with its neighbourhood → keep it
-            consistent.append((feat, lbl))
+            consistent.append(stm_list_full[i])
 
-    # Append consistent instances to LTM, then enforce the LTM size cap
     ltm.extend(consistent)
     if len(ltm) > LTM_MAX:
-        # Drop oldest LTM instances to stay within the 15,000-instance cap
         ltm = ltm[-LTM_MAX:]
 
-
 # =============================================================================
-# SECTION 2: FRAME DESERIALIZATION
-# The data streamer sends zlib-compressed binary blobs.
-# We reverse the encoding here.
+# SECTION 2 & 3 & 4: DECODE, EXTRACT, COM
 # =============================================================================
 
 def decode_frame(raw_udp_bytes):
-    """
-    Converts a received UDP datagram back into a structured 64×64 grid.
-
-    The streamer encodes 13 channels × 4096 float32 values = 53,248 floats.
-    Order: [PrevFireMask, sph, th, elevation, pdsi, pr, population,
-            erc, NDVI, tmmn, vs, tmmx, FireMask]
-
-    Returns: (channels_dict, fire_mask_label) or (None, None) on error
-    """
     try:
-        # Step 1: Decompress the payload (streamer uses zlib.compress())
         decompressed = zlib.decompress(raw_udp_bytes)
-
-        # Step 2: Unpack all 53,248 float32 values from the binary blob
-        # '!' = network byte order, 'f' = float32
-        n_floats = (N_CHANNELS + 1) * GRID_W * GRID_H   # 13 × 4096
+        n_floats = (N_CHANNELS + 1) * GRID_W * GRID_H
         all_values = struct.unpack(f'!{n_floats}f', decompressed)
 
-        # Step 3: Slice and reshape each channel into a GRID_H × GRID_W 2D list
         channels = {}
         for ci, name in enumerate(FEATURE_CHANNELS):
             start = ci * GRID_W * GRID_H
             end = start + GRID_W * GRID_H
-            flat = list(all_values[start:end])
-            # Reshape flat list into 64 rows of 64 values each
-            channels[name] = [flat[r * GRID_W:(r + 1) * GRID_W] for r in range(GRID_H)]
+            channels[name] = [list(all_values[start:end])[r * GRID_W:(r + 1) * GRID_W] for r in range(GRID_H)]
 
-        # The last channel (channel 12) is the FireMask ground-truth label
         fire_start = N_CHANNELS * GRID_W * GRID_H
-        fire_flat = list(all_values[fire_start:fire_start + GRID_W * GRID_H])
-        fire_mask = [[fire_flat[r * GRID_W + c] for c in range(GRID_W)] for r in range(GRID_H)]
+        fire_mask = [list(all_values[fire_start:fire_start + GRID_W * GRID_H])[r * GRID_W:(r + 1) * GRID_W] for r in range(GRID_H)]
 
         return channels, fire_mask
-
     except Exception as e:
-        print(f"⚠️ WORKER: Frame decode error: {e}", flush=True)
         return None, None
 
 
-# =============================================================================
-# SECTION 3: 3×3 SLIDING WINDOW FEATURE EXTRACTION
-# =============================================================================
-
-def extract_3x3_features(channels, row, col):
-    """
-    Builds a 108-float feature vector for pixel (row, col) by flattening
-    the 3×3 neighbourhood across all 12 input channels.
-
-    Think of it as: for each of the 9 pixels in the 3×3 patch,
-    read all 12 feature values → 9 × 12 = 108 floats total.
-
-    row, col must satisfy 1 ≤ row ≤ 62 and 1 ≤ col ≤ 62 (interior pixels only).
-    """
-    feature_vector = []
-    for dr in [-1, 0, 1]:      # 3 vertical neighbours
-        for dc in [-1, 0, 1]:  # 3 horizontal neighbours
-            r = row + dr
-            c = col + dc
-            for channel_name in FEATURE_CHANNELS:
-                # Read the feature value for this pixel from the channel grid
-                feature_vector.append(channels[channel_name][r][c])
-    return feature_vector  # Length is exactly 108
-
-
-# =============================================================================
-# SECTION 4: CENTER OF MASS COMPUTATION
-# Used by Trigger B in the Node Agent to detect lateral fire spread.
-# =============================================================================
 
 def compute_center_of_mass(pred_mask_2d):
-    """
-    Computes the 2D centroid (average x, average y) of all fire-positive pixels.
-
-    pred_mask_2d: a (GRID_H-2) × (GRID_W-2) list of binary values (0 or 1)
-
-    Returns: {"x": float, "y": float}
-    If no fire pixels are found, returns the centre of the grid.
-    """
-    total_mass = 0
-    cx = 0.0
-    cy = 0.0
-
-    inner_h = GRID_H - 2  # 62
-    inner_w = GRID_W - 2  # 62
-
+    total_mass, cx, cy = 0, 0.0, 0.0
+    inner_h, inner_w = GRID_H - 2, GRID_W - 2
     for r in range(inner_h):
         for c in range(inner_w):
             if pred_mask_2d[r][c] == 1:
-                cx += c       # Horizontal position (column index)
-                cy += r       # Vertical position (row index)
+                cx += c
+                cy += r
                 total_mass += 1
-
     if total_mass == 0:
-        # No fire detected → return geometric centre
         return {"x": inner_w / 2.0, "y": inner_h / 2.0}
-
     return {"x": cx / total_mass, "y": cy / total_mass}
 
 
 # =============================================================================
 # SECTION 5: FRAME PROCESSING PIPELINE
-# Runs the full inference loop for one 64×64 observation frame.
 # =============================================================================
 
 def process_frame(channels, fire_mask_label):
-    """
-    Full processing pipeline for a single 64×64 satellite observation:
-    1. For every interior pixel, extract a 108-float 3×3 feature vector.
-    2. Run SAMKNN prediction (fire tomorrow: 1 or 0).
-    3. Train the SAMKNN with the ground-truth label.
-    4. Accumulate predictions into the predicted fire mask.
-    5. Compute the Center of Mass of predicted fire pixels.
-
-    Updates the global state variables used by the Guardian sync and flush.
-    """
     global predicted_fire_mask, center_of_mass, fire_pixel_count, sample_count
 
-    inner_h = GRID_H - 2  # 62 usable rows (skip border pixels)
-    inner_w = GRID_W - 2  # 62 usable columns
+    inner_h, inner_w = GRID_H - 2, GRID_W - 2
 
-    # Temporary 2D grid to collect predictions for this frame
-    pred_2d = [[0] * inner_w for _ in range(inner_h)]
+    # 1. Build Matrices
+    stm_X = np.array([item[0] for item in stm]) if stm else np.empty((0, 108))
+    stm_y = np.array([item[1] for item in stm]) if stm else np.empty(0)
+    ltm_X = np.array([item[0] for item in ltm]) if ltm else np.empty((0, 108))
+    ltm_y = np.array([item[1] for item in ltm]) if ltm else np.empty(0)
 
-    for r in range(1, GRID_H - 1):   # Row 1 to 62 (interior only)
-        for c in range(1, GRID_W - 1):  # Col 1 to 62
+    # 2. Pre-calculate X^2 for the Algebra Trick ONCE per frame
+    stm_X_sq = np.sum(stm_X ** 2, axis=1) if len(stm_X) > 0 else np.empty(0)
+    ltm_X_sq = np.sum(ltm_X ** 2, axis=1) if len(ltm_X) > 0 else np.empty(0)
 
-            # Extract the 108-float neighbourhood feature vector
-            feat = extract_3x3_features(channels, r, c)
+    new_memories = []
 
-            # Predict whether this pixel will be on fire tomorrow
-            pred = samknn_predict(feat)
+    # 3. Vectorized batch extraction
+    Q_array = np.zeros((inner_h * inner_w, 108), dtype=float)
+    idx = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            for name in FEATURE_CHANNELS:
+                ch_slice = np.array(channels[name])[1+dr : GRID_H-1+dr, 1+dc : GRID_W-1+dc].flatten()
+                Q_array[:, idx] = ch_slice
+                idx += 1
 
-            # Store the prediction in the 2D output grid
-            pred_2d[r - 1][c - 1] = pred
+    # 4. Predict instantly using the bulk algebraic batch trick
+    preds = fast_samknn_predict_batch(Q_array, stm_X, stm_y, stm_X_sq, ltm_X, ltm_y, ltm_X_sq)
+    pred_2d = preds.reshape(inner_h, inner_w).tolist()
 
-            # Get the ground-truth label for this pixel (for online training)
+    for r in range(1, GRID_H - 1):
+        for c in range(1, GRID_W - 1):
             label = int(fire_mask_label[r][c])
+            if label == 1 or random.random() < 0.02:
+                pixel_idx = (r - 1) * inner_w + (c - 1)
+                # Save as standard list for pure JSON/CRIU compatibility
+                new_memories.append((Q_array[pixel_idx].tolist(), label))
 
-            # Train the SAMKNN with the correct answer for this pixel
-            samknn_train(feat, label)
+    for feat, label in new_memories:
+        samknn_train(feat, label)
 
-    # Flatten the 2D prediction grid into a 1D list for JSON serialization
-    predicted_fire_mask = [pred_2d[r][c] for r in range(inner_h) for c in range(inner_w)]
-
-    # Count how many pixels are predicted to be on fire
+    predicted_fire_mask = preds.tolist()
     fire_pixel_count = sum(predicted_fire_mask)
-
-    # Compute the Center of Mass for Trigger B lateral tracking
     center_of_mass = compute_center_of_mass(pred_2d)
-
     sample_count += 1
 
     print(
-        f"🔥 WORKER: Frame {sample_count} processed | "
-        f"Fire pixels: {fire_pixel_count} | "
-        f"CoM: ({center_of_mass['x']:.1f}, {center_of_mass['y']:.1f}) | "
-        f"STM: {len(stm)} | LTM: {len(ltm)}",
-        flush=True
-    )
-
+        f"🔥 WORKER: Frame {sample_count} processed | Fire: {fire_pixel_count} | CoM: ({center_of_mass['x']:.1f}, {center_of_mass['y']:.1f}) | STM: {len(stm)} | LTM: {len(ltm)}", flush=True)
 
 # =============================================================================
 # SECTION 6: GUARDIAN STATE SYNCHRONIZATION
-# Sends the current SAMKNN state to the Guardian's RAM for CRIU persistence.
 # =============================================================================
 
 def build_state_payload():
-    """
-    Packages the complete SAMKNN state into a JSON-serialisable dict.
-    This is what the Guardian stores in its RAM — and therefore what CRIU
-    freezes and restores across satellite hops.
-    """
     return {
-        # The fire prediction output for the latest frame
         "predicted_fire_mask": predicted_fire_mask,
-        # Centroid of fire pixels — used by Node Agent Trigger B
         "center_of_mass": center_of_mass,
         "fire_pixel_count": fire_pixel_count,
-        # How many frames have been processed (survives migration)
         "sample_count": sample_count,
-        # Memory utilisation (for the dashboard gauges)
+        "instances_trained": instances_trained,
         "stm_size": len(stm),
         "ltm_size": len(ltm),
-        # Worker self-report status
         "status": "TRACKING"
     }
 
-
 def sync_state_to_guardian():
-    """
-    Periodically sends our state to the Guardian via a localhost HTTP POST.
-    This runs in its own daemon thread and does not block frame processing.
-
-    Issue #4 fix: If the Guardian returns 503 (flightMode), we save the
-    payload in a one-slot retry buffer (_pending_state) instead of discarding
-    it silently. On the next sync cycle after warm boot, the buffered state
-    is retried first, ensuring the ML delta generated during the freeze
-    window is never lost.
-    """
-    _pending_state = None  # One-slot retry buffer for 503 rejections
-
+    _pending_state = None
     while running:
         try:
-            # If there is a buffered state from a previous 503, retry it first
             payload = _pending_state if _pending_state else build_state_payload()
-
             resp = requests.post(f"{GUARDIAN_URL}/state", json=payload, timeout=1)
-
             if resp.status_code == 503:
-                # Guardian is in flightMode — buffer this payload for retry
-                # instead of silently dropping it (Issue #4)
                 if _pending_state is None:
                     _pending_state = payload
-                    print("⚠️ WORKER: Guardian returned 503 — state buffered for retry.", flush=True)
             else:
-                # Success (200) or any other code — clear the retry buffer
                 _pending_state = None
-
         except requests.exceptions.RequestException:
-            # Guardian is temporarily unavailable (e.g., during CRIU freeze or boot)
-            # Keep the pending state if it exists; it will be retried next cycle
             pass
         time.sleep(STATE_SYNC_INTERVAL)
 
-
 def load_initial_state():
-    """
-    Warm-Boot Recovery: After a CRIU migration restore, the Guardian holds
-    our previous state. We fetch it here and reinstate the STM/LTM contents
-    so training can resume exactly from where it left off.
-    """
-    global predicted_fire_mask, center_of_mass, fire_pixel_count, sample_count
-
-    print(f"📡 WORKER: Connecting to Guardian at {GUARDIAN_URL}...", flush=True)
+    global predicted_fire_mask, center_of_mass, fire_pixel_count, sample_count, instances_trained
     while True:
         try:
             resp = requests.get(f"{GUARDIAN_URL}/state", timeout=2)
             if resp.status_code == 200:
                 data = resp.json()
-                # Recover all state fields if they exist (Warm Boot scenario)
                 if "sample_count" in data and data["sample_count"] > 0:
                     predicted_fire_mask = data.get("predicted_fire_mask", predicted_fire_mask)
                     center_of_mass      = data.get("center_of_mass", center_of_mass)
                     fire_pixel_count    = data.get("fire_pixel_count", 0)
                     sample_count        = data.get("sample_count", 0)
-                    # Note: STM and LTM are not stored in the Guardian to keep
-                    # the JSON size small. The flush endpoint handles full serialization.
-                    print(f"🔄 WORKER: Warm boot — resuming from frame {sample_count}.", flush=True)
-                else:
-                    print("🆕 WORKER: Cold start — no previous state found.", flush=True)
+                    instances_trained   = data.get("instances_trained", 0)
                 return
         except requests.exceptions.RequestException:
-            print("⏳ WORKER: Waiting for Guardian to wake up...", flush=True)
             time.sleep(1)
 
-
 # =============================================================================
-# SECTION 7: PRE-FREEZE FLUSH ENDPOINT (localhost:9000/flush)
-# Called by the Guardian just before CRIU freezes the pod.
-# Must be intra-Pod only — never touches external network.
+# SECTION 7: PRE-FREEZE FLUSH ENDPOINT
 # =============================================================================
 
 class FlushHandler(BaseHTTPRequestHandler):
-    """
-    Minimal HTTP server that handles the single POST /flush request.
-    When the Guardian detects /tmp/flush_state, it calls this endpoint.
-    We pause UDP ingestion, serialize everything, and POST it back.
-    """
-
     def do_POST(self):
         if self.path == "/flush":
-            # Signal the main UDP loop to pause at the next safe point
             flush_requested.set()
-
-            # Build the complete state, including STM and LTM for full recovery
-            # (stored temporarily — the Guardian will write this to its RAM)
             full_state = build_state_payload()
-            # Serialize STM and LTM as lists of [feature_list, label] pairs
+
             full_state["stm"] = [[list(f), lbl] for f, lbl in stm]
             full_state["ltm"] = [[list(f), lbl] for f, lbl in ltm]
 
-            # Push the full state to the Guardian right now (synchronous)
             try:
                 requests.post(f"{GUARDIAN_URL}/state", json=full_state, timeout=5)
-                print("💾 WORKER: Pre-freeze flush complete. SAMKNN state secured.", flush=True)
             except Exception as e:
-                print(f"⚠️ WORKER: Flush POST failed: {e}", flush=True)
+                pass
 
-            # Signal back to the flush_requested waiter that we are done
             flush_done.set()
-
-            # Respond 200 OK to the Guardian
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'{"status": "FLUSHED"}')
         else:
             self.send_response(404)
             self.end_headers()
-
-    def log_message(self, format, *args):
-        # Suppress default HTTP request logs to keep the console clean
-        pass
-
+    def log_message(self, format, *args): pass
 
 def start_flush_server():
-    """Starts the /flush endpoint on port 9000 in a background daemon thread."""
     server = HTTPServer(("0.0.0.0", 9000), FlushHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    print("🔌 WORKER: Flush server listening on :9000", flush=True)
-
+    threading.Thread(target=server.serve_forever, daemon=True).start()
 
 # =============================================================================
-# SECTION 8: ASYNC UDP INGESTION (Issue #5 fix)
-# Decouples network I/O from SAMKNN compute using a producer-consumer queue.
-# The background thread drains the OS UDP buffer as fast as the kernel delivers
-# datagrams; the main thread pulls frames at its own pace.
+# SECTION 8: ASYNC UDP INGESTION
 # =============================================================================
 
-# Bounded queue: keeps at most 4 frames in flight (1 current + 3 buffered).
-# If SAMKNN falls behind, older frames are silently dropped at the queue level
-# rather than at the OS UDP buffer level (where we have no control or visibility).
 _udp_queue = queue.Queue(maxsize=4)
 
-
 def _udp_ingestion_thread(sock):
-    """
-    Background thread that continuously reads UDP datagrams and pushes them
-    into the queue. Runs until the 'running' flag is cleared by SIGTERM.
-
-    If the queue is full (SAMKNN is too slow), the oldest frame is popped
-    and the new one is inserted — this implements a 'latest-N' policy.
-    """
+    frame_buffer = {}
     while running:
         try:
-            raw_data, addr = sock.recvfrom(512 * 1024)
-            try:
-                _udp_queue.put_nowait(raw_data)
-            except queue.Full:
-                # Queue is full — drop the oldest frame and insert the new one.
-                # This ensures we always process the MOST RECENT data.
-                try:
-                    _udp_queue.get_nowait()
-                except queue.Empty:
-                    pass
-                _udp_queue.put_nowait(raw_data)
-        except socket.timeout:
-            continue  # No data arrived — loop back
-        except Exception:
-            if not running:
-                break
+            raw_data, addr = sock.recvfrom(65536)
+            header = raw_data[:6]
+            chunk_data = raw_data[6:]
+            frame_id, total_chunks, chunk_index = struct.unpack("!IBB", header)
 
+            if frame_id not in frame_buffer:
+                frame_buffer[frame_id] = {'chunks': {}, 'timestamp': time.time()}
+
+            frame_buffer[frame_id]['chunks'][chunk_index] = chunk_data
+
+            if len(frame_buffer[frame_id]['chunks']) == total_chunks:
+                complete_blob = bytearray()
+                for i in range(total_chunks):
+                    complete_blob.extend(frame_buffer[frame_id]['chunks'][i])
+                try: _udp_queue.put_nowait(complete_blob)
+                except queue.Full:
+                    try: _udp_queue.get_nowait()
+                    except queue.Empty: pass
+                    _udp_queue.put_nowait(complete_blob)
+                del frame_buffer[frame_id]
+
+            current_time = time.time()
+            stale_orders = [fid for fid, data in frame_buffer.items() if current_time - data['timestamp'] > 5.0]
+            for fid in stale_orders: del frame_buffer[fid]
+
+        except socket.timeout: continue
+        except Exception as e: pass
 
 def handle_sigterm(signum, frame):
-    """Catches Kubernetes SIGTERM for graceful shutdown."""
     global running
-    print("\n📴 WORKER: SIGTERM received — shutting down cleanly.", flush=True)
     running = False
     sys.exit(0)
 
-
 signal.signal(signal.SIGTERM, handle_sigterm)
 
-
 def main():
-    # --- Boot Sequence ---
-
-    # Step 1: Recover previous state from the Guardian (handles warm boot after migration)
     load_initial_state()
-
-    # Step 2: Start the pre-freeze flush server in the background
     start_flush_server()
+    threading.Thread(target=sync_state_to_guardian, daemon=True).start()
 
-    # Step 3: Start the background Guardian state sync thread
-    sync_thread = threading.Thread(target=sync_state_to_guardian, daemon=True)
-    sync_thread.start()
-
-    # Step 4: Open the UDP socket for incoming 64×64 observation frames
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    # Large receive buffer to handle the compressed frames (~30-60 KB each)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
-    sock.settimeout(1.0)   # Non-blocking with 1-second timeout for flush checks
+    sock.settimeout(1.0)
     sock.bind(("0.0.0.0", UDP_PORT))
-    print(f"📡 WORKER: Listening for wildfire frames on UDP port {UDP_PORT}", flush=True)
 
-    # Step 5 (Issue #5): Start background UDP ingestion thread
-    # This thread drains the OS UDP buffer continuously, preventing kernel drops
-    # when SAMKNN inference takes longer than the stream interval.
-    ingestion = threading.Thread(target=_udp_ingestion_thread, args=(sock,), daemon=True)
-    ingestion.start()
-    print("📡 WORKER: Async UDP ingestion thread started.", flush=True)
+    threading.Thread(target=_udp_ingestion_thread, args=(sock,), daemon=True).start()
 
-    # --- Main Processing Loop ---
-    # Pulls pre-received frames from the queue instead of blocking on recvfrom()
     while running:
-        # If the Guardian has triggered a pre-freeze flush, pause and wait
         if flush_requested.is_set():
-            print("⏸️  WORKER: Pausing ingestion — flush in progress...", flush=True)
-            flush_done.wait(timeout=10)  # Wait up to 10 seconds for flush to complete
+            flush_done.wait(timeout=10)
             flush_requested.clear()
             flush_done.clear()
             continue
 
         try:
-            # Pull the next frame from the async ingestion queue
-            # Timeout of 1s ensures we check flush_requested regularly
             raw_data = _udp_queue.get(timeout=1.0)
         except queue.Empty:
-            continue  # No data arrived — loop back to check flush flag
+            continue
 
-        # Decode the compressed binary frame into structured channel grids
         channels, fire_mask_label = decode_frame(raw_data)
+        if channels is None: continue
 
-        if channels is None:
-            continue  # Skip malformed frames silently
-
-        # Run the full SAMKNN pipeline on this frame
         process_frame(channels, fire_mask_label)
 
-
 if __name__ == "__main__":
-    print("🛰️  TINYSML WORKER V6: 2D Wildfire Tracker ONLINE.", flush=True)
+    print("🛰️  TINYSML WORKER V6: 2D Wildfire Tracker ONLINE (Ultra-Fast NumPy).", flush=True)
     main()

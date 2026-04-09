@@ -1,3 +1,4 @@
-# tinySML Worker V6 — pure-Python SAMKNN, only requests for Guardian HTTP
+# tinySML Worker V6 — SAMKNN with NumPy vectorization
 # All other deps (socket, struct, zlib, collections, http.server) are Python stdlib
 requests
+numpy

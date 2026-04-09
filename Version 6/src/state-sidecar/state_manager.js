@@ -337,4 +337,4 @@ setInterval(() => {
     if (!flightMode) {
         broadcastToClients();
     }
-}, 1000);
+}, 100);

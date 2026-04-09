@@ -1,6 +1,6 @@
 # =============================================================
 # TINYSML WORKER — SAMKNN 2D Wildfire Tracker (Space Cloud V6)
-# Base: Python 3.9 Slim — minimal footprint for CRIU compatibility
+# Base: Python 3.9 Slim — minimal footprint
 # =============================================================
 FROM python:3.9-slim
 
@@ -17,9 +17,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Install ONLY 'requests' — every other dependency is Python stdlib.
-#    This is intentional: no numpy, sklearn, torch, or river.
-#    Pure-Python SAMKNN + struct/zlib are CRIU-safe (no C-extension threads).
+# 2. Install dependencies (requests + numpy)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

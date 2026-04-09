@@ -25,6 +25,7 @@ import struct
 import zlib
 import time
 import os
+import subprocess
 
 # We import TensorFlow solely to read Google's specific .tfrecord binary file format
 import tensorflow as tf
@@ -47,7 +48,7 @@ DATASET_DIR = os.getenv(
 WORKER_UDP_PORT = 5005
 
 # How fast we send frames (1 frame every 2 seconds gives the CPU time to breathe)
-STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "2.0"))
+STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "3.0"))
 
 # CRITICAL FIX: Force TensorFlow to be "quiet".
 # By default, TF tries to use all available CPU cores. Since we are only reading files,
@@ -135,26 +136,12 @@ def dataset_generator():
 # 3. NETWORK ROUTING & ENCODING
 # =============================================================================
 
-def get_worker_pod_ip():
-    """
-    Queries the K8s API to find the exact IP address of the satellite pod
-    that is currently running the 'space-mission' workload.
-
-    If the pod is migrating, this returns None, and the streamer will simply
-    drop the frame into the void (which is correct behavior).
-    """
-    if not k8s_v1:
-        return None
+def get_minikube_ip():
+    """Finds the external IP of the Minikube virtual machine."""
     try:
-        # Ask K8s: "Give me all pods labeled 'app=space-mission' in the default namespace"
-        pods = k8s_v1.list_namespaced_pod(namespace="default", label_selector="app=space-mission")
-        for pod in pods.items:
-            # We only want the IP if the pod is fully awake ("Running")
-            if pod.status.phase == "Running" and pod.status.pod_ip:
-                return pod.status.pod_ip
+        return subprocess.check_output(["minikube", "ip", "-p", "minikube"]).decode("utf-8").strip()
     except Exception:
-        pass
-    return None
+        return "192.168.49.2" # Fallback to default Minikube IP
 
 
 def encode_frame(sample_dict):
@@ -199,46 +186,45 @@ def encode_frame(sample_dict):
 # =============================================================================
 
 def main():
-    print("🚀 STREAMER: Booting UDP Telemetry Uplink...")
+    print("🚀 STREAMER: Booting UDP Telemetry Uplink (NodePort Mode)...")
 
-    # Open a UDP socket. We do not "bind" it because we are the sender, not the receiver.
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
     frame_idx = 0
-    frames_dropped = 0
 
-    # The infinite loop keeps the ground station running forever
+    # We now target the K8s Post Office instead of the internal Pod
+    target_ip = get_minikube_ip()
+    target_port = 32005
+
     while True:
-
-        # We loop over our Generator. It gives us one frame, then pauses.
-        # When all .tfrecord files are fully read, the 'for' loop finishes,
-        # but the 'while True' loop immediately restarts it from the beginning!
         for frame_dict in dataset_generator():
             frame_idx += 1
 
-            # STEP 1: Compress the Python dictionary into raw network bytes
             blob = encode_frame(frame_dict)
 
-            # STEP 2: Find out which satellite currently has the AI worker
-            pod_ip = get_worker_pod_ip()
+            if target_ip:
+                # 60 KB chunks keep us safely below the 64 KB UDP MTU limit
+                CHUNK_SIZE = 60000
+                total_chunks = (len(blob) // CHUNK_SIZE) + (1 if len(blob) % CHUNK_SIZE > 0 else 0)
 
-            # STEP 3: Transmit the data!
-            if pod_ip:
+                # Create a Unique Order Number for this specific frame
+                frame_id = int(time.time() * 1000) & 0xFFFFFFFF
+
                 try:
-                    # Shoot the compressed blob to the satellite's IP and Port
-                    sock.sendto(blob, (pod_ip, WORKER_UDP_PORT))
+                    for i in range(total_chunks):
+                        chunk_data = blob[i * CHUNK_SIZE: (i + 1) * CHUNK_SIZE]
 
-                    # Print success (showing the compressed size in Kilobytes)
-                    print(f"📤 STREAMER: Frame {frame_idx} → {pod_ip}:{WORKER_UDP_PORT} ({len(blob)//1024}KB)", flush=True)
+                        # Pack the Sticky Note: [Order Number] [Total Boxes] [Box Number]
+                        header = struct.pack("!IBB", frame_id, total_chunks, i)
+
+                        # Fire the box at the K8s Post Office
+                        sock.sendto(header + chunk_data, (target_ip, target_port))
+
+                    print(
+                        f"📤 STREAMER: Frame {frame_idx} (Order #{frame_id}) → {target_ip}:{target_port} ({len(blob) // 1024}KB in {total_chunks} chunks)",
+                        flush=True)
                 except Exception as e:
-                    print(f"⚠️  STREAMER: Send error: {e}", flush=True)
-            else:
-                # If no IP was found, the satellite is in the middle of a CRIU jump!
-                frames_dropped += 1
-                print(f"🌌 STREAMER: Frame {frame_idx} → No pod running (migration in flight).", flush=True)
+                    print(f"⚠️  STREAMER: UDP Send error: {e}", flush=True)
 
-            # STEP 4: Pace the transmission.
-            # Wait 2 seconds before asking the generator for the next frame.
             time.sleep(STREAM_INTERVAL)
 
 # Standard Python boilerplate to ensure main() runs when the script starts

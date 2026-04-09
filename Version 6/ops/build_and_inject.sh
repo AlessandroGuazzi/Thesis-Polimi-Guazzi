@@ -68,13 +68,21 @@ docker build -t $IMG_PAYLOAD -f "$PATH_PAYLOAD/Dockerfile.workload" "$PATH_PAYLO
 docker save $IMG_PAYLOAD -o $TAR_PAYLOAD
 
 # C. Node Agent (Edge-autonomous MPC — no gRPC, §4.2)
-#    Build context includes ops/relay_transfer.sh via COPY in the Dockerfile
 echo "   Building Node Agent..."
-docker build -t $IMG_AGENT \
-    -f "$PATH_AGENT/Dockerfile.agent" \
-    --build-context ops=./ops \
-    "$PATH_AGENT" > /dev/null
+
+# 1. Copy BOTH external dependencies into the build folder!
+cp ./infrastructure/dijkstra.lua "$PATH_AGENT/"
+mkdir -p "$PATH_AGENT/ops"
+cp ./ops/relay_transfer.sh "$PATH_AGENT/ops/"
+
+# 2. Standard legacy build with no modern flags
+docker build -t $IMG_AGENT -f "$PATH_AGENT/Dockerfile.agent" "$PATH_AGENT" > /dev/null
+
 docker save $IMG_AGENT -o $TAR_AGENT
+
+# 3. Clean up the temporary clones so the workspace stays neat!
+rm -f "$PATH_AGENT/dijkstra.lua"
+rm -rf "$PATH_AGENT/ops"
 
 # D. Topology Dashboard sidecar for Floating Master (§1.8)
 #    Uses a minimal Python slim image; floating_master_dashboard.py is the entrypoint

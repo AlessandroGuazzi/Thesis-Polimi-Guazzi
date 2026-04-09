@@ -233,8 +233,17 @@ def process_frame(channels, fire_mask_label):
                 Q_array[:, idx] = ch_slice
                 idx += 1
 
-    # 4. Predict instantly using the bulk algebraic batch trick
-    preds = fast_samknn_predict_batch(Q_array, stm_X, stm_y, stm_X_sq, ltm_X, ltm_y, ltm_X_sq)
+    # 4. Predict using the algebraic batch trick, but in small CHUNKS so we don't crash!
+    CHUNK_SIZE = 256
+    M = Q_array.shape[0]
+    preds = np.zeros(M, dtype=int)
+    for i in range(0, M, CHUNK_SIZE):
+        end_idx = min(i + CHUNK_SIZE, M)
+        Q_chunk = Q_array[i:end_idx]
+        # Process just 256 pixels at a time. High speed, tiny backpack!
+        preds[i:end_idx] = fast_samknn_predict_batch(
+            Q_chunk, stm_X, stm_y, stm_X_sq, ltm_X, ltm_y, ltm_X_sq
+        )
     pred_2d = preds.reshape(inner_h, inner_w).tolist()
 
     for r in range(1, GRID_H - 1):

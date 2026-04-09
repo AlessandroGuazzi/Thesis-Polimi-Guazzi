@@ -158,7 +158,7 @@ def load_lua_script(topology_redis):
     global _lua_script_sha
 
     # Path to the Lua file (relative to this script's location)
-    lua_path = os.path.join(os.path.dirname(__file__), "..", "dijkstra.lua")
+    lua_path = os.path.join(os.path.dirname(__file__), "dijkstra.lua")
     try:
         with open(lua_path, "r") as f:
             lua_code = f.read()

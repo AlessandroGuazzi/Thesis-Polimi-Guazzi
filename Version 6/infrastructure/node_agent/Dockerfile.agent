@@ -27,10 +27,11 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 #    requests: makes HTTP calls to the Kubelet checkpoint API and Guardian /state
 RUN pip install --no-cache-dir redis requests
 
-# 4. Copy the Node Agent source and the Dijkstra Lua script
-#    The Lua script is loaded into the Floating Master Redis at startup via SCRIPT LOAD
+# 4. Copy the Node Agent source and dependencies
 COPY node_agent.py .
-COPY ../dijkstra.lua .
+COPY dijkstra.lua .
+# Copy the relay script to the root /ops folder so python can find it
+COPY ops /ops
 
 # 5. Start the autonomous edge MPC agent
 CMD ["python", "node_agent.py"]

@@ -3,467 +3,439 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Space Cloud V6 — SML Payload Dashboard</title>
+    <title>Space Cloud V6 — Modern SML Payload</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
     <style>
         /* ====================================================================
-           GLOBAL LAYOUT & THEME
-           Dark space theme matching the satellite hardware context.
+           MODERN DESIGN SYSTEM
+           Tailwind-inspired color palette, Glassmorphism, and smooth UI.
            ==================================================================== */
         :root {
-            --bg-deep:    #0a0e1a;   /* Deep space black */
-            --bg-panel:   #111827;   /* Panel background */
-            --bg-card:    #1a2236;   /* Card / grid backgrounds */
-            --accent-fire:  #ff6b35; /* Fire orange */
-            --accent-pred:  #00d4ff; /* Predicted fire cyan */
-            --accent-green: #00ff88; /* Nominal status */
-            --accent-warn:  #ffcc00; /* Warning yellow */
-            --text-primary: #e2e8f0;
-            --text-dim:     #64748b;
-            --border:       #1e3a5f;
+            --bg-base:      #0b0f19;
+            --bg-glass:     rgba(17, 24, 39, 0.7);
+            --border-glass: rgba(255, 255, 255, 0.08);
+
+            --accent-cyan:  #22d3ee;
+            --accent-cyan-glow: rgba(34, 211, 238, 0.2);
+            --accent-rose:  #f43f5e;
+            --accent-emerald: #34d399;
+            --accent-amber: #fbbf24;
+
+            --text-bright:  #f8fafc;
+            --text-muted:   #94a3b8;
+
+            --font-ui:      'Inter', sans-serif;
+            --font-data:    'JetBrains Mono', monospace;
+
+            --radius-lg:    16px;
+            --radius-md:    12px;
+            --radius-sm:    8px;
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
-            background: var(--bg-deep);
-            color: var(--text-primary);
-            font-family: 'Courier New', monospace;
+            background: var(--bg-base);
+            /* Subtle radial gradient background for depth */
+            background-image: radial-gradient(circle at 50% 0%, #1e293b 0%, #0b0f19 50%);
+            color: var(--text-bright);
+            font-family: var(--font-ui);
             min-height: 100vh;
-            padding: 20px;
+            padding: 24px;
+            font-size: 14px;
         }
 
         /* ====================================================================
-           HEADER BAR
+           GLASSMORPHISM PANELS & LAYOUT
            ==================================================================== */
+        .glass-panel {
+            background: var(--bg-glass);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.5);
+        }
+
         header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            background: var(--bg-panel);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 14px 22px;
-            margin-bottom: 20px;
+            padding: 16px 24px;
+            margin-bottom: 24px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 24px;
         }
 
         .header-title {
-            font-size: 1.1rem;
-            font-weight: bold;
-            letter-spacing: 2px;
-            color: var(--accent-pred);
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }
 
-        /* Status pill — green when nominal, red during migration */
-        #status-pill {
-            padding: 5px 16px;
-            border-radius: 20px;
-            font-size: 0.78rem;
-            letter-spacing: 1px;
-            font-weight: bold;
-            transition: all 0.3s;
+        .header-title svg {
+            color: var(--accent-cyan);
+            width: 24px; height: 24px;
         }
-        .status-nominal    { background: rgba(0,255,136,0.15); color: var(--accent-green); border: 1px solid var(--accent-green); }
-        .status-migrating  { background: rgba(255,107,53,0.2);  color: var(--accent-fire);  border: 1px solid var(--accent-fire); animation: pulse 0.8s infinite alternate; }
 
-        @keyframes pulse { from { opacity: 1; } to { opacity: 0.4; } }
+        .clocks {
+            display: flex;
+            gap: 16px;
+            font-family: var(--font-data);
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .guardian-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-glass);
+            padding: 6px 12px;
+            border-radius: var(--radius-sm);
+            font-family: var(--font-data);
+            font-size: 0.85rem;
+        }
+
+        .guardian-badge span:first-child { color: var(--text-muted); font-family: var(--font-ui); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+        /* Modern Status Pill with Pulsing Dot */
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 16px;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            transition: all 0.3s ease;
+        }
+
+        .status-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-nominal {
+            background: rgba(52, 211, 153, 0.1);
+            border: 1px solid rgba(52, 211, 153, 0.2);
+            color: var(--accent-emerald);
+        }
+        .status-nominal .status-dot { background: var(--accent-emerald); box-shadow: 0 0 8px var(--accent-emerald); }
+
+        .status-migrating {
+            background: rgba(244, 63, 94, 0.1);
+            border: 1px solid rgba(244, 63, 94, 0.2);
+            color: var(--accent-rose);
+        }
+        .status-migrating .status-dot {
+            background: var(--accent-rose);
+            box-shadow: 0 0 8px var(--accent-rose);
+            animation: pulse-dot 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
 
         /* ====================================================================
-           MAIN GRID LAYOUT
-           Three columns: current fire mask | predicted fire mask | stats panels
+           DASHBOARD GRID
            ==================================================================== */
         .dashboard-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr 320px;
-            gap: 16px;
+            grid-template-columns: 1fr 1fr 380px;
+            gap: 24px;
         }
 
-        /* On narrow screens, stack vertically */
-        @media (max-width: 1100px) {
-            .dashboard-grid { grid-template-columns: 1fr 1fr; }
-        }
-        @media (max-width: 700px) {
-            .dashboard-grid { grid-template-columns: 1fr; }
-        }
+        .panel-content { padding: 20px; display: flex; flex-direction: column; height: 100%; }
 
-        /* ====================================================================
-           FIRE MASK CANVAS PANELS
-           ==================================================================== */
-        .panel {
-            background: var(--bg-panel);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 16px;
-        }
-
-        .panel-title {
-            font-size: 0.72rem;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            color: var(--text-dim);
-            margin-bottom: 12px;
-        }
-
-        .canvas-wrapper {
-            position: relative; /* Needed for CoM crosshair overlay */
-            display: inline-block;
-            width: 100%;
-        }
-
-        /* The canvas fills its container — CSS scales it, JS draws at device resolution */
-        canvas {
-            display: block;
-            width: 100%;
-            height: auto;
-            image-rendering: pixelated; /* Keep pixels sharp when scaled up */
-            border-radius: 4px;
-            border: 1px solid var(--border);
-        }
-
-        /* Center of Mass crosshair overlay — positioned absolutely on the canvas */
-        #com-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none; /* Don't block mouse events on the canvas */
-        }
-
-        /* ====================================================================
-           STATS PANELS (right column)
-           ==================================================================== */
-        .stats-column {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        /* Single metric display */
-        .metric-row {
+        .panel-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 8px 0;
-            border-bottom: 1px solid var(--border);
-            font-size: 0.82rem;
+            margin-bottom: 16px;
         }
 
-        .metric-label { color: var(--text-dim); }
-        .metric-value { font-weight: bold; font-size: 0.9rem; }
-
-        .val-fire    { color: var(--accent-fire);  }
-        .val-pred    { color: var(--accent-pred);  }
-        .val-nominal { color: var(--accent-green); }
-        .val-warning { color: var(--accent-warn);  }
-
-        /* ====================================================================
-           MEMORY UTILISATION BARS (STM / LTM gauges)
-           ==================================================================== */
-        .mem-bar-container {
-            margin-top: 6px;
-        }
-
-        .mem-bar-label {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.75rem;
-            color: var(--text-dim);
-            margin-bottom: 4px;
-        }
-
-        .mem-bar-bg {
-            background: var(--bg-card);
-            border-radius: 4px;
-            height: 10px;
-            overflow: hidden;
-            margin-bottom: 10px;
-            border: 1px solid var(--border);
-        }
-
-        /* The fill bar — width is set dynamically by JS */
-        .mem-bar-fill {
-            height: 100%;
-            border-radius: 4px;
-            transition: width 0.4s ease;
-        }
-
-        .stm-fill { background: linear-gradient(90deg, #00d4ff, #0088aa); }
-        .ltm-fill { background: linear-gradient(90deg, #ff6b35, #cc3300); }
-
-        /* ====================================================================
-           FLEET TELEMETRY TABLE (satellite hardware status)
-           ==================================================================== */
-        .fleet-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.78rem;
-        }
-
-        .fleet-table th {
-            color: var(--text-dim);
-            text-align: left;
-            padding: 6px 4px;
+        .panel-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
             text-transform: uppercase;
-            letter-spacing: 1px;
-            font-size: 0.68rem;
-            border-bottom: 1px solid var(--border);
+            letter-spacing: 0.05em;
         }
-
-        .fleet-table td {
-            padding: 7px 4px;
-            border-bottom: 1px solid rgba(30, 58, 95, 0.4);
-            vertical-align: middle;
-        }
-
-        /* Temperature cell is color-coded by severity */
-        .temp-ok   { color: var(--accent-green); }
-        .temp-warm { color: var(--accent-warn); }
-        .temp-hot  { color: var(--accent-fire); }
-
-        /* Active satellite indicator dot */
-        .dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 6px;
-        }
-        .dot-active  { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
-        .dot-inactive { background: var(--text-dim); }
 
         /* ====================================================================
-           MIGRATION EVENT LOG
+           TACTICAL GRIDS (Canvases)
            ==================================================================== */
-        #event-log {
-            font-size: 0.72rem;
-            color: var(--text-dim);
-            max-height: 140px;
-            overflow-y: auto;
-            line-height: 1.6;
+        .canvas-wrapper {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            background: #000;
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            border: 1px solid var(--border-glass);
+            /* Soft glow behind the canvas */
+            box-shadow: inset 0 0 40px rgba(255,255,255,0.02);
         }
 
-        .log-thermal { color: var(--accent-warn); }
-        .log-lateral { color: var(--accent-pred); }
-        .log-land    { color: var(--accent-green); }
+        /* Subtle grid overlay */
+        .canvas-grid-bg {
+            position: absolute; inset: 0; pointer-events: none;
+            background-image:
+                linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+            background-size: 15.625% 15.625%;
+        }
+
+        canvas {
+            display: block; width: 100%; height: 100%;
+            image-rendering: pixelated;
+        }
+
+        #com-overlay {
+            position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+        }
+        .reticle-line { stroke: var(--accent-cyan); stroke-width: 0.3; stroke-dasharray: 4 2; opacity: 0.7; }
+        .reticle-center { fill: none; stroke: var(--accent-cyan); stroke-width: 0.8; }
+        .reticle-text { font-family: var(--font-data); font-size: 2px; fill: var(--text-bright); }
+
+        .reticle-alert .reticle-line, .reticle-alert .reticle-center { stroke: var(--accent-rose); opacity: 1; }
+        .reticle-alert .reticle-text { fill: var(--accent-rose); font-weight: bold; }
+
+        /* ====================================================================
+           STATS & DIAGNOSTICS
+           ==================================================================== */
+        .stats-col { display: flex; flex-direction: column; gap: 24px; }
+
+        .metric-group { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        .metric-box {
+            background: rgba(0,0,0,0.2);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-sm);
+            padding: 12px;
+        }
+        .metric-box-label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase;}
+        .metric-box-val { font-family: var(--font-data); font-size: 1.25rem; font-weight: 700; color: var(--text-bright); }
+
+        /* Modern Progress Bars */
+        .progress-wrapper { margin-bottom: 12px; }
+        .progress-header { display: flex; justify-content: space-between; font-size: 0.75rem; margin-bottom: 6px; }
+        .progress-header span:first-child { color: var(--text-muted); }
+        .progress-header span:last-child { font-family: var(--font-data); color: var(--text-bright); }
+        .progress-track {
+            height: 6px; background: rgba(0,0,0,0.3); border-radius: 99px; overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+        .progress-fill { height: 100%; border-radius: 99px; transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+        .fill-stm { background: linear-gradient(90deg, #06b6d4, #22d3ee); box-shadow: 0 0 10px var(--accent-cyan-glow); }
+        .fill-ltm { background: linear-gradient(90deg, #475569, #94a3b8); }
+
+        /* Modern Table */
+        .data-table { width: 100%; border-collapse: collapse; font-family: var(--font-data); font-size: 0.8rem; }
+        .data-table th { text-align: left; padding: 12px 8px; color: var(--text-muted); font-family: var(--font-ui); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; border-bottom: 1px solid var(--border-glass); }
+        .data-table td { padding: 12px 8px; border-bottom: 1px solid rgba(255,255,255,0.02); color: var(--text-bright); }
+        .data-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+        .val-danger { color: var(--accent-rose); font-weight: 700; }
+        .val-warn { color: var(--accent-amber); font-weight: 700; }
+
+        /* Node Indicator */
+        .node-indicator { display: inline-flex; align-items: center; gap: 8px; }
+        .node-dot { width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+        .node-active { background: var(--accent-emerald); box-shadow: 0 0 6px var(--accent-emerald); }
+
+        /* Console */
+        #system-console {
+            flex-grow: 1; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); border: 1px solid var(--border-glass);
+            padding: 12px; font-family: var(--font-data); font-size: 0.75rem; color: var(--text-muted);
+            height: 180px; overflow-y: auto; line-height: 1.6;
+        }
+        .log-time { color: #64748b; margin-right: 8px; }
+        .log-action-err { color: var(--accent-rose); }
+        .log-action-ok { color: var(--accent-emerald); }
+
     </style>
 </head>
 <body>
 
-<!-- ====================================================================
-     HEADER
-     ==================================================================== -->
-<header>
-    <div class="header-title">🛰️ SPACE CLOUD V6 — SML PAYLOAD DASHBOARD</div>
-    <div>
-        <span style="color: var(--text-dim); font-size:0.75rem;">GUARDIAN: </span>
-        <span id="guardian-id" style="color:var(--accent-pred); font-size:0.8rem;">—</span>
+<header class="glass-panel">
+    <div class="header-left">
+        <div class="header-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            Space Cloud V6
+        </div>
+        <div class="clocks">
+            <span>UTC <span id="clock-utc" style="color:var(--text-bright)">00:00:00Z</span></span>
+            <span>MET <span id="clock-met" style="color:var(--text-bright)">T+00:00:00</span></span>
+        </div>
     </div>
-    <div id="status-pill" class="status-nominal">● NOMINAL</div>
+
+    <div style="display: flex; align-items: center; gap: 16px;">
+        <div class="guardian-badge">
+            <span>Active Node</span>
+            <span id="guardian-id">AWAITING_UPLINK</span>
+        </div>
+        <div id="status-lamp" class="status-pill status-nominal">
+            <div class="status-dot"></div>
+            <span>System Nominal</span>
+        </div>
+    </div>
 </header>
 
-<!-- ====================================================================
-     MAIN DASHBOARD GRID
-     ==================================================================== -->
 <div class="dashboard-grid">
 
-    <!-- -----------------------------------------------------------------
-         PANEL 1: Current Fire Mask (PrevFireMask from the incoming frame)
-         Shows WHERE fire is RIGHT NOW according to the sensor data.
-         ----------------------------------------------------------------- -->
-    <div class="panel">
-        <div class="panel-title">📡 Current Fire Mask (Sensor Input)</div>
+    <div class="glass-panel panel-content">
+        <div class="panel-header">
+            <span class="panel-title">Raw OP-IR Feed</span>
+            <span class="guardian-badge" style="border:none; background:transparent; padding:0;">64x64</span>
+        </div>
         <div class="canvas-wrapper">
-            <!--
-                64×64 pixels — each pixel is ONE 1km² ground cell.
-                The canvas is drawn at 64×64 native resolution and scaled up by CSS.
-                Color: black = no fire, orange gradient = active fire intensity.
-            -->
+            <div class="canvas-grid-bg"></div>
             <canvas id="canvas-current" width="64" height="64"></canvas>
         </div>
-        <div style="margin-top:8px; font-size:0.7rem; color:var(--text-dim);">
-            Source: PrevFireMask channel (ground truth from sensor)
-        </div>
     </div>
 
-    <!-- -----------------------------------------------------------------
-         PANEL 2: Predicted Fire Mask (SAMKNN output)
-         Shows WHERE fire is predicted to be TOMORROW.
-         The CoM crosshair shows the centroid of predicted fire pixels.
-         If the CoM drifts to the edge, Trigger B fires and the workload
-         migrates to a laterally adjacent satellite.
-         ----------------------------------------------------------------- -->
-    <div class="panel">
-        <div class="panel-title">🔮 Predicted Fire Mask (SAMKNN Output)</div>
+    <div class="glass-panel panel-content">
+        <div class="panel-header">
+            <span class="panel-title">SAMKNN Prediction</span>
+            <span class="guardian-badge" style="border:none; background:transparent; padding:0;">62x62</span>
+        </div>
         <div class="canvas-wrapper">
-            <!--
-                62×62 pixels (interior only — border excluded by 3×3 sliding window).
-                Overlaid with a cyan crosshair marking the Center of Mass.
-                A red pulsing border appears when CoM approaches the swath edge.
-            -->
+            <div class="canvas-grid-bg"></div>
             <canvas id="canvas-predicted" width="62" height="62"></canvas>
-            <!-- Crosshair SVG layer — positioned on top of the canvas -->
             <svg id="com-overlay" viewBox="0 0 62 62" xmlns="http://www.w3.org/2000/svg">
-                <!-- Horizontal crosshair line -->
-                <line id="com-h" x1="0" y1="31" x2="62" y2="31"
-                      stroke="#00d4ff" stroke-width="0.5" opacity="0.7"/>
-                <!-- Vertical crosshair line -->
-                <line id="com-v" x1="31" y1="0" x2="31" y2="62"
-                      stroke="#00d4ff" stroke-width="0.5" opacity="0.7"/>
-                <!-- Center of Mass marker circle -->
-                <circle id="com-dot" cx="31" cy="31" r="2"
-                        fill="none" stroke="#00d4ff" stroke-width="1"/>
+                <g id="reticle-group">
+                    <line id="com-h" class="reticle-line" x1="0" y1="31" x2="62" y2="31" />
+                    <line id="com-v" class="reticle-line" x1="31" y1="0" x2="31" y2="62" />
+                    <circle id="com-dot" class="reticle-center" cx="31" cy="31" r="1.5" />
+                    <rect id="com-bg" x="32.5" y="27.5" width="18" height="3" fill="rgba(0,0,0,0.5)" rx="0.5"/>
+                    <text id="com-text" class="reticle-text" x="33" y="30">X:-- Y:--</text>
+                </g>
             </svg>
         </div>
-        <!-- CoM position readout -->
-        <div style="margin-top:8px; font-size:0.75rem; color:var(--text-dim); display:flex; justify-content:space-between;">
-            <span>CoM: (<span id="com-x">—</span>, <span id="com-y">—</span>)</span>
-            <span id="com-warning" style="color:var(--accent-fire); display:none;">⚠ LATERAL EDGE</span>
-        </div>
     </div>
 
-    <!-- -----------------------------------------------------------------
-         PANEL 3: Stats & Telemetry (right column)
-         ----------------------------------------------------------------- -->
-    <div class="stats-column">
+    <div class="stats-col">
 
-        <!-- SAMKNN Performance Metrics -->
-        <div class="panel">
-            <div class="panel-title">🧠 SAMKNN Model State</div>
-
-            <div class="metric-row">
-                <span class="metric-label">Frames Processed</span>
-                <span class="metric-value val-pred" id="sample-count">0</span>
-            </div>
-            <div class="metric-row">
-                <span class="metric-label">Fire Pixels Predicted</span>
-                <span class="metric-value val-fire" id="fire-count">0</span>
-            </div>
-            <div class="metric-row">
-                <span class="metric-label">Worker Status</span>
-                <span class="metric-value val-nominal" id="worker-status">—</span>
+        <div class="glass-panel panel-content" style="height: auto;">
+            <div class="panel-header" style="margin-bottom: 20px;">
+                <span class="panel-title">Model Diagnostics</span>
             </div>
 
-            <!-- STM Memory Gauge -->
-            <div class="mem-bar-container" style="margin-top:14px;">
-                <div class="mem-bar-label">
-                    <span>STM (Short-Term Memory)</span>
-                    <span id="stm-label">0 / 5000</span>
+            <div class="metric-group">
+                <div class="metric-box">
+                    <div class="metric-box-label">Frames</div>
+                    <div class="metric-box-val" id="sample-count">0</div>
                 </div>
-                <div class="mem-bar-bg">
-                    <div class="mem-bar-fill stm-fill" id="stm-bar" style="width:0%"></div>
+                <div class="metric-box">
+                    <div class="metric-box-label">Fire Pixels</div>
+                    <div class="metric-box-val" id="fire-count" style="color: var(--accent-rose)">0</div>
                 </div>
+            </div>
 
-                <!-- LTM Memory Gauge -->
-                <div class="mem-bar-label">
-                    <span>LTM (Long-Term Memory)</span>
-                    <span id="ltm-label">0 / 15000</span>
-                </div>
-                <div class="mem-bar-bg">
-                    <div class="mem-bar-fill ltm-fill" id="ltm-bar" style="width:0%"></div>
-                </div>
+            <div class="progress-wrapper">
+                <div class="progress-header"><span>STM Saturation</span><span id="stm-label">0 / 5000</span></div>
+                <div class="progress-track"><div class="progress-fill fill-stm" id="stm-bar" style="width:0%"></div></div>
+            </div>
+            <div class="progress-wrapper" style="margin-bottom: 0;">
+                <div class="progress-header"><span>LTM Saturation</span><span id="ltm-label">0 / 15000</span></div>
+                <div class="progress-track"><div class="progress-fill fill-ltm" id="ltm-bar" style="width:0%"></div></div>
             </div>
         </div>
 
-        <!-- Fleet Hardware Telemetry Table -->
-        <div class="panel">
-            <div class="panel-title">🛰️ Constellation Hardware</div>
-            <table class="fleet-table">
+        <div class="glass-panel panel-content">
+            <div class="panel-header">
+                <span class="panel-title">Swarm Matrix</span>
+            </div>
+            <table class="data-table" style="margin-bottom: 16px;">
                 <thead>
-                    <tr>
-                        <th>Node</th>
-                        <th>Temp</th>
-                        <th>Battery</th>
-                        <th>Eclipse</th>
-                    </tr>
+                    <tr><th>Node</th><th>Temp</th><th>Bat</th><th>Mode</th></tr>
                 </thead>
-                <tbody id="fleet-tbody">
-                    <!-- Populated dynamically by JavaScript -->
-                </tbody>
+                <tbody id="fleet-tbody"></tbody>
             </table>
-        </div>
 
-        <!-- Migration Event Log -->
-        <div class="panel">
-            <div class="panel-title">📋 Migration Event Log</div>
-            <div id="event-log">
-                <div style="color:var(--text-dim)">Waiting for events...</div>
+            <div class="panel-title" style="margin-top: 8px;">System Event Log</div>
+            <div id="system-console">
+                <div><span class="log-time">[Init]</span> Awaiting orbital telemetry...</div>
             </div>
         </div>
 
     </div>
 </div>
 
-<!-- ====================================================================
-     JAVASCRIPT — Real-time SSE rendering
-     ==================================================================== -->
 <script>
 // ============================================================================
-// CANVAS RENDERING
-// Draws 64×64 and 62×62 pixel grids on HTML5 canvas elements.
-// Each 1-unit canvas pixel = one geographic grid cell.
+// SYSTEM CLOCKS
 // ============================================================================
+const startTime = Date.now();
+setInterval(() => {
+    document.getElementById('clock-utc').innerText = new Date().toISOString().substring(11, 19) + 'Z';
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+    const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+    const s = String(elapsed % 60).padStart(2, '0');
+    document.getElementById('clock-met').innerText = `T+${h}:${m}:${s}`;
+}, 1000);
 
+// ============================================================================
+// CANVAS RENDERING
+// ============================================================================
 const ctxCurrent   = document.getElementById('canvas-current').getContext('2d');
 const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
 
-/**
- * Draws a flattened fire mask array onto a canvas element.
- *
- * flatMask: 1D array of values (binary 0/1 or float 0-1)
- * ctx:      CanvasRenderingContext2D to draw on
- * width:    grid width in pixels (64 for current, 62 for predicted)
- * colorFn:  function(value) → CSS color string for each pixel
- */
 function drawFireMask(flatMask, ctx, width, colorFn) {
     if (!flatMask || flatMask.length === 0) return;
-
     const height = Math.floor(flatMask.length / width);
-    // Draw each cell as a single pixel on the canvas
-    // (CSS will scale this up to fill the panel)
+    ctx.clearRect(0, 0, width, height);
     for (let i = 0; i < height; i++) {
         for (let j = 0; j < width; j++) {
-            const val = flatMask[i * width + j] || 0;
-            ctx.fillStyle = colorFn(val);
-            ctx.fillRect(j, i, 1, 1);   // 1×1 pixel at (col, row)
+            const val = flatMask[i * width + j];
+            if (val > 0) {
+                ctx.fillStyle = colorFn(val);
+                ctx.fillRect(j, i, 1, 1);
+            }
         }
     }
 }
 
-/**
- * Color function for the Current Fire Mask (PrevFireMask sensor input).
- * 0 = no fire (dark grey), 1 = active fire (bright orange).
- */
+// Deep orange to bright red gradient for sensor
 function currentFireColor(val) {
-    if (val <= 0) return '#0a0e1a';     // No fire — near-black
-    const intensity = Math.min(1, val); // Clamp to [0, 1]
-    const r = Math.round(255 * intensity);
-    const g = Math.round(107 * intensity);
-    return `rgb(${r}, ${g}, 0)`;        // Orange-to-black gradient
+    const intensity = Math.min(1, val);
+    const r = 255;
+    const g = Math.round(90 * (1 - intensity)); // High intensity = less green = redder
+    return `rgb(${r}, ${g}, 0)`;
 }
 
-/**
- * Color function for the Predicted Fire Mask (SAMKNN output).
- * Binary: 0 = no fire, 1 = predicted fire (cyan/blue to distinguish from input).
- * Using a different colour makes it immediately clear which is "sensor" vs "prediction".
- */
+// Cyan for prediction
 function predictedFireColor(val) {
-    if (val <= 0) return '#0a0e1a';     // No predicted fire — near-black
-    return '#005580';                   // Predicted fire — deep cyan
+    return '#22d3ee'; // var(--accent-cyan)
 }
 
-/**
- * Updates the Center of Mass crosshair on the SVG overlay.
- * comX, comY: pixel coordinates within the 62×62 predicted grid.
- */
-function updateCoMCrosshair(comX, comY) {
-    const INNER = 62;  // The predicted grid is 62×62 (border pixels excluded)
-    const THRESH = 8;  // Trigger B lateral edge threshold
+// ============================================================================
+// SCIENTIFIC RETICLE (CoM)
+// ============================================================================
+function updateReticle(comX, comY) {
+    const INNER = 62;
+    const THRESH = 8;
 
-    // Clamp to valid range
     const x = Math.max(0, Math.min(INNER - 1, comX || INNER / 2));
     const y = Math.max(0, Math.min(INNER - 1, comY || INNER / 2));
 
-    // Move crosshair lines to the CoM position
     document.getElementById('com-h').setAttribute('y1', y);
     document.getElementById('com-h').setAttribute('y2', y);
     document.getElementById('com-v').setAttribute('x1', x);
@@ -471,172 +443,127 @@ function updateCoMCrosshair(comX, comY) {
     document.getElementById('com-dot').setAttribute('cx', x);
     document.getElementById('com-dot').setAttribute('cy', y);
 
-    // Update the readout text
-    document.getElementById('com-x').textContent = x.toFixed(1);
-    document.getElementById('com-y').textContent = y.toFixed(1);
+    // Dynamic text background width
+    const textStr = `X:${x.toFixed(1)} Y:${y.toFixed(1)}`;
+    const textEl = document.getElementById('com-text');
+    const bgEl = document.getElementById('com-bg');
 
-    // Show the lateral edge warning if the CoM is close to the swath boundary
+    textEl.setAttribute('x', x + 1.5);
+    textEl.setAttribute('y', y - 1.5);
+    bgEl.setAttribute('x', x + 1);
+    bgEl.setAttribute('y', y - 3.5);
+
+    // Alert Logic
     const nearEdge = x < THRESH || x > (INNER - THRESH);
-    const warning = document.getElementById('com-warning');
-    warning.style.display = nearEdge ? 'inline' : 'none';
-
-    // Change crosshair color to red when approaching the edge (Trigger B imminent)
-    const comColor = nearEdge ? '#ff3333' : '#00d4ff';
-    ['com-h', 'com-v', 'com-dot'].forEach(id =>
-        document.getElementById(id).setAttribute('stroke', comColor)
-    );
+    const group = document.getElementById('reticle-group');
+    if (nearEdge) {
+        group.classList.add('reticle-alert');
+        textEl.textContent = textStr + " [EDGE_WARN]";
+        bgEl.setAttribute('width', '28');
+    } else {
+        group.classList.remove('reticle-alert');
+        textEl.textContent = textStr;
+        bgEl.setAttribute('width', '18');
+    }
 }
 
-
 // ============================================================================
-// MEMORY GAUGE UPDATER
+// DIAGNOSTICS & TELEMETRY MATRIX
 // ============================================================================
-
-function updateMemoryGauges(stm_size, ltm_size) {
-    const STM_MAX = 5000;
-    const LTM_MAX = 15000;
-
-    const stmPct = Math.min(100, (stm_size / STM_MAX) * 100);
-    const ltmPct = Math.min(100, (ltm_size / LTM_MAX) * 100);
-
-    document.getElementById('stm-bar').style.width   = stmPct + '%';
-    document.getElementById('ltm-bar').style.width   = ltmPct + '%';
-    document.getElementById('stm-label').textContent = `${stm_size} / ${STM_MAX}`;
-    document.getElementById('ltm-label').textContent = `${ltm_size} / ${LTM_MAX}`;
+function updateBuffers(stm, ltm) {
+    const STM_MAX = 5000, LTM_MAX = 15000;
+    document.getElementById('stm-bar').style.width = Math.min(100, (stm/STM_MAX)*100) + '%';
+    document.getElementById('stm-label').textContent = `${stm} / ${STM_MAX}`;
+    document.getElementById('ltm-bar').style.width = Math.min(100, (ltm/LTM_MAX)*100) + '%';
+    document.getElementById('ltm-label').textContent = `${ltm} / ${LTM_MAX}`;
 }
 
-
-// ============================================================================
-// FLEET TELEMETRY TABLE RENDERER
-// ============================================================================
-
-/**
- * Renders a row in the fleet hardware telemetry table for one satellite.
- * Temperature colour-coded: green ≤60°C, yellow ≤80°C, red >80°C.
- */
-function renderFleetTable(environment) {
+function renderTelemetryMatrix(envData) {
     const tbody = document.getElementById('fleet-tbody');
-    tbody.innerHTML = '';  // Clear and redraw
+    tbody.innerHTML = '';
 
-    Object.entries(environment).forEach(([nodeName, data]) => {
-        const isWorking = data.is_working;
-        const temp      = data.temp || 0;
-        const battery   = data.battery || 0;
-        const eclipse   = data.eclipse;
+    Object.entries(envData).forEach(([node, data]) => {
+        const temp = data.temp || 0;
+        const bat = data.battery || 0;
 
-        // Pick temperature color based on severity
-        let tempClass = 'temp-ok';
-        if (temp > 80) tempClass = 'temp-hot';
-        else if (temp > 60) tempClass = 'temp-warm';
-
-        const shortName = nodeName.replace('minikube-', '');
-        const eclipseIcon = eclipse ? '🌑' : '☀️';
+        let tempClass = temp >= 120 ? 'val-danger' : temp > 80 ? 'val-warn' : '';
+        let batClass = bat < 20 ? 'val-warn' : '';
+        const eclipseTxt = data.eclipse ? 'ECL' : 'VIS';
+        const activeDot = data.is_working ? '<div class="node-dot node-active"></div>' : '<div class="node-dot"></div>';
 
         tbody.innerHTML += `
             <tr>
-                <td>
-                    <span class="dot ${isWorking ? 'dot-active' : 'dot-inactive'}"></span>
-                    ${shortName}
-                </td>
-                <td class="${tempClass}">${temp}°C</td>
-                <td>${battery}%</td>
-                <td>${eclipseIcon}</td>
+                <td><div class="node-indicator">${activeDot}${node.replace('minikube-','')}</div></td>
+                <td class="${tempClass}">${temp.toFixed(1)}°</td>
+                <td class="${batClass}">${bat.toFixed(1)}%</td>
+                <td>${eclipseTxt}</td>
             </tr>
         `;
     });
 }
 
-
 // ============================================================================
-// EVENT LOG
+// SYSTEM CONSOLE
 // ============================================================================
-
-let migrationCount = 0;
-let lastFlightMode = false;
-
-function logEvent(message, cssClass) {
-    const log = document.getElementById('event-log');
-    const ts  = new Date().toLocaleTimeString();
-    // Prepend newest events at the top
-    log.innerHTML = `<div class="${cssClass}">[${ts}] ${message}</div>` + log.innerHTML;
+function sysLog(msg, typeClass = '') {
+    const consoleEl = document.getElementById('system-console');
+    const ts = new Date().toISOString().substring(11, 19);
+    const entry = document.createElement('div');
+    entry.innerHTML = `<span class="log-time">[${ts}]</span> <span class="${typeClass}">${msg}</span>`;
+    consoleEl.appendChild(entry);
+    consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 
-
 // ============================================================================
-// SSE CONNECTION — receives real-time state from the Guardian
+// SSE STREAM INGESTION
 // ============================================================================
+let lastFlightState = false;
+const evtSource = new EventSource('/api/stream');
 
-const eventSource = new EventSource('/api/stream');
-
-eventSource.onmessage = function(event) {
+evtSource.onmessage = (event) => {
     let data;
-    try {
-        data = JSON.parse(event.data);
-    } catch (e) {
-        return;  // Skip malformed packets
-    }
+    try { data = JSON.parse(event.data); } catch(e) { return; }
 
-    const state      = data.internal_state || {};
-    const env        = data.environment    || {};
+    const state = data.internal_state || {};
+    const env = data.environment || {};
     const flightMode = data.flight_mode;
 
-    // ---- Update header ----
-    document.getElementById('guardian-id').textContent = data.guardian_id || '—';
+    // Header Updates
+    document.getElementById('guardian-id').textContent = data.guardian_id || 'UNKNOWN';
 
-    // ---- Migration status pill ----
-    const pill = document.getElementById('status-pill');
+    // Status Lamp Logic
+    const lamp = document.getElementById('status-lamp');
     if (flightMode) {
-        pill.className = 'status-migrating';
-        pill.textContent = '⚡ MIGRATING';
-        // Log the migration event the first time flightMode becomes true
-        if (!lastFlightMode) {
-            migrationCount++;
-            logEvent(`Migration #${migrationCount} initiated`, 'log-thermal');
-        }
+        lamp.className = 'status-pill status-migrating';
+        lamp.innerHTML = '<div class="status-dot"></div><span>ISL Migration Active</span>';
+        if (!lastFlightState) sysLog(`Initiating CRIU checkpoint... Route calculated.`, 'log-action-err');
     } else {
-        // Detect landing (flightMode went from true → false)
-        if (lastFlightMode) {
-            logEvent(`Migration #${migrationCount} complete — landed on ${data.guardian_id}`, 'log-land');
-        }
-        pill.className = 'status-nominal';
-        pill.textContent = '● NOMINAL';
+        lamp.className = 'status-pill status-nominal';
+        lamp.innerHTML = '<div class="status-dot"></div><span>System Nominal</span>';
+        if (lastFlightState) sysLog(`Payload restored on ${data.guardian_id}. Socket open.`, 'log-action-ok');
     }
-    lastFlightMode = flightMode;
+    lastFlightState = flightMode;
 
-    // ---- Draw Current Fire Mask (PrevFireMask from the sensor frame) ----
-    // The Guardian stores this in predicted_fire_mask for display convenience.
-    // In a future version, the streamer could push PrevFireMask separately.
-    const currentMask = state.prev_fire_mask || state.predicted_fire_mask || [];
-    if (currentMask.length > 0) {
-        drawFireMask(currentMask, ctxCurrent, 64, currentFireColor);
-    }
+    // Draw Grids
+    drawFireMask(state.prev_fire_mask || state.predicted_fire_mask || [], ctxCurrent, 64, currentFireColor);
+    drawFireMask(state.predicted_fire_mask || [], ctxPredicted, 62, predictedFireColor);
 
-    // ---- Draw Predicted Fire Mask (SAMKNN binary output) ----
-    const predictedMask = state.predicted_fire_mask || [];
-    if (predictedMask.length > 0) {
-        drawFireMask(predictedMask, ctxPredicted, 62, predictedFireColor);
-    }
+    if (state.center_of_mass) updateReticle(state.center_of_mass.x, state.center_of_mass.y);
 
-    // ---- Update CoM crosshair ----
-    const com = state.center_of_mass || {};
-    updateCoMCrosshair(com.x, com.y);
+    // Diagnostics
+    document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();
+    document.getElementById('fire-count').textContent = (state.fire_pixel_count || 0).toLocaleString();
+    updateBuffers(state.stm_size || 0, state.ltm_size || 0);
 
-    // ---- Update SAMKNN stats ----
-    document.getElementById('sample-count').textContent = state.sample_count || 0;
-    document.getElementById('fire-count').textContent   = state.fire_pixel_count || 0;
-    document.getElementById('worker-status').textContent = state.status || '—';
-
-    updateMemoryGauges(state.stm_size || 0, state.ltm_size || 0);
-
-    // ---- Update fleet hardware table ----
-    if (Object.keys(env).length > 0) {
-        renderFleetTable(env);
-    }
+    if (Object.keys(env).length > 0) renderTelemetryMatrix(env);
 };
 
-eventSource.onerror = function() {
-    // SSE connection dropped — the Guardian may be in flight (CRIU migrating)
-    document.getElementById('status-pill').textContent = '⏳ RECONNECTING...';
+evtSource.onerror = () => {
+    const lamp = document.getElementById('status-lamp');
+    lamp.className = 'status-pill';
+    lamp.style.color = 'var(--text-muted)';
+    lamp.style.border = '1px solid var(--border-glass)';
+    lamp.innerHTML = '<div class="status-dot" style="background: var(--text-muted)"></div><span>Uplink Lost</span>';
 };
 </script>
 

@@ -1,39 +1,23 @@
 """
-===============================================================================
 SPACE CLOUD V6 - KAGGLE WILDFIRE DATA STREAMER (Ground Station)
-===============================================================================
+===============================================================
 
-🧠 HIGH-LEVEL PURPOSE:
-This script simulates a "Ground Station Transmitter" in a distributed satellite
-system.
+ROLE:
+This script acts as the "Ground Station Transmitter." It reads historical wildfire
+satellite imagery (the Kaggle Next Day Wildfire Spread dataset) from local .tfrecord files,
+compresses it, and blasts it up to the active satellite worker in orbit via UDP.
 
-Its job is to:
-1. Read historical wildfire satellite data from disk (.tfrecord files)
-2. Convert each data frame into a compact binary format
-3. Stream it via UDP to a satellite worker (running inside Kubernetes)
-
--------------------------------------------------------------------------------
-🏗️ ARCHITECTURAL DESIGN CHOICES (VERY IMPORTANT TO UNDERSTAND):
-
-1. LAZY LOADING (Generators)
-   - The dataset is huge (~12GB)
-   - Instead of loading everything into memory, we process ONE frame at a time
-   - This avoids memory crashes and keeps the system lightweight
-
-2. UDP COMMUNICATION (Fire-and-Forget)
-   - UDP is used instead of TCP
-   - Why?
-     → In Kubernetes, pods can move between nodes
-     → TCP connections would break
-     → UDP doesn't care — it just keeps sending packets
-   - The receiving worker simply processes whatever arrives next
-
-3. DIRECT KUBERNETES API USAGE
-   - Instead of calling shell commands repeatedly
-   - We directly query Kubernetes via Python client
-   - This is faster and avoids subprocess overhead
-
--------------------------------------------------------------------------------
+KEY ARCHITECTURAL CHOICES:
+1. Lazy Loading (Generators): Instead of loading 12 GB of data into RAM, this script
+   reads exactly one frame at a time, sends it, and deletes it. This keeps host CPU
+   and memory usage near zero.
+2. UDP (Fire-and-Forget): We use UDP instead of TCP. Why? Because when a satellite
+   gets too hot and migrates the worker, TCP connections break and crash. UDP just
+   fires into the void. When the worker lands on the new satellite, it instantly
+   catches the next UDP packet. Zero reconnection logic needed!
+3. Native K8s API: We query the K8s API directly via Python to find where the worker
+   is currently orbiting, completely eliminating the lag caused by spawning terminal
+   subprocesses.
 """
 
 import socket
@@ -43,10 +27,10 @@ import time
 import os
 import subprocess
 
-# TensorFlow is used ONLY to read TFRecord files (Google's binary dataset format)
+# We import TensorFlow solely to read Google's specific .tfrecord binary file format
 import tensorflow as tf
 
-# Kubernetes client used to interact with cluster (find worker location)
+# We import the official Kubernetes client to monitor where our satellite pod is
 from kubernetes import client, config
 
 
@@ -54,35 +38,27 @@ from kubernetes import client, config
 # 1. CONFIGURATION & SETUP
 # =============================================================================
 
-# Path where TFRecord dataset is stored
-# If environment variable DATASET_DIR exists → use it
-# Otherwise → default to local folder "wildfire_data"
+# Directory containing your massive Kaggle .tfrecord files
 DATASET_DIR = os.getenv(
     "DATASET_DIR",
     os.path.join(os.path.dirname(__file__), "wildfire_data")
 )
 
-# UDP port where the satellite worker is listening
+# The network port the satellite worker is actively listening to
 WORKER_UDP_PORT = 5005
 
-# Time interval between sending frames (in seconds)
+# How fast we send frames (1 frame every 2 seconds gives the CPU time to breathe)
 STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "3.0"))
 
-# -----------------------------------------------------------------------------
-# ⚠️ TensorFlow Thread Limitation (CRITICAL PERFORMANCE FIX)
-# -----------------------------------------------------------------------------
-# By default, TensorFlow uses ALL CPU cores.
-# Here we restrict it to 1 thread because we are ONLY reading files,
-# not doing heavy ML computation.
-# This avoids CPU contention with Kubernetes (Minikube).
+# CRITICAL FIX: Force TensorFlow to be "quiet".
+# By default, TF tries to use all available CPU cores. Since we are only reading files,
+# we restrict it to 1 thread so it doesn't fight Minikube for CPU power.
 tf.config.threading.set_inter_op_parallelism_threads(1)
 tf.config.threading.set_intra_op_parallelism_threads(1)
 
-# -----------------------------------------------------------------------------
-# Initialize Kubernetes Client
-# -----------------------------------------------------------------------------
-# This loads your local kubeconfig (~/.kube/config)
-# and allows Python to query cluster state
+# INITIALIZE KUBERNETES CLIENT
+# We load the config from your local laptop (~/.kube/config) so this script
+# has the authority to ask Minikube questions.
 try:
     config.load_kube_config()
     k8s_v1 = client.CoreV1Api()
@@ -93,39 +69,26 @@ except Exception as e:
 
 
 # =============================================================================
-# 2. DATA EXTRACTION (Lazy Generator)
+# 2. DATA EXTRACTION (The Lazy-Loading Generator)
 # =============================================================================
 
 def dataset_generator():
     """
-    🧠 PURPOSE:
-    This function streams dataset frames ONE AT A TIME using a generator.
+    This function is a 'Generator'. Notice the 'yield' keyword instead of 'return'.
 
-    Instead of:
-        return [frame1, frame2, ..., frame10000]
-
-    It behaves like:
-        yield frame1
-        (pause)
-        yield frame2
-        (pause)
-
-    This is essential for:
-    - memory efficiency
-    - scalability
+    Instead of reading 10,000 images and returning a giant 12GB list, a generator
+    acts like a conveyor belt. It pauses, hands exactly ONE image to the main loop,
+    waits for the main loop to send it, and only then reads the next image.
+    This prevents Out-Of-Memory (OOM) crashes.
     """
 
-    # --- Safety check: dataset directory must exist ---
+    # 1. Safety check: does the folder exist?
     if not os.path.isdir(DATASET_DIR):
         print(f"⚠️  STREAMER: Dataset directory not found: {DATASET_DIR}")
         return
 
-    # --- Find all TFRecord files ---
-    tfrecord_files = [
-        os.path.join(DATASET_DIR, f)
-        for f in sorted(os.listdir(DATASET_DIR))
-        if f.endswith('.tfrecord')
-    ]
+    # 2. Find all files ending with .tfrecord in the folder
+    tfrecord_files = [os.path.join(DATASET_DIR, f) for f in sorted(os.listdir(DATASET_DIR)) if f.endswith('.tfrecord')]
 
     if not tfrecord_files:
         print(f"❌ STREAMER: No .tfrecord files found in {DATASET_DIR}.")
@@ -133,32 +96,29 @@ def dataset_generator():
 
     print(f"📂 STREAMER: Found {len(tfrecord_files)} TFRecord files. Commencing lazy-stream...")
 
-    # TensorFlow dataset (lazy reader — does NOT load everything)
+    # 3. Tell TensorFlow to open the files, but NOT to read them all into RAM yet
     raw_dataset = tf.data.TFRecordDataset(tfrecord_files)
 
-    # --- Iterate ONE record at a time ---
+    # 4. Loop through the dataset, reading ONE record at a time
     for raw_record in raw_dataset:
 
-        # Parse raw binary into TensorFlow Example object
+        # Parse the raw binary Protocol Buffer into an empty TensorFlow Example object
         example = tf.train.Example()
-        example.ParseFromString(raw_record.numpy())  # ⚠️ Converts tensor → raw bytes
+        example.ParseFromString(raw_record.numpy())
 
-        # Dictionary that will store parsed data
+        # Create an empty Python dictionary to hold this specific frame's data
         sample_dict = {}
 
-        # --- Extract features dynamically ---
+        # 5. Extract the features (Temperature, Wind, Vegetation, etc.)
+        # The Kaggle dataset stores lists of numbers (float_list) or integers (int64_list).
         for key, feature in example.features.feature.items():
-
-            # Case 1: float data
             if feature.HasField('float_list'):
-                data_array = list(feature.float_list.value)  # Convert TF list → Python list
+                data_array = list(feature.float_list.value)
                 sample_dict[key] = {
                     "data_type": "float_list",
                     "total_length": len(data_array),
                     "values": data_array
                 }
-
-            # Case 2: integer data
             elif feature.HasField('int64_list'):
                 data_array = list(feature.int64_list.value)
                 sample_dict[key] = {
@@ -167,7 +127,8 @@ def dataset_generator():
                     "values": data_array
                 }
 
-        # --- Yield ONE frame ---
+        # 6. YIELD the frame.
+        # This pauses the function and hands the 'sample_dict' back to the main() loop.
         yield sample_dict
 
 
@@ -176,72 +137,47 @@ def dataset_generator():
 # =============================================================================
 
 def get_minikube_ip():
-    """
-    🧠 PURPOSE:
-    Retrieves the IP address of the Minikube cluster.
-
-    WHY:
-    The satellite worker runs inside Kubernetes → we need its external IP.
-
-    FALLBACK:
-    If command fails → return default Minikube IP
-    """
+    """Finds the external IP of the Minikube virtual machine."""
     try:
-        return subprocess.check_output(
-            ["minikube", "ip", "-p", "minikube"]
-        ).decode("utf-8").strip()  # ⚠️ bytes → string conversion
+        return subprocess.check_output(["minikube", "ip", "-p", "minikube"]).decode("utf-8").strip()
     except Exception:
-        return "192.168.49.2"  # Default fallback
+        return "192.168.49.2" # Fallback to default Minikube IP
 
 
 def encode_frame(sample_dict):
     """
-    🧠 PURPOSE:
-    Converts a Python dictionary (huge, inefficient) into a compact binary blob.
+    Takes the massive Python dictionary containing the 13 layers of satellite data
+    and packs it into a highly compressed, raw binary string.
 
-    WHY:
-    - UDP has size limits
-    - Dictionaries are too large and slow to send
-    - Binary + compression = fast + efficient
-
-    PROCESS:
-    1. Extract each channel
-    2. Flatten data
-    3. Pack into binary (float32)
-    4. Compress using zlib
+    Why? Because UDP has a size limit, and Python dictionaries are huge. We must
+    squash this into raw bytes before shooting it over the network.
     """
+    GRID_W, GRID_H = 64, 64
 
-    GRID_W, GRID_H = 64, 64  # Fixed spatial resolution
-
-    # ⚠️ CRITICAL: Channel order MUST match worker expectations
+    # We must pack the channels in the exact order the Worker expects to receive them
     CHANNELS = [
         "PrevFireMask", "sph", "th", "elevation", "pdsi", "pr",
         "population", "erc", "NDVI", "tmmn", "vs", "tmmx", "FireMask"
     ]
 
-    blob = bytearray()  # Mutable byte container
+    # Create an empty array of bytes
+    blob = bytearray()
 
     for ch in CHANNELS:
-
-        # Extract channel values safely
+        # Extract the flat list of 4096 numbers for this specific channel
         channel_data = sample_dict.get(ch, {})
         flat = channel_data.get("values", [0.0] * (GRID_W * GRID_H))
 
-        # Ensure exact size (4096 values)
         flat = flat[:(GRID_W * GRID_H)]
-
-        # Pad if too short
         while len(flat) < (GRID_W * GRID_H):
             flat.append(0.0)
 
-        # ⚠️ struct.pack("!f", value)
-        # "!f" means:
-        #   ! → network byte order (big-endian)
-        #   f → 32-bit float
+        # Pack each number into a 4-byte network-byte-order Float32 ('!f')
         for val in flat:
             blob.extend(struct.pack("!f", float(val)))
 
-    # Compress entire binary payload
+    # Finally, use zlib to compress the binary blob.
+    # Because wildfire masks have a lot of empty space (zeros), it compresses beautifully!
     return zlib.compress(blob)
 
 
@@ -250,83 +186,47 @@ def encode_frame(sample_dict):
 # =============================================================================
 
 def main():
-    """
-    🧠 PURPOSE:
-    Main loop that:
-    1. Reads dataset frames
-    2. Encodes them
-    3. Sends them via UDP in chunks
-    """
-
     print("🚀 STREAMER: Booting UDP Telemetry Uplink (NodePort Mode)...")
 
-    # Create UDP socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
     frame_idx = 0
 
-    # Target = Kubernetes NodePort service
+    # We now target the K8s Post Office instead of the internal Pod
     target_ip = get_minikube_ip()
     target_port = 32005
 
     while True:
-
-        # Iterate over dataset frames
         for frame_dict in dataset_generator():
             frame_idx += 1
 
-            # Encode into compressed binary
             blob = encode_frame(frame_dict)
 
             if target_ip:
-
-                # ⚠️ UDP max safe size ≈ 64KB → we stay below
+                # 60 KB chunks keep us safely below the 64 KB UDP MTU limit
                 CHUNK_SIZE = 60000
+                total_chunks = (len(blob) // CHUNK_SIZE) + (1 if len(blob) % CHUNK_SIZE > 0 else 0)
 
-                # Compute number of chunks needed
-                total_chunks = (
-                    (len(blob) // CHUNK_SIZE) +
-                    (1 if len(blob) % CHUNK_SIZE > 0 else 0)
-                )
-
-                # Unique frame ID (timestamp-based, 32-bit masked)
+                # Create a Unique Order Number for this specific frame
                 frame_id = int(time.time() * 1000) & 0xFFFFFFFF
 
                 try:
                     for i in range(total_chunks):
-
-                        # Slice chunk
                         chunk_data = blob[i * CHUNK_SIZE: (i + 1) * CHUNK_SIZE]
 
-                        # Header structure:
-                        # !IBB →
-                        #   I = unsigned int (frame_id)
-                        #   B = unsigned char (total_chunks)
-                        #   B = unsigned char (chunk index)
+                        # Pack the Sticky Note: [Order Number] [Total Boxes] [Box Number]
                         header = struct.pack("!IBB", frame_id, total_chunks, i)
 
-                        # Send packet
-                        sock.sendto(
-                            header + chunk_data,
-                            (target_ip, target_port)
-                        )
+                        # Fire the box at the K8s Post Office
+                        sock.sendto(header + chunk_data, (target_ip, target_port))
 
                     print(
-                        f"📤 STREAMER: Frame {frame_idx} (Order #{frame_id}) → "
-                        f"{target_ip}:{target_port} "
-                        f"({len(blob) // 1024}KB in {total_chunks} chunks)",
-                        flush=True
-                    )
-
+                        f"📤 STREAMER: Frame {frame_idx} (Order #{frame_id}) → {target_ip}:{target_port} ({len(blob) // 1024}KB in {total_chunks} chunks)",
+                        flush=True)
                 except Exception as e:
                     print(f"⚠️  STREAMER: UDP Send error: {e}", flush=True)
 
-            # Throttle sending rate
             time.sleep(STREAM_INTERVAL)
 
-
-# -----------------------------------------------------------------------------
-# Entry point
-# -----------------------------------------------------------------------------
+# Standard Python boilerplate to ensure main() runs when the script starts
 if __name__ == "__main__":
     main()

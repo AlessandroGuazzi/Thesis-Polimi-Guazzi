@@ -36,7 +36,6 @@ This file is optimized for:
 import socket
 import struct
 import zlib
-import json
 import time
 import os
 import signal

@@ -407,6 +407,19 @@ def load_initial_state():
                     fire_pixel_count = data.get("fire_pixel_count", 0)
                     sample_count = data.get("sample_count", 0)
                     instances_trained = data.get("instances_trained", 0)
+
+                    # --- THE AMNESIA FIX ---
+                    # Explicitly extract the memory arrays from the JSON payload
+                    # and convert them back into tuples (feature_vector, label)
+                    if "stm" in data:
+                        stm.clear()
+                        stm.extend([(f, l) for f, l in data["stm"]])
+                        print(f"🧠 WORKER: Restored {len(stm)} STM memories from Guardian.", flush=True)
+
+                    if "ltm" in data:
+                        ltm.clear()
+                        ltm.extend([(f, l) for f, l in data["ltm"]])
+                        print(f"🧠 WORKER: Restored {len(ltm)} LTM memories from Guardian.", flush=True)
                 return
         except requests.exceptions.RequestException:
             time.sleep(1)

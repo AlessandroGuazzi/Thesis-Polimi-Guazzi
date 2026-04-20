@@ -378,12 +378,16 @@ def _criu_checkpoint():
 
     # Find the pod currently running on this node
     try:
+        # Note: using [*] instead of [0] avoids JSONPath bounds errors if the pod is missing
         pod_name = subprocess.check_output(
             f"kubectl get pod -l app=space-mission"
             f" --field-selector spec.nodeName={NODE_NAME}"
-            f" -o jsonpath='{{.items[0].metadata.name}}'",
+            f" -o jsonpath='{{.items[*].metadata.name}}'",
             shell=True
         ).decode().strip()
+
+        if not pod_name:
+            raise Exception("No active pod found to checkpoint")
     except Exception as e:
         print(f"❌ AGENT: Cannot find local pod: {e}", flush=True)
         return None
@@ -536,13 +540,23 @@ def _rebuild_and_deploy(tar_path):
     # ---- STEP 2: K8s — reschedule the Pod on this node ----
     t0 = time.time()
     print("⚡ AGENT [K8S]: Patching Deployment to this node...", flush=True)
+
+    # NEW: Force imagePullPolicy to "Never" to fix the Amnesia bug!
     patch = json.dumps({
         "spec": {"template": {"spec": {
             "terminationGracePeriodSeconds": 0,
             "nodeSelector": {"type": "satellite", "kubernetes.io/hostname": NODE_NAME},
             "containers": [
-                {"name": "sidecar-guardian", "image": "localhost/space-sidecar:restored"},
-                {"name": "payload-phoenix",  "image": "localhost/space-workload:latest"}
+                {
+                    "name": "sidecar-guardian",
+                    "image": "localhost/space-sidecar:restored",
+                    "imagePullPolicy": "Never"
+                },
+                {
+                    "name": "payload-phoenix",
+                    "image": "localhost/space-workload:latest",
+                    "imagePullPolicy": "Never"
+                }
             ]
         }}}
     })
@@ -667,6 +681,16 @@ def main():
                 is_safe, reason = twin.predict_future(30)
 
                 if not is_safe:
+                    # NEW: Verify Ownership before panicking! (Fixes Phantom Limb bug)
+                    pod_check = subprocess.run(
+                        f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[*].metadata.name}}'",
+                        shell=True, capture_output=True, text=True
+                    )
+
+                    if not pod_check.stdout.strip():
+                        # The telemetry hasn't updated yet, but the pod has already left. Ignore the alert.
+                        continue
+
                     print(f"🌡️  TRIGGER A FIRED: {reason}", flush=True)
                     # Run migration in background thread so listener keeps ticking
                     threading.Thread(
@@ -691,6 +715,15 @@ def main():
                             com_x > (GRID_W - LATERAL_THRESHOLD)
                         )
                         if lateral_edge:
+                            # NEW: Verify Ownership before panicking! (Fixes Phantom Limb bug)
+                            pod_check = subprocess.run(
+                                f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[*].metadata.name}}'",
+                                shell=True, capture_output=True, text=True
+                            )
+
+                            if not pod_check.stdout.strip():
+                                continue
+
                             print(
                                 f"🔥 TRIGGER B FIRED: CoM_x={com_x:.1f} "
                                 f"(threshold={LATERAL_THRESHOLD}px from edge)",

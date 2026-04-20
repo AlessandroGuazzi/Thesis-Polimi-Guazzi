@@ -74,14 +74,14 @@ RELAY_POLL_INTERVAL = 0.5
 # =============================================================================
 
 # Physical constants (must match environment_sim.py exactly)
-ORBIT_PERIOD   = 120.0
+ORBIT_PERIOD   = 300.0
 ECLIPSE_START  = 220
 ECLIPSE_END    = 320
 TEMP_SPACE     = -270.0
-THERMAL_MASS   = 40.0
+THERMAL_MASS   = 80.0
 HEATING_SUN    = 100.0
 HEATING_CPU_IDLE = 10.0
-HEATING_CPU_LOAD = 85.0
+HEATING_CPU_LOAD = 80.0
 COOLING_K      = 4.0
 
 
@@ -102,7 +102,7 @@ class VirtualSatellite:
         self.angle     = telemetry.get("angle", 0.0)
         self.is_working = telemetry.get("is_working", True)
 
-    def predict_future(self, horizon_seconds=60):
+    def predict_future(self, horizon_seconds=30):
         """
         Runs the thermal model forward by 'horizon_seconds' simulation steps.
         Returns (is_safe: bool, reason: str).
@@ -664,7 +664,7 @@ def main():
 
                 # ---- TRIGGER A: Thermal Self-Preservation ----
                 twin = VirtualSatellite(local_state)
-                is_safe, reason = twin.predict_future(60)
+                is_safe, reason = twin.predict_future(30)
 
                 if not is_safe:
                     print(f"🌡️  TRIGGER A FIRED: {reason}", flush=True)

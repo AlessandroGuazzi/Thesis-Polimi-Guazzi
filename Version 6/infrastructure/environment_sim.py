@@ -21,15 +21,15 @@ from kubernetes import client, config, watch
 # =============================================================================
 
 # --- PHYSICAL CONFIGURATION ---
-ORBIT_PERIOD  = 120.0  # Time (s) for a full 360° orbit around Earth
+ORBIT_PERIOD  = 300.0  # Time (s) for a full 360° orbit around Earth
 ECLIPSE_START = 220    # Degrees where the satellite enters Earth's shadow
 ECLIPSE_END   = 320    # Degrees where the satellite exits Earth's shadow
 
 TEMP_SPACE       = -270.0  # Deep space background temperature (°C)
-THERMAL_MASS     = 40.0    # Resistance of the satellite body to temperature changes
+THERMAL_MASS     = 80.0    # Resistance of the satellite body to temperature changes
 HEATING_SUN      = 100.0   # Heat gain from direct solar radiation
 HEATING_CPU_IDLE = 10.0    # Heat gain from hardware in standby
-HEATING_CPU_LOAD = 85.0    # Heat gain from heavy SAMKNN workload computation
+HEATING_CPU_LOAD = 80.0    # Heat gain from heavy SAMKNN workload computation
 COOLING_K        = 4.0     # Radiative cooling efficiency constant
 
 BATTERY_CHARGE_RATE = 5.0  # Power gain per second from solar panels

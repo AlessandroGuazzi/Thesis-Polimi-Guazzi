@@ -29,6 +29,20 @@ minikube start \
 
 NODES=("minikube" "minikube-m02" "minikube-m03" "minikube-m04")
 
+# --- NEW: Generate Universal ISL Mesh Key on Earth ---
+echo -e "${BLUE}Generating Universal Mesh Key...${NC}"
+if [ ! -f /tmp/isl_key ]; then
+    ssh-keygen -t ed25519 -f /tmp/isl_key -N "" -q
+fi
+
+# --- NEW: Generate Dynamic Routing Table ---
+echo -e "${BLUE}Generating Dynamic Routing Table...${NC}"
+rm -f /tmp/routing_table.sh
+for N in "${NODES[@]}"; do
+    IP=$(minikube ip -n $N)
+    echo "NODE_IPS[\"$N\"]=\"$IP\"" >> /tmp/routing_table.sh
+done
+
 # --- BLOCK 2: NODE PATCHING LOOP ---
 # Connects to each node via SSH to install low-level tools and patch the container runtime.
 echo -e "${GREEN}[2/4] Installazione Runtime Spaziale (CRI-O 1.30 + Tools)...${NC}"
@@ -37,6 +51,10 @@ for NODE in "${NODES[@]}"; do
     echo -e "    🔧 Patching nodo: ${BLUE}$NODE${NC}"
 
     minikube ssh -n $NODE -p minikube "sudo -i <<EOF
+        # Force fast local Italian Ubuntu mirrors to prevent apt timeouts
+        sed -i 's/http:\/\/archive.ubuntu.com/http:\/\/it.archive.ubuntu.com/g' /etc/apt/sources.list
+        sed -i 's/http:\/\/security.ubuntu.com/http:\/\/it.archive.ubuntu.com/g' /etc/apt/sources.list
+
         # A. Setup CRI-O Repositories: Configures the official apt sources for CRI-O 1.30.
         apt-get update -qq
         DEBIAN_FRONTEND=noninteractive apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release -qq
@@ -48,14 +66,12 @@ for NODE in "${NODES[@]}"; do
         systemctl stop kubelet crio
         apt-get remove -y conmon >/dev/null 2>&1 || true
 
-        # C. Binary Installation: Installs CRIU (for memory checkpointing), Buildah (for
-        #    image layering), iproute2 (for 'tc' ISL bandwidth throttling per §1.5),
-        #    and openssh-client (for relay_transfer.sh multi-hop SSH pipe per §5.1).
+        # C. Binary Installation: Installs CRIU, Buildah, iproute2, and openssh-client.
         apt-get update -qq
         DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::='--force-overwrite' install -y \
             criu cri-o buildah iproute2 openssh-client -qq
 
-        # D. CRI-O Configuration: Enables the critical CRIU support flag and manages namespace lifecycles.
+        # D. CRI-O Configuration: Enables the critical CRIU support flag.
         mkdir -p /etc/crio/crio.conf.d
         cat > /etc/crio/crio.conf.d/99-sidecar.conf <<CONF
 [crio.runtime]
@@ -69,22 +85,39 @@ CONF
         # E. Kubelet Tuning: Aligns the Cgroup Driver with the systemd manager.
         sed -i 's/cgroupDriver: cgroupfs/cgroupDriver: systemd/g' /var/lib/kubelet/config.yaml
 
-        # F. Kernel Optimization: Increases Inotify limits to allow real-time file system watching on /tmp.
+        # F. Kernel Optimization: Increases Inotify limits.
         sysctl -w fs.inotify.max_user_watches=524288
         sysctl -w fs.inotify.max_user_instances=8192
         echo 'fs.inotify.max_user_watches=524288' >> /etc/sysctl.conf
 
-        # G. Runc Wrapper: Implements a binary wrapper to bypass TCP connection checks during restore.
-        if [ ! -f /usr/bin/runc.real ]; then
-            mv /usr/bin/runc /usr/bin/runc.real
-            cat > /usr/bin/runc <<'WRAPPER'
+        # G. Runc Wrapper: Implements a binary wrapper to bypass TCP connection checks.
+        RUNC_PATH=\"/usr/libexec/crio/runc\"
+        if [ ! -f \"\${RUNC_PATH}.real\" ]; then
+            mv \"\$RUNC_PATH\" \"\${RUNC_PATH}.real\"
+            cat > \"\$RUNC_PATH\" <<'WRAPPER'
 #!/bin/bash
-exec /usr/bin/runc.real \"\$@\" --tcp-established
+exec /usr/libexec/crio/runc.real \"\$@\" --tcp-established
 WRAPPER
-            chmod +x /usr/bin/runc
+            chmod +x \"\$RUNC_PATH\"
         fi
+EOF"
 
-        # H. Service Restart: Reloads configurations and brings the node back online.
+    # H. Mesh Network SSH Keys & Routing Table
+    echo -e "    🔑 Installing Universal Mesh Key and Routing Table..."
+    minikube ssh -n $NODE -p minikube "sudo mkdir -p /var/lib/space_cloud"
+    minikube cp /tmp/isl_key $NODE:/tmp/id_ed25519
+    minikube cp /tmp/isl_key.pub $NODE:/tmp/id_ed25519.pub
+    minikube cp /tmp/routing_table.sh $NODE:/var/lib/space_cloud/routing_table.sh
+
+    # Re-open the SSH session to finalize the keys and start services
+    minikube ssh -n $NODE -p minikube "sudo -i <<EOF
+        mkdir -p /root/.ssh
+        mv /tmp/id_ed25519 /root/.ssh/id_ed25519
+        mv /tmp/id_ed25519.pub /root/.ssh/id_ed25519.pub
+        cat /root/.ssh/id_ed25519.pub >> /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/id_ed25519
+
+        # I. Service Restart: Reloads configurations and brings the node back online.
         systemctl daemon-reload
         systemctl start crio kubelet
 EOF"
@@ -103,12 +136,9 @@ kubectl label node minikube-m04 type=satellite --overwrite >/dev/null
 
 minikube addons enable ingress -p minikube > /dev/null 2>&1 || true
 
-# --- BLOCK 5: ISL THROTTLING ---
-# Apply Linux tc (Traffic Control) rules to simulate 50 Mbps / 40 ms ISL constraints.
-# This is called here so throttling is active before any workload is deployed.
-# Expected transfer time for ≤25 MB SAMKNN checkpoint: ~4.0 s/hop.
-echo -e "${GREEN}[5/5] Applying ISL bandwidth/latency throttling (tc)...${NC}"
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bash "$DIR/apply_tc_throttling.sh"
+# TODO uncomment lines for throttling
+# echo -e "${GREEN}[5/5] Applying ISL bandwidth/latency throttling (tc)...${NC}"
+# DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# bash "$DIR/apply_tc_throttling.sh"
 
 echo -e "${BLUE}>>> INFRASTRUTTURA PRONTA. ESEGUIRE build_and_inject.sh <<<${NC}"

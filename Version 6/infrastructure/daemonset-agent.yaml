@@ -100,13 +100,13 @@ spec:
 
         # Temperature thresholds for VirtualSatellite Trigger A prediction
         - name: T_SAFE
-          value: "80.0"
+          value: "90.0"
         - name: T_FUSE
           value: "120.0"
 
         # Lateral tracking threshold for Trigger B CoM edge detection (pixels)
         - name: LATERAL_THRESHOLD
-          value: "8"
+          value: "4"
 
         volumeMounts:
         # Buildah needs the containers-storage to commit restored images
@@ -118,6 +118,12 @@ spec:
         # Required for CRI-O container runtime socket access
         - name: run-dir
           mountPath: /run
+        # Shared IPC folder
+        - name: ipc-storage
+          mountPath: /tmp
+        # Inject host SSH keys for inter-satellite communication
+        - name: ssh-keys
+          mountPath: /root/.ssh
 
       volumes:
       - name: containers-storage
@@ -126,3 +132,7 @@ spec:
         hostPath: { path: /var/lib/kubelet }
       - name: run-dir
         hostPath: { path: /run }
+      - name: ipc-storage
+        hostPath: { path: /var/lib/space_cloud, type: DirectoryOrCreate }
+      - name: ssh-keys
+        hostPath: { path: /root/.ssh, type: DirectoryOrCreate }

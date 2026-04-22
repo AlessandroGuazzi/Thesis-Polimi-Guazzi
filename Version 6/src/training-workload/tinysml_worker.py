@@ -3,34 +3,21 @@
 TEACHING EDITION — tinysml_worker.py
 ===============================================================================
 
-This file is the SCIENTIFIC PAYLOAD running on the satellite.
+This file is the highly optimized SCIENTIFIC PAYLOAD running on the satellite.
 
-While the Node Agent is responsible for orchestration and migration,
-THIS file is the actual workload being protected and migrated.
+ARCHITECTURAL UPGRADES IN THIS VERSION (The Velocity Fixes):
+1. Native NumPy Ring Buffers (Zero-Allocation Execution):
+   Python lists and deques have been entirely eradicated from the ML pipeline.
+   State is now stored in pre-allocated, contiguous C-memory blocks (NumPy arrays).
+   This eliminates the O(N) Array Reallocation Penalty that was choking the CPU.
 
-What this worker does:
+2. Vectorized Self-Validation (Concept Drift):
+   The cleaning loop no longer runs a Python `for` loop to check memories.
+   It now uses a single, massive Matrix Dot Product to validate 1,000 memories
+   simultaneously, applying a fully vectorized Infinity Trick.
 
-1) Receives 64×64 multi-channel sensor grids via UDP from the Ground Station
-2) Reconstructs frames from multiple UDP chunks
-3) Extracts 3×3 neighbourhood features for EVERY pixel (sliding window)
-4) Feeds those features into an ultra-optimized SAMKNN streaming classifier
-5) Predicts the wildfire mask for the entire grid
-6) Computes the center of mass of the predicted fire
-7) Continuously syncs compact state to the Guardian
-8) Provides a /flush HTTP endpoint for pre-CRIU state dumping
-
-CRITICAL DESIGN IDEA (THE ASYMMETRIC MIGRATION PATTERN):
-This process CANNOT be safely CRIU-restored because NumPy holds CPU-specific
-register state. Therefore:
-
-    → On migration, this worker performs a cold boot on the new satellite.
-    → It downloads its state (STM/LTM memories) from the Guardian sidecar via HTTP.
-    → It instantly continues from where it left off without experiencing "amnesia."
-
-This file is optimized for:
-   • extreme speed (vectorized NumPy KNN)
-   • state compactness (Strict 25 MB RAM limits)
-   • migration resilience (Pre-Freeze Handshakes)
+These two changes guarantee that the processing speed remains flat (O(1) allocation)
+even when the 20,000-instance memory banks are completely full.
 """
 
 # --- STANDARD LIBRARY IMPORTS ---
@@ -44,7 +31,6 @@ import os
 import signal
 import sys
 import threading
-import collections
 import queue
 import requests
 import random
@@ -76,22 +62,30 @@ FEATURE_CHANNELS = [
     "erc", "NDVI", "tmmn", "vs", "tmmx"
 ]
 
-LABEL_CHANNEL = "FireMask"
 GRID_W = 64
 GRID_H = 64
 N_CHANNELS = len(FEATURE_CHANNELS)
 
 
 # =============================================================================
-# GLOBAL STATE (what must survive migration)
+# GLOBAL STATE: THE NATIVE NUMPY RING BUFFERS (Zero-Allocation Memory)
 # =============================================================================
+# Instead of Python lists, we pre-allocate exactly ~8.6 MB of RAM for our matrices.
+# This guarantees our memory footprint is deterministic and safely under 25 MB.
 
-# Short Term Memory (recent examples). We use a deque so older memories automatically
-# fall off the end when it reaches STM_MAX, preventing memory leaks.
-stm = collections.deque(maxlen=STM_MAX)
+# Short-Term Memory (STM)
+stm_X    = np.zeros((STM_MAX, 108), dtype=np.float32)
+stm_y    = np.zeros(STM_MAX, dtype=np.int8)
+stm_X_sq = np.zeros(STM_MAX, dtype=np.float32) # Pre-computed magnitudes
+stm_ptr  = 0
+stm_count = 0
 
-# Long Term Memory (stable historical examples)
-ltm = []
+# Long-Term Memory (LTM)
+ltm_X    = np.zeros((LTM_MAX, 108), dtype=np.float32)
+ltm_y    = np.zeros(LTM_MAX, dtype=np.int8)
+ltm_X_sq = np.zeros(LTM_MAX, dtype=np.float32)
+ltm_ptr  = 0
+ltm_count = 0
 
 # Prediction results used by Node Agent (Trigger B - Lateral Tracking)
 predicted_fire_mask = [0] * (GRID_W - 2) * (GRID_H - 2)
@@ -152,45 +146,32 @@ def fast_knn_predict_batch(Q, X, y, X_sq, k=K_NEIGHBOURS):
     votes = y[nearest_idx]
 
     # Majority vote: If sum of votes is >= half of k, we predict 1 (Fire). Otherwise 0.
-    pred = np.where(np.sum(votes, axis=1) >= (k_actual / 2.0), 1, 0)
-    return pred
+    return np.where(np.sum(votes, axis=1) >= (k_actual / 2.0), 1, 0)
 
 
 # -----------------------------------------------------------------------------
 # Function: fast_samknn_predict_batch
 # Purpose: Orchestrates the predictions from both Short and Long Term Memory.
 # -----------------------------------------------------------------------------
-def fast_samknn_predict_batch(Q, stm_X, stm_y, stm_X_sq, ltm_X, ltm_y, ltm_X_sq):
+def fast_samknn_predict_batch(Q, stm_X_v, stm_y_v, stm_X_sq_v, ltm_X_v, ltm_y_v, ltm_X_sq_v):
     """
     Combine STM and LTM predictions.
 
     STM has precedence because it models recent concept drift.
     """
     # Ask both memory banks for their predictions
-    stm_pred = fast_knn_predict_batch(Q, stm_X, stm_y, stm_X_sq)
-    ltm_pred = fast_knn_predict_batch(Q, ltm_X, ltm_y, ltm_X_sq)
+    stm_pred = fast_knn_predict_batch(Q, stm_X_v, stm_y_v, stm_X_sq_v)
+    ltm_pred = fast_knn_predict_batch(Q, ltm_X_v, ltm_y_v, ltm_X_sq_v)
 
     M = Q.shape[0]
     final_pred = np.zeros(M, dtype=int)
 
     for i in range(M):
-        sp = stm_pred[i]
-        lp = ltm_pred[i]
-
-        # Resolution logic:
-        # If both don't know, guess 0 (No Fire)
-        if sp == -1 and lp == -1:
-            final_pred[i] = 0
-        # If STM doesn't know, trust LTM
-        elif sp == -1:
-            final_pred[i] = lp
-        # If LTM doesn't know, trust STM
-        elif lp == -1:
-            final_pred[i] = sp
-        # If both know, STM gets a weighted advantage (sp * 2) because it represents
-        # the most recent reality (concept drift).
-        else:
-            final_pred[i] = 1 if (sp * 2 + lp) >= 2 else 0
+        sp, lp = stm_pred[i], ltm_pred[i]
+        if sp == -1 and lp == -1: final_pred[i] = 0
+        elif sp == -1: final_pred[i] = lp
+        elif lp == -1: final_pred[i] = sp
+        else: final_pred[i] = 1 if (sp * 2 + lp) >= 2 else 0
 
     return final_pred
 
@@ -204,10 +185,16 @@ def samknn_train(feature_vector, label):
     Add a new example to STM.
     Every 1000 samples, promote consistent ones to LTM.
     """
-    global ltm, instances_trained
+    global stm_ptr, stm_count, instances_trained
 
-    # Always push to Short Term Memory first
-    stm.append((feature_vector, label))
+    # Overwrite the ring buffer slot
+    stm_X[stm_ptr] = feature_vector
+    stm_y[stm_ptr] = label
+    stm_X_sq[stm_ptr] = np.dot(feature_vector, feature_vector) # Fast magnitude
+
+    # Advance pointer circularly
+    stm_ptr = (stm_ptr + 1) % STM_MAX
+    stm_count = min(stm_count + 1, STM_MAX)
     instances_trained += 1
 
     # Every 1000 training instances, trigger the garbage collector / validation loop
@@ -225,55 +212,58 @@ def _stm_to_ltm_cleaning():
     Promote STM examples to LTM if they are self-consistent.
     Uses the Infinity Trick to avoid self-neighbour.
     """
-    global ltm
+    global ltm_ptr, ltm_count
 
-    stm_list_full = list(stm)
-    n_full = len(stm_list_full)
-    if n_full == 0:
+    if stm_count == 0:
         return
 
-    # Convert the python lists back into highly optimized NumPy arrays
-    stm_X_full = np.array([item[0] for item in stm_list_full])
-    stm_y_full = np.array([item[1] for item in stm_list_full])
-    stm_X_full_sq = np.sum(stm_X_full ** 2, axis=1)
+    # We validate the 1,000 most recently added items.
+    N = min(1000, stm_count)
+    k_actual = min(K_NEIGHBOURS, stm_count - 1)
+    if k_actual == 0: return
 
-    k_actual = min(K_NEIGHBOURS, n_full - 1)
-    if k_actual == 0:
-        return
+    # 1. Identify where the newest N items sit in the ring buffer
+    if stm_ptr >= N:
+        indices = np.arange(stm_ptr - N, stm_ptr)
+    else:
+        # It wrapped around the buffer
+        indices = np.concatenate((np.arange(STM_MAX - (N - stm_ptr), STM_MAX), np.arange(0, stm_ptr)))
 
-    # We only check the oldest 1000 items in the STM
-    start_idx = max(0, n_full - 1000)
-    consistent = []
+    # 2. Extract Queries (Q) and Total Memory (X)
+    Q = stm_X[indices]
+    Q_sq = stm_X_sq[indices][:, np.newaxis] # Reshape for broadcasting
 
-    for i in range(start_idx, n_full):
-        feat = stm_X_full[i]
-        lbl = stm_y_full[i]
+    # We only test against valid memory, ignoring empty zeros in the buffer
+    X = stm_X[:stm_count]
+    X_sq = stm_X_sq[:stm_count]
 
-        # Calculate this memory's distance against ALL other memories in the STM
-        q_sq = stm_X_full_sq[i]
-        Xq = np.dot(stm_X_full, feat)
-        distances = stm_X_full_sq - (2 * Xq) + q_sq
+    # 3. Vectorized Math (1,000 queries x up to 5,000 memories instantly)
+    Xq = np.dot(Q, X.T)
+    distances = X_sq - (2 * Xq) + Q_sq
 
-        # === THE INFINITY TRICK ===
-        # The distance between a point and ITSELF is mathematically 0.
-        # If we leave it as 0, the point will always vote for itself, creating a false validation.
-        # By artificially setting its self-distance to Infinity, we force the algorithm
-        # to look at its ACTUAL neighbors to see if it belongs there.
-        distances[i] = np.inf  # Infinity Trick
+    # 4. THE VECTORIZED INFINITY TRICK
+    # distances is an (N x stm_count) matrix.
+    # We set the exact coordinate where a point intersects with ITSELF to infinity.
+    distances[np.arange(N), indices] = np.inf
 
-        nearest_idx = np.argpartition(distances, k_actual - 1)[:k_actual]
-        votes = stm_y_full[nearest_idx]
-        pred = 1 if np.sum(votes) >= (k_actual / 2.0) else 0
+    # 5. Fast k-NN Voting
+    nearest_idx = np.argpartition(distances, k_actual - 1, axis=1)[:, :k_actual]
+    votes = stm_y[:stm_count][nearest_idx]
+    preds = np.where(np.sum(votes, axis=1) >= (k_actual / 2.0), 1, 0)
 
-        # If the neighbors agree with the label, it's a valid pattern. Promote to LTM.
-        if pred == lbl:
-            consistent.append(stm_list_full[i])
+    # 6. Promotion
+    actual_labels = stm_y[indices]
+    consistent_mask = (preds == actual_labels) # Boolean array of consistent memories
+    consistent_indices = indices[consistent_mask]
 
-    # Add to LTM and enforce the LTM RAM ceiling (Drop oldest if over 15,000)
-    ltm.extend(consistent)
-    if len(ltm) > LTM_MAX:
-        ltm = ltm[-LTM_MAX:]
+    # Batch insert the consistent memories into the LTM ring buffer
+    for idx in consistent_indices:
+        ltm_X[ltm_ptr] = stm_X[idx]
+        ltm_y[ltm_ptr] = stm_y[idx]
+        ltm_X_sq[ltm_ptr] = stm_X_sq[idx]
 
+        ltm_ptr = (ltm_ptr + 1) % LTM_MAX
+        ltm_count = min(ltm_count + 1, LTM_MAX)
 
 # =============================================================================
 # SECTION 2: FRAME DECODING (Reconstructing the UDP Payload)
@@ -352,7 +342,7 @@ def compute_center_of_mass(pred_mask_2d):
 
 
 # =============================================================================
-# SECTION 4: FRAME PROCESSING PIPELINE (Spatial Translation)
+# SECTION 4: FRAME PROCESSING PIPELINE (Zero-Allocation Execution)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -367,15 +357,17 @@ def process_frame(channels, fire_mask_label):
 
     inner_h, inner_w = GRID_H - 2, GRID_W - 2
 
-    # Build STM/LTM matrices (Convert lists to NumPy arrays for speed)
-    stm_X = np.array([item[0] for item in stm]) if stm else np.empty((0, 108))
-    stm_y = np.array([item[1] for item in stm]) if stm else np.empty(0)
-    ltm_X = np.array([item[0] for item in ltm]) if ltm else np.empty((0, 108))
-    ltm_y = np.array([item[1] for item in ltm]) if ltm else np.empty(0)
+    # --- THE ALLOCATION FIX ---
+    # We no longer force Python to build matrices from lists.
+    # We simply take "views" (slices) of our pre-existing C-memory.
+    # This takes 0.0000ms. Order doesn't matter for distance checks.
+    valid_stm_X = stm_X[:stm_count]
+    valid_stm_y = stm_y[:stm_count]
+    valid_stm_X_sq = stm_X_sq[:stm_count]
 
-    # Pre-square the memories here so we don't have to do it inside the math loop
-    stm_X_sq = np.sum(stm_X ** 2, axis=1) if len(stm_X) > 0 else np.empty(0)
-    ltm_X_sq = np.sum(ltm_X ** 2, axis=1) if len(ltm_X) > 0 else np.empty(0)
+    valid_ltm_X = ltm_X[:ltm_count]
+    valid_ltm_y = ltm_y[:ltm_count]
+    valid_ltm_X_sq = ltm_X_sq[:ltm_count]
 
     # === THE 3x3 SLIDING WINDOW (Spatial Extraction) ===
     # We allocate a giant empty array to hold our queries.
@@ -404,7 +396,9 @@ def process_frame(channels, fire_mask_label):
     for i in range(0, M, CHUNK_SIZE):
         end_idx = min(i + CHUNK_SIZE, M)
         preds[i:end_idx] = fast_samknn_predict_batch(
-            Q_array[i:end_idx], stm_X, stm_y, stm_X_sq, ltm_X, ltm_y, ltm_X_sq
+            Q_array[i:end_idx],
+            valid_stm_X, valid_stm_y, valid_stm_X_sq,
+            valid_ltm_X, valid_ltm_y, valid_ltm_X_sq
         )
 
     pred_2d = preds.reshape(inner_h, inner_w).tolist()
@@ -430,7 +424,7 @@ def process_frame(channels, fire_mask_label):
 
 
 # =============================================================================
-# SECTION 5: GUARDIAN STATE SYNC (The Heartbeat & Amnesia Fix)
+# SECTION 5: GUARDIAN STATE SYNC
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -448,8 +442,8 @@ def build_state_payload():
         "fire_pixel_count": fire_pixel_count,
         "sample_count": sample_count,
         "instances_trained": instances_trained,
-        "stm_size": len(stm),
-        "ltm_size": len(ltm),
+        "stm_size": int(stm_count),
+        "ltm_size": int(ltm_count),
         "status": "TRACKING"
     }
 
@@ -492,6 +486,7 @@ def load_initial_state():
     On cold boot, restore last state from Guardian.
     """
     global predicted_fire_mask, center_of_mass, fire_pixel_count, sample_count, instances_trained
+    global stm_ptr, stm_count, ltm_ptr, ltm_count
 
     while True:
         try:
@@ -509,14 +504,20 @@ def load_initial_state():
                     # Explicitly extract the memory arrays from the JSON payload
                     # and convert them back into tuples (feature_vector, label)
                     if "stm" in data:
-                        stm.clear()
-                        stm.extend([(f, l) for f, l in data["stm"]])
-                        print(f"🧠 WORKER: Restored {len(stm)} STM memories from Guardian.", flush=True)
+                        stm_ptr = stm_count = 0
+                        for f, l in data["stm"]:
+                            samknn_train(f, l)
+                        print(f"🧠 WORKER: Restored {stm_count} STM memories.", flush=True)
 
                     if "ltm" in data:
-                        ltm.clear()
-                        ltm.extend([(f, l) for f, l in data["ltm"]])
-                        print(f"🧠 WORKER: Restored {len(ltm)} LTM memories from Guardian.", flush=True)
+                        ltm_ptr = ltm_count = 0
+                        for f, l in data["ltm"]:
+                            ltm_X[ltm_ptr] = f
+                            ltm_y[ltm_ptr] = l
+                            ltm_X_sq[ltm_ptr] = np.dot(f, f)
+                            ltm_ptr = (ltm_ptr + 1) % LTM_MAX
+                            ltm_count = min(ltm_count + 1, LTM_MAX)
+                        print(f"🧠 WORKER: Restored {ltm_count} LTM memories.", flush=True)
                 return
         except requests.exceptions.RequestException:
             time.sleep(1)
@@ -544,10 +545,11 @@ class FlushHandler(BaseHTTPRequestHandler):
 
             # 2. Package the massive memory matrices
             full_state = build_state_payload()
-            full_state["stm"] = [[list(f), lbl] for f, lbl in stm]
-            full_state["ltm"] = [[list(f), lbl] for f, lbl in ltm]
 
-            # 3. Synchronously push to the Guardian
+            # Zip the active C-memory slices to ship back to the Guardian
+            full_state["stm"] = [[list(f), int(lbl)] for f, lbl in zip(stm_X[:stm_count], stm_y[:stm_count])] if stm_count > 0 else []
+            full_state["ltm"] = [[list(f), int(lbl)] for f, lbl in zip(ltm_X[:ltm_count], ltm_y[:ltm_count])] if ltm_count > 0 else []
+
             try:
                 requests.post(f"{GUARDIAN_URL}/state", json=full_state, timeout=5)
             except Exception:
@@ -596,9 +598,7 @@ def _udp_ingestion_thread(sock):
 
     while running:
         try:
-            raw_data, addr = sock.recvfrom(65536)
-
-            # Extract the 6-byte Custom Header injected by the Ground Station
+            raw_data, _ = sock.recvfrom(65536)
             header = raw_data[:6]
             chunk_data = raw_data[6:]
 

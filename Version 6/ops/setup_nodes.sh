@@ -110,7 +110,7 @@ EOF"
     minikube cp /tmp/routing_table.sh $NODE:/var/lib/space_cloud/routing_table.sh
 
     # Re-open the SSH session to finalize the keys and start services
-    minikube ssh -n $NODE -p minikube "sudo -i <<EOF
+    minikube ssh -n $NODE -p minikube "sudo -i <<'EOF'
         mkdir -p /root/.ssh
         mv /tmp/id_ed25519 /root/.ssh/id_ed25519
         mv /tmp/id_ed25519.pub /root/.ssh/id_ed25519.pub

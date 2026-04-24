@@ -6,10 +6,12 @@ import threading
 from kubernetes import client, config, watch
 
 # =============================================================================
-#  SPACE CLOUD V6 - ENVIRONMENT SIMULATOR (Digital Twin, Pure Pub/Sub)
-#  Role: Simulates orbital physics and broadcasts CURRENT hardware readings
-#        via Redis Pub/Sub. Does NOT produce forecasts — in V6, each satellite's
-#        local Node Agent runs its own VirtualSatellite predictive engine.
+#  SPACE CLOUD V6 - ENVIRONMENT SIMULATOR (The "Simulation Oracle")
+#  Role: Simulates orbital physics and acts as the "God's Eye" Oracle for the
+#        Delay-Tolerant Network (DTN). Because edge nodes cannot reliably reach
+#        the K8s API during simulated blackouts, this script monitors workload
+#        placement and explicitly injects 'is_working' and 'has_master' flags
+#        into the telemetry payload.
 # =============================================================================
 
 # --- PHYSICAL CONFIGURATION ---
@@ -23,15 +25,15 @@ HEATING_SUN = 100.0  # Heat gain from direct solar radiation
 HEATING_CPU_IDLE = 10.0  # Heat gain from hardware in standby
 
 # --- DUAL WORKLOAD THERMAL CONSTANTS ---
-HEATING_SML_LOAD = 85.0  # Massive matrix multiplications
-HEATING_MASTER_LOAD = 35.0  # Graph database & Lua script execution
+HEATING_SML_LOAD = 10.0  # Massive matrix multiplications
+HEATING_MASTER_LOAD = 85.0  # Graph database & Lua script execution
 
 COOLING_K = 4.0  # Radiative cooling efficiency constant
 
 BATTERY_CHARGE_RATE = 5.0  # Power gain per second from solar panels
 BATTERY_DRAIN_IDLE = 1.0  # Power consumption in standby
-BATTERY_DRAIN_SML = 10.0  # Heavy power draw
-BATTERY_DRAIN_MASTER = 3.5  # Moderate power draw
+BATTERY_DRAIN_SML = 1.0  # Heavy power draw
+BATTERY_DRAIN_MASTER = 10.0  # Moderate power draw
 
 # Setup logging for simulation monitoring
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [SIM] %(message)s', datefmt='%H:%M:%S')
@@ -100,11 +102,15 @@ class Satellite:
             "temp": round(self.temp, 1),
             "angle": int(self.angle),
             "eclipse": self.in_eclipse,
-            "is_working": self.has_sml,
-            "is_hosting_master": self.has_master,
+            "is_working": self.has_sml,  # Flag for SAMKNN Payload
+            "has_master": self.has_master,  # Flag for Topology Master
             "orbit_plane": self.orbit_plane,
         }
 
+
+# =============================================================================
+# KUBERNETES CONNECTION & WATCHER (The Oracle)
+# =============================================================================
 
 def connect_k8s():
     """Initializes connection to the local Kubernetes API (Minikube)."""
@@ -145,8 +151,14 @@ _active_nodes_lock = threading.Lock()
 
 
 def _pod_watcher_thread(v1_client):
+    """
+    Maintains a persistent watch on the Kubernetes API.
+    Identifies exact physical placement of the SML Payload and Topology Master.
+    Filters out terminating pods to prevent the "Phantom Limb" bug.
+    """
     global _master_node
     w = watch.Watch()
+
     while True:
         try:
             for event in w.stream(
@@ -164,16 +176,19 @@ def _pod_watcher_thread(v1_client):
 
                 with _active_nodes_lock:
                     if event_type in ("ADDED", "MODIFIED"):
+                        # Only register active, healthy workloads
                         if phase in ("Running", "Pending") and not deleting and node_name:
                             if app_label == "space-mission":
                                 _active_sml_nodes.add(node_name)
                             elif app_label == "topology-master":
                                 _master_node = node_name
+                        # If a pod is terminating/completed, wipe it from our state
                         elif node_name:
                             if app_label == "space-mission" and node_name in _active_sml_nodes:
                                 _active_sml_nodes.discard(node_name)
                             elif app_label == "topology-master" and _master_node == node_name:
                                 _master_node = None
+
                     elif event_type == "DELETED":
                         if node_name:
                             if app_label == "space-mission":
@@ -191,15 +206,19 @@ def get_active_workloads():
         return set(_active_sml_nodes), _master_node
 
 
+# =============================================================================
+# MAIN EVENT LOOP
+# =============================================================================
+
 def main():
-    print("\n🌍 ENVIRONMENT SIMULATOR V6 ONLINE (Dual-Workload Active).")
+    print("\n🌍 ENVIRONMENT SIMULATOR V6 ONLINE (Simulation Oracle Active).")
     k8s_api = connect_k8s()
     redis_db = connect_redis()
 
     if k8s_api:
         watcher = threading.Thread(target=_pod_watcher_thread, args=(k8s_api,), daemon=True)
         watcher.start()
-        print("👁️  WATCH: Pod watcher thread started.")
+        print("👁️  WATCH: K8s Oracle Pod Watcher thread started.")
     else:
         print("⚠️  WATCH: K8s API unavailable — workload detection disabled.")
 
@@ -220,9 +239,12 @@ def main():
         for sat in fleet:
             has_sml = (sat.name in active_sml)
             has_master = (sat.name == master_node)
+
+            # Apply thermodynamics
             sat.update(elapsed, has_sml, has_master)
             sat_data = sat.get_telemetry()
 
+            # Publish oracle data to the telemetry bus
             if redis_db:
                 try:
                     channel = f"telemetry/{sat.name}"

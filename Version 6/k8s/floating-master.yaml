@@ -93,7 +93,8 @@ spec:
       # The Lua Dijkstra script is loaded here at agent startup via SCRIPT LOAD.
       # ────────────────────────────────────────────────────────────────────────
       - name: topology-redis
-        image: docker.io/library/redis:alpine
+        # FIX: Pinned to 6.2 to disable io_uring and ensure CRIU compatibility
+        image: docker.io/library/redis:6.2-alpine
         ports:
           - containerPort: 6379
             name: redis

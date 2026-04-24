@@ -1,27 +1,15 @@
 """
 SPACE CLOUD V6 - NODE AGENT (Distributed Edge MPC)
 ===================================================
-Role: Runs as a DaemonSet on every satellite node. Replaces the centralized
-      MPC Controller from V5 with a fully autonomous onboard decision engine.
-
-This agent does three things simultaneously:
-  1. TELEMETRY PUSH: Listens to its own node's telemetry on Ground Redis and
-     pushes delta-encoded updates to the Floating Master for constellation topology.
-  2. DUAL-GATE TRIGGER: Evaluates two independent migration triggers every second:
-       Trigger A — Thermal Self-Preservation (CPU temperature forecast)
-       Trigger B — Lateral Fire Tracking (SAMKNN Center of Mass drift)
-  3. MIGRATION ORCHESTRATION: Coordinates the pre-freeze flush handshake and
-     delegates the physical transfer to relay_transfer.sh.
-
-Dependencies: requests, redis. No gRPC, no protobuf.
-Communication: file-based IPC for intra-Pod commands (/tmp/flush_state, etc.),
-               HTTP for worker state queries, Redis for topology and telemetry.
+Role: Runs as a DaemonSet on every satellite node.
+Architecture: Uses the 'Simulation Oracle' pattern. It trusts the Ground Redis
+              telemetry bus as the absolute source of truth for both hardware
+              temperature and workload placement (has_sml, has_master).
 """
 
 import os
 import time
 import json
-import math
 import subprocess
 import threading
 import requests
@@ -82,8 +70,8 @@ THERMAL_MASS   = 80.0
 HEATING_SUN    = 100.0
 HEATING_CPU_IDLE = 10.0
 # --- DUAL WORKLOAD THERMAL CONSTANTS ---
-HEATING_SML_LOAD     = 85.0
-HEATING_MASTER_LOAD  = 35.0
+HEATING_SML_LOAD     = 10.0
+HEATING_MASTER_LOAD  = 85.0
 COOLING_K      = 4.0
 
 
@@ -146,23 +134,6 @@ class VirtualSatellite:
 
         # Satellite will remain cool throughout the forecast horizon
         return True, "NOMINAL"
-
-
-def _get_local_workloads():
-    """
-    Queries the local container runtime (CRI-O) to independently verify exactly
-    which workloads are currently running on this physical node.
-    """
-    try:
-        crio_resp = subprocess.check_output(
-            ["curl", "-s", "--unix-socket", "/run/crio/crio.sock", "http://localhost/containers/json"]
-        )
-        has_sml = b'payload-phoenix' in crio_resp
-        has_master = b'topology-redis' in crio_resp
-        return has_sml, has_master
-    except Exception:
-        # Fallback if socket is unavailable
-        return False, False
 
 
 # =============================================================================
@@ -305,203 +276,143 @@ def _update_adjacency(topology_redis, telemetry):
         # Replace the whole adjacency set atomically
         adj_key = f"adj:{NODE_NAME}"
         topology_redis.delete(adj_key)
-        if neighbours:
-            topology_redis.sadd(adj_key, *neighbours)
+        topology_redis.sadd(adj_key, *neighbours)
 
 
 # =============================================================================
-# SECTION 4: MIGRATION ORCHESTRATION (File-Based IPC + CRIU)
+# SECTION 4: MIGRATION ORCHESTRATION (SML & MASTER)
 # =============================================================================
 
 def trigger_local_migration(topology_redis, migration_type):
-    """
-    Full migration sequence:
-    Step 1: Query the Floating Master for the optimal multi-hop route.
-    Step 2: Pre-freeze flush (file-based IPC handshake with Guardian).
-    Step 3: CRIU checkpoint via Kubelet API.
-    Step 4: Invoke relay_transfer.sh for SSH-staged multi-hop delivery.
-
-    This function runs in a background thread so the telemetry listener
-    continues operating while the migration executes.
-    """
-    print(f"\n🚨 AGENT: Migration triggered! Type={migration_type}", flush=True)
-
-    # ---- Step 1: Topology Query ----
+    """Sequence for migrating the SAMKNN Payload"""
+    print(f"\n🚨 AGENT: Payload Migration triggered! Type={migration_type}", flush=True)
     route_result = query_floating_master(topology_redis, migration_type)
-    if not route_result or not route_result.get("route"):
-        print("❌ AGENT: No valid route found. Aborting migration.", flush=True)
-        return
+    if not route_result or not route_result.get("route"): return
 
-    route = route_result["route"]
-    manifest = {
-        "route": route,
-        "type": migration_type,
-        "source": NODE_NAME
-    }
-
-    # Write the manifest for relay_transfer.sh to read
+    manifest = {"route": route_result["route"], "type": migration_type, "source": NODE_NAME}
     manifest_path = "/tmp/migration_manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(manifest, f)
 
-    # ---- Step 2: Pre-Freeze Flush Handshake ----
-    # Write the trigger file that the Guardian is watching for
-    print("💾 AGENT: Writing /tmp/flush_state — triggering Guardian flush...", flush=True)
     open("/tmp/flush_state", "w").close()
-
-    # Poll for /tmp/flush_complete (written by Guardian after worker flushes)
     start = time.time()
     while not os.path.exists("/tmp/flush_complete"):
-        if time.time() - start > FLUSH_TIMEOUT_SECONDS:
-            print("⚠️  AGENT: Flush timeout — proceeding with last known state.", flush=True)
-            break
+        if time.time() - start > FLUSH_TIMEOUT_SECONDS: break
         time.sleep(0.1)
 
-    # Clean up the flush handshake files
     for f in ["/tmp/flush_state", "/tmp/flush_complete"]:
         try:
             os.remove(f)
-        except FileNotFoundError:
+        except:
             pass
 
-    # Tell the Guardian to enter flightMode and close all sockets for CRIU
-    print("🔒 AGENT: Writing /tmp/prepare_jump — initiating CRIU preparation...", flush=True)
     open("/tmp/prepare_jump", "w").close()
-
-    # Wait briefly for the Guardian to complete its graceful disconnect
     time.sleep(0.5)
 
-    # ---- Step 3: CRIU Checkpoint ----
-    checkpoint_path = _criu_checkpoint()
-    if not checkpoint_path:
-        print("❌ AGENT: Checkpoint failed. Migration aborted.", flush=True)
-        return
+    # Use the consolidated checkpoint engine
+    checkpoint_path = _request_checkpoint("space-mission", "sidecar-guardian")
+    if not checkpoint_path: return
 
-    # ---- Step 4: Relay Transfer ----
-    print(f"📡 AGENT: Starting relay transfer to {route}...", flush=True)
+    print(f"📡 AGENT: Starting relay transfer to {route_result['route']}...", flush=True)
     relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
-    result = subprocess.run(
-        ["bash", relay_script, checkpoint_path, manifest_path],
-        capture_output=False
-    )
-    if result.returncode != 0:
-        print(f"❌ AGENT: relay_transfer.sh failed with code {result.returncode}.", flush=True)
-    else:
-        print("✅ AGENT: Relay transfer complete. Awaiting restore on destination.", flush=True)
+    subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
 
 
-def _criu_checkpoint():
+def trigger_master_migration(topology_redis, migration_type):
+    """Independent sequence for migrating the Topology Master"""
+    print(f"\n🚨 AGENT: MASTER Topology Migration triggered! Type={migration_type}", flush=True)
+    route_result = query_floating_master(topology_redis, migration_type)
+    if not route_result or not route_result.get("route"): return
+
+    manifest = {"route": route_result["route"], "type": migration_type, "source": NODE_NAME}
+    manifest_path = "/tmp/master_migration_manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f)
+
+    # Use the consolidated checkpoint engine
+    checkpoint_path = _request_checkpoint("topology-master", "topology-redis")
+    if not checkpoint_path: return
+
+    print(f"📡 AGENT: Starting relay transfer to {route_result['route']}...", flush=True)
+    relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
+    subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
+
+
+def _request_checkpoint(app_label, container_name):
     """
-    Requests a CRIU checkpoint of the 'sidecar-guardian' container from the Kubelet.
-
-    Issue #2 fix: Instead of spawning a background 'kubectl proxy' process (which
-    can become a zombie leaking port 8001 on crash), we use the ServiceAccount
-    token mounted at /var/run/secrets/kubernetes.io/serviceaccount/ to authenticate
-    directly to the Kubelet REST API. This is cleaner, faster, and leak-proof.
+    Consolidated, highly verbose CRIU checkpoint requester.
+    Prints exact Kubelet HTTP responses to diagnose failures instantly.
     """
-    print("📸 AGENT: Requesting CRIU checkpoint from Kubelet...", flush=True)
+    print(f"📸 AGENT: Requesting {container_name} CRIU checkpoint from Kubelet...", flush=True)
 
-    # Find the pod currently running on this node
+    # 1. Dynamically discover the exact pod name
     try:
-        # Note: using [*] instead of [0] avoids JSONPath bounds errors if the pod is missing
-        pod_name = subprocess.check_output(
-            f"kubectl get pod -l app=space-mission"
-            f" --field-selector spec.nodeName={NODE_NAME}"
-            f" -o jsonpath='{{.items[*].metadata.name}}'",
-            shell=True
-        ).decode().strip()
-
-        if not pod_name:
-            raise Exception("No active pod found to checkpoint")
+        cmd = f"kubectl get pod -l app={app_label} --field-selector status.phase=Running,spec.nodeName={NODE_NAME} -o jsonpath='{{.items[*].metadata.name}}'"
+        out = subprocess.check_output(cmd, shell=True).decode().strip()
+        if not out:
+            print(f"❌ AGENT: No active pod found for app={app_label}", flush=True)
+            return None
+        pod_name = out.split()[0]  # Take the first one to avoid multi-string URL errors
     except Exception as e:
-        print(f"❌ AGENT: Cannot find local pod: {e}", flush=True)
+        print(f"❌ AGENT: kubectl get pod exception: {e}", flush=True)
         return None
 
-    # Read the ServiceAccount token (mounted by K8s into every Pod)
+    print(f"🎯 AGENT: Target Pod: {pod_name} | Container: {container_name}", flush=True)
+
+    # 2. Attempt Direct Kubelet Proxy Request
     token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    if not os.path.exists(token_path):
+        print("⚠️  AGENT: SA token not found. Falling back to kubectl proxy.", flush=True)
+        return _checkpoint_via_proxy(pod_name, container_name)
+
     try:
         with open(token_path, "r") as f:
             sa_token = f.read().strip()
-    except FileNotFoundError:
-        print("⚠️  AGENT: No ServiceAccount token found — falling back to kubectl proxy.", flush=True)
-        return _criu_checkpoint_via_proxy(pod_name)
+        api_url = f"https://kubernetes.default.svc/api/v1/nodes/{NODE_NAME}/proxy/checkpoint/default/{pod_name}/{container_name}"
+        ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
-    # POST directly to the Kubelet checkpoint API using the ServiceAccount bearer token.
-    # This eliminates the need for a background 'kubectl proxy' process entirely.
-    # The API server proxies the request to the Kubelet on the correct node.
-    api_url = (
-        f"https://kubernetes.default.svc/api/v1/nodes/{NODE_NAME}/proxy"
-        f"/checkpoint/default/{pod_name}/sidecar-guardian"
-    )
-    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-
-    try:
-        resp = requests.post(
-            api_url,
-            headers={"Authorization": f"Bearer {sa_token}"},
-            verify=ca_path,
-            timeout=30
-        )
+        resp = requests.post(api_url, headers={"Authorization": f"Bearer {sa_token}"}, verify=ca_path, timeout=30)
 
         if resp.status_code != 200:
-            print(f"❌ AGENT: Checkpoint API returned {resp.status_code}: {resp.text}", flush=True)
+            print(f"❌ AGENT: Kubelet Checkpoint API Error {resp.status_code}: {resp.text}", flush=True)
             return None
 
-        data = resp.json()
-        path = data["items"][0]
+        path = resp.json()["items"][0]
         print(f"✅ AGENT: Checkpoint created at {path}", flush=True)
         return path
 
     except Exception as e:
-        print(f"❌ AGENT: Checkpoint exception: {e}", flush=True)
-        return None
+        print(f"❌ AGENT: Checkpoint HTTP exception: {e}", flush=True)
+        return _checkpoint_via_proxy(pod_name, container_name)
 
 
-def _criu_checkpoint_via_proxy(pod_name):
-    """
-    Fallback: Uses kubectl proxy when ServiceAccount token is not available
-    (e.g., running outside the cluster during development). Includes proper
-    cleanup via try/finally to prevent zombie proxy processes.
-    """
-    proxy = subprocess.Popen(
-        ["kubectl", "proxy", "--port=8001"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-
+def _checkpoint_via_proxy(pod_name, container_name):
+    """Fallback mechanism using localhost kubectl proxy to bypass SSL/Auth issues."""
+    print("🔄 AGENT: Initiating kubectl proxy fallback...", flush=True)
+    proxy = subprocess.Popen(["kubectl", "proxy", "--port=8001"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        # Wait up to 3 seconds for the proxy to be ready
         health_url = f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy/healthz"
         for _ in range(30):
             try:
-                if requests.get(health_url, timeout=0.2).status_code == 200:
-                    break
+                if requests.get(health_url, timeout=0.2).status_code == 200: break
             except Exception:
                 pass
             time.sleep(0.1)
 
-        # Submit the checkpoint request to the Kubelet
-        api_url = (
-            f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy"
-            f"/checkpoint/default/{pod_name}/sidecar-guardian"
-        )
+        api_url = f"http://127.0.0.1:8001/api/v1/nodes/{NODE_NAME}/proxy/checkpoint/default/{pod_name}/{container_name}"
         resp = requests.post(api_url, timeout=30)
 
         if resp.status_code != 200:
-            print(f"❌ AGENT: Checkpoint API returned {resp.status_code}: {resp.text}", flush=True)
+            print(f"❌ AGENT: Proxy Checkpoint API returned {resp.status_code}: {resp.text}", flush=True)
             return None
 
-        data = resp.json()
-        path = data["items"][0]
+        path = resp.json()["items"][0]
         print(f"✅ AGENT: Checkpoint created at {path}", flush=True)
         return path
-
     except Exception as e:
-        print(f"❌ AGENT: Checkpoint exception: {e}", flush=True)
+        print(f"❌ AGENT: Proxy Checkpoint exception: {e}", flush=True)
         return None
-
     finally:
-        # Always terminate the proxy — this prevents the port 8001 zombie leak
         proxy.terminate()
         try:
             proxy.wait(timeout=3)
@@ -510,46 +421,34 @@ def _criu_checkpoint_via_proxy(pod_name):
 
 
 # =============================================================================
-# SECTION 5: DESTINATION-SIDE RELAY RECEIVER
-# Polls for /tmp/relay_complete instead of running a gRPC server.
-# This avoids the TOCTOU race where the agent could read a partial TAR file.
+# SECTION 5: DESTINATION-SIDE RELAY RECEIVER & DEMULTIPLEXER
 # =============================================================================
 
 def relay_receiver_loop():
-    """
-    Runs in a background daemon thread. Polls for /tmp/relay_complete —
-    the atomic trigger file written by relay_transfer.sh only AFTER the
-    incoming TAR file has been fully transferred AND SHA256-verified.
-    Once detected, triggers the Buildah + K8s restore sequence.
-    """
     print("👂 AGENT: Receiver loop armed. Polling for /tmp/relay_complete...", flush=True)
-
     while True:
         if os.path.exists("/tmp/relay_complete"):
-            print("\n📦 AGENT: relay_complete detected — restoring checkpoint!", flush=True)
+            print("\n📦 AGENT: relay_complete detected — inspecting payload!", flush=True)
+            try: os.remove("/tmp/relay_complete")
+            except: pass
 
-            # Remove the trigger file first to avoid double-triggering
+            tar_path = "/tmp/checkpoint.tar"
+
+            # Binary Inspection Demultiplexer
+            is_master = False
             try:
-                os.remove("/tmp/relay_complete")
-            except FileNotFoundError:
-                pass
+                subprocess.check_call(f"grep -a 'sidecar-guardian' {tar_path}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except subprocess.CalledProcessError:
+                is_master = True
 
-            checkpoint_path = "/tmp/checkpoint.tar"
-            _rebuild_and_deploy(checkpoint_path)
+            if is_master: _rebuild_and_deploy_master(tar_path)
+            else: _rebuild_and_deploy(tar_path)
 
         time.sleep(RELAY_POLL_INTERVAL)
 
 
 def _rebuild_and_deploy(tar_path):
-    """
-    Converts the received TAR checkpoint into a running K8s Pod on this node.
-    Uses Buildah to layer the CRIU memory pages on top of a blank image,
-    then patches the Deployment to schedule on this node.
-    """
-    t_start = time.time()
-
-    # ---- STEP 1: Buildah — reconstruct the container image ----
-    print("🔨 AGENT [BUILDAH]: Reconstructing container from checkpoint...", flush=True)
+    print("🔨 AGENT [BUILDAH]: Reconstructing SML Payload...", flush=True)
     build_script = f"""
     buildah rm restoration-lab 2>/dev/null || true
     buildah from --name restoration-lab scratch
@@ -560,70 +459,58 @@ def _rebuild_and_deploy(tar_path):
     buildah rm restoration-lab
     """
     subprocess.run(build_script, shell=True, check=False)
-    print(f"⏱️  AGENT: Buildah done in {time.time()-t_start:.2f}s", flush=True)
 
-    # ---- STEP 2: K8s — reschedule the Pod on this node ----
-    t0 = time.time()
-    print("⚡ AGENT [K8S]: Patching Deployment to this node...", flush=True)
-
-    # NEW: Force imagePullPolicy to "Never" to fix the Amnesia bug!
-    patch = json.dumps({
-        "spec": {"template": {"spec": {
-            "terminationGracePeriodSeconds": 0,
-            "nodeSelector": {"type": "satellite", "kubernetes.io/hostname": NODE_NAME},
-            "containers": [
-                {
-                    "name": "sidecar-guardian",
-                    "image": "localhost/space-sidecar:restored",
-                    "imagePullPolicy": "Never"
-                },
-                {
-                    "name": "payload-phoenix",
-                    "image": "localhost/space-workload:latest",
-                    "imagePullPolicy": "Never"
-                }
-            ]
-        }}}
-    })
+    patch = json.dumps({"spec": {"template": {"spec": {
+        "terminationGracePeriodSeconds": 0,
+        "nodeSelector": {"type": "satellite", "kubernetes.io/hostname": NODE_NAME},
+        "containers": [
+            {"name": "sidecar-guardian", "image": "localhost/space-sidecar:restored", "imagePullPolicy": "Never"},
+            {"name": "payload-phoenix", "image": "localhost/space-workload:latest", "imagePullPolicy": "Never"}
+        ]
+    }}}})
     subprocess.run("kubectl scale deployment space-mission --replicas=0", shell=True)
-    subprocess.run("kubectl delete pod -l app=space-mission --force --grace-period=0",
-                   shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    subprocess.run("kubectl delete pod -l app=space-mission --force --grace-period=0", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     subprocess.run(f"kubectl patch deployment space-mission --type=strategic -p '{patch}'", shell=True)
     subprocess.run("kubectl scale deployment space-mission --replicas=1", shell=True)
-    print(f"⏱️  AGENT: K8s patch done in {time.time()-t0:.2f}s", flush=True)
 
-    # ---- STEP 3: Wait for pod to boot and signal it has landed ----
-    t0 = time.time()
     pod_name = None
     for _ in range(50):
         if not pod_name:
             try:
-                out = subprocess.check_output(
-                    f"kubectl get pod -l app=space-mission"
-                    f" --field-selector spec.nodeName={NODE_NAME}"
-                    f" -o jsonpath='{{.items[0].metadata.name}}'",
-                    shell=True, stderr=subprocess.DEVNULL
-                )
-                found = out.decode().strip()
-                if found:
-                    pod_name = found
-            except Exception:
-                pass
+                out = subprocess.check_output(f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[0].metadata.name}}'", shell=True, stderr=subprocess.DEVNULL)
+                if out.decode().strip(): pod_name = out.decode().strip()
+            except Exception: pass
 
         if pod_name:
-            # Touch /tmp/landed inside the Guardian container — this exits flightMode
-            res = subprocess.run(
-                f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/landed",
-                shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
-            )
-            if res.returncode == 0:
-                print(f"🛬 AGENT: Pod landed and Guardian awakened in {time.time()-t0:.2f}s", flush=True)
-                print(f"🎉 AGENT: Total restore time: {time.time()-t_start:.2f}s", flush=True)
-                return
-
+            res = subprocess.run(f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/landed", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            if res.returncode == 0: return
         time.sleep(0.1)
 
-    print(f"❌ AGENT: Pod did not awaken within timeout ({time.time()-t0:.2f}s)", flush=True)
+
+def _rebuild_and_deploy_master(tar_path):
+    print("🔨 AGENT [BUILDAH]: Reconstructing Topology Master...", flush=True)
+    build_script = f"""
+    buildah rm restoration-master 2>/dev/null || true
+    buildah from --name restoration-master scratch
+    buildah add restoration-master {tar_path} /
+    buildah config --annotation "io.kubernetes.cri-o.annotations.checkpoint.name=redis" restoration-master
+    buildah commit restoration-master localhost/space-master:restored
+    buildah rm restoration-master
+    """
+    subprocess.run(build_script, shell=True, check=False)
+
+    patch = json.dumps({"spec": {"template": {"spec": {
+        "terminationGracePeriodSeconds": 0,
+        "nodeSelector": {"type": "satellite", "kubernetes.io/hostname": NODE_NAME},
+        "containers": [
+            {"name": "redis", "image": "localhost/space-master:restored", "imagePullPolicy": "Never"},
+            {"name": "topology-dashboard", "image": "localhost/space-topology-dashboard:latest", "imagePullPolicy": "Never"}
+        ]
+    }}}})
+    subprocess.run("kubectl scale deployment topology-master --replicas=0", shell=True)
+    subprocess.run("kubectl delete pod -l app=topology-master --force --grace-period=0", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    subprocess.run(f"kubectl patch deployment topology-master --type=strategic -p '{patch}'", shell=True)
+    subprocess.run("kubectl scale deployment topology-master --replicas=1", shell=True)
 
 
 # =============================================================================
@@ -633,164 +520,103 @@ def _rebuild_and_deploy(tar_path):
 def main():
     print(f"🛸 NODE AGENT V6 ONLINE — satellite: {NODE_NAME}", flush=True)
 
-    # ---- Connect to Floating Master Redis (for topology / Dijkstra) ----
     topology_redis = None
     while not topology_redis:
         try:
-            r = redis.Redis(
-                host=TOPOLOGY_REDIS_HOST,
-                port=TOPOLOGY_REDIS_PORT,
-                decode_responses=True,
-                socket_connect_timeout=3
-            )
+            r = redis.Redis(host=TOPOLOGY_REDIS_HOST, port=TOPOLOGY_REDIS_PORT, decode_responses=True, socket_connect_timeout=3)
             r.ping()
             topology_redis = r
             print("✅ AGENT: Connected to Floating Master Redis.", flush=True)
         except Exception:
-            print("⏳ AGENT: Waiting for Floating Master...", flush=True)
             time.sleep(3)
 
-    # Load the Dijkstra script into the Floating Master's script cache
     load_lua_script(topology_redis)
+    threading.Thread(target=relay_receiver_loop, daemon=True).start()
 
-    # ---- Start the relay receiver in a background thread ----
-    # This thread polls for /tmp/relay_complete (inbound checkpoint arrival)
-    recv_thread = threading.Thread(target=relay_receiver_loop, daemon=True)
-    recv_thread.start()
-
-    # ---- Connect to Ground Redis (for our own telemetry subscription) ----
     last_pushed = {"temp": -999, "battery": -999, "last_time": 0}
-    local_state = {}    # Most recent telemetry for this node
-    migration_lock = threading.Lock()   # Prevent concurrent migration attempts
+    migration_lock = threading.Lock()
+
+    last_mig_sml = 0
+    last_mig_master = 0
+    COOLDOWN_SEC = 15.0
 
     channel = f"telemetry/{NODE_NAME}"
     print(f"📻 AGENT: Subscribing to {channel}...", flush=True)
 
     while True:
         try:
-            ground_redis = redis.Redis(
-                host=GROUND_REDIS_HOST,
-                port=6379,
-                decode_responses=True,
-                socket_connect_timeout=3
-            )
+            ground_redis = redis.Redis(host=GROUND_REDIS_HOST, port=6379, decode_responses=True, socket_connect_timeout=3)
             ground_redis.ping()
             pubsub = ground_redis.pubsub()
             pubsub.subscribe(channel)
             print("✅ AGENT: Connected to Ground Redis. Listening for telemetry...", flush=True)
 
-            # Heartbeat timer for last telemetry check
             for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-
-                # Parse the latest telemetry packet from the Digital Twin
+                if message["type"] != "message": continue
                 local_state = json.loads(message["data"])
 
-                # ---- Push delta-encoded update to Floating Master ----
-                last_pushed = push_telemetry_to_floating_master(
-                    topology_redis, local_state, last_pushed
-                )
+                # Push telemetry to Master
+                last_pushed = push_telemetry_to_floating_master(topology_redis, local_state, last_pushed)
 
-                # ---- GATE 0: Check Local Workloads ----
-                has_sml, has_master = _get_local_workloads()
-                if not has_sml and not has_master:
-                    continue
+                # ---- GATE 0: Telemetry as the Source of Truth ----
+                # We trust the simulation environment's flags completely.
+                has_sml = local_state.get("is_working", False)
+                has_master = local_state.get("has_master", False)
 
-                # Prevent starting two migrations simultaneously
-                if migration_lock.locked():
-                    continue  # Migration already in progress
+                if not has_sml and not has_master: continue
+                if migration_lock.locked(): continue
 
                 # ---- TRIGGER A: Thermal Self-Preservation ----
                 twin = VirtualSatellite(local_state, has_sml, has_master)
                 is_safe, reason = twin.predict_future(30)
 
                 if not is_safe:
-                    # NEW: Verify Ownership before panicking! (Fixes Phantom Limb bug)
-                    pod_check = subprocess.run(
-                        f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[*].metadata.name}}'",
-                        shell=True, capture_output=True, text=True
-                    )
-
-                    if not pod_check.stdout.strip() and has_sml:
-                        # The telemetry hasn't updated yet, but the pod has already left. Ignore the alert.
-                        continue
-
                     print(f"🌡️  TRIGGER A FIRED: {reason}", flush=True)
-                    if has_sml:
-                        # Run migration in background thread so listener keeps ticking
-                        threading.Thread(
-                            target=_run_migration_with_lock,
-                            args=(topology_redis, "thermal", migration_lock),
-                            daemon=True
-                        ).start()
-                    elif has_master:
-                        print("🚨 MASTER OVERHEATING: Topology Master thermal migration sequence initiated!", flush=True)
-                    continue   # Skip Trigger B check this cycle
 
-                # ---- TRIGGER B: Lateral Fire Tracking (ONLY for Payload) ----
-                if has_sml:
-                    # Query the Guardian for the worker's latest Center of Mass
+                    # Enforce Cooldowns to prevent Oracle Race Condition
+                    if has_sml and (time.time() - last_mig_sml > COOLDOWN_SEC):
+                        last_mig_sml = time.time()
+                        threading.Thread(target=_run_migration_with_lock,
+                                         args=(topology_redis, "thermal", migration_lock), daemon=True).start()
+
+                    # Changed from 'elif' to 'if' so it creates a sequential queue
+                    if has_master and (time.time() - last_mig_master > COOLDOWN_SEC):
+                        last_mig_master = time.time()
+                        threading.Thread(target=_run_master_migration_with_lock,
+                                         args=(topology_redis, "thermal", migration_lock), daemon=True).start()
+
+                    continue
+
+                    # ---- TRIGGER B: Lateral Fire Tracking ----
+                if has_sml and (time.time() - last_mig_sml > COOLDOWN_SEC):
                     try:
                         resp = requests.get(f"{GUARDIAN_URL}/state", timeout=1)
                         if resp.status_code == 200:
-                            worker_state = resp.json()
-                            com = worker_state.get("center_of_mass", {})
-                            com_x = com.get("x", GRID_W / 2)  # Default to centre
-
-                            # Check if the fire has drifted to the edge of the swath
-                            lateral_edge = (
-                                com_x < LATERAL_THRESHOLD or
-                                com_x > (GRID_W - LATERAL_THRESHOLD)
-                            )
-                            if lateral_edge:
-                                # NEW: Verify Ownership before panicking! (Fixes Phantom Limb bug)
-                                pod_check = subprocess.run(
-                                    f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[*].metadata.name}}'",
-                                    shell=True, capture_output=True, text=True
-                                )
-
-                                if not pod_check.stdout.strip():
-                                    continue
-
-                                print(
-                                    f"🔥 TRIGGER B FIRED: CoM_x={com_x:.1f} "
-                                    f"(threshold={LATERAL_THRESHOLD}px from edge)",
-                                    flush=True
-                                )
-                                threading.Thread(
-                                    target=_run_migration_with_lock,
-                                    args=(topology_redis, "lateral", migration_lock),
-                                    daemon=True
-                                ).start()
+                            com_x = resp.json().get("center_of_mass", {}).get("x", GRID_W / 2)
+                            if (com_x < LATERAL_THRESHOLD or com_x > (GRID_W - LATERAL_THRESHOLD)):
+                                print(f"🔥 TRIGGER B FIRED: CoM_x={com_x:.1f}", flush=True)
+                                last_mig_sml = time.time()
+                                threading.Thread(target=_run_migration_with_lock,
+                                                 args=(topology_redis, "lateral", migration_lock), daemon=True).start()
                     except requests.exceptions.RequestException:
-                        pass  # Guardian temporarily unavailable — safe to skip this tick
+                        pass
 
         except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
-            print(f"⚠️  AGENT: Ground Redis connection lost. Retrying in 3s...", flush=True)
             time.sleep(3)
-        except Exception as e:
-            print(f"❌ AGENT: Unexpected listener error: {e}", flush=True)
+        except Exception:
             time.sleep(3)
-
 
 def _run_migration_with_lock(topology_redis, migration_type, lock):
-    """
-    Wrapper that acquires the migration lock before running the full migration
-    sequence, then releases it when done. Prevents overlapping migrations.
-    """
-    acquired = lock.acquire(blocking=False)  # Non-blocking: skip if already locked
-    if not acquired:
-        return
-    try:
-        trigger_local_migration(topology_redis, migration_type)
-    finally:
-        lock.release()
+    acquired = lock.acquire(blocking=False)
+    if not acquired: return
+    try: trigger_local_migration(topology_redis, migration_type)
+    finally: lock.release()
 
-
-# =============================================================================
-# ENTRY POINT
-# =============================================================================
+def _run_master_migration_with_lock(topology_redis, migration_type, lock):
+    acquired = lock.acquire(blocking=False)
+    if not acquired: return
+    try: trigger_master_migration(topology_redis, migration_type)
+    finally: lock.release()
 
 if __name__ == "__main__":
     main()

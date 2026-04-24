@@ -51,7 +51,8 @@ spec:
         type: ground-station
       containers:
         - name: redis
-          image: docker.io/library/redis:alpine
+          # FIX: Pinned to 6.2 to disable io_uring and ensure CRIU compatibility
+          image: docker.io/library/redis:6.2-alpine
           ports:
             - containerPort: 6379
           # Disable ALL persistence (§1.1): pure RAM broker, no fsync blocking

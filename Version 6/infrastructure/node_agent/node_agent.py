@@ -81,7 +81,9 @@ TEMP_SPACE     = -270.0
 THERMAL_MASS   = 80.0
 HEATING_SUN    = 100.0
 HEATING_CPU_IDLE = 10.0
-HEATING_CPU_LOAD = 80.0
+# --- DUAL WORKLOAD THERMAL CONSTANTS ---
+HEATING_SML_LOAD     = 85.0
+HEATING_MASTER_LOAD  = 35.0
 COOLING_K      = 4.0
 
 
@@ -92,15 +94,16 @@ class VirtualSatellite:
     into the future to detect dangerous temperature trends before they happen.
     """
 
-    def __init__(self, telemetry):
+    def __init__(self, telemetry, has_sml, has_master):
         """
         Build the twin from current live telemetry data.
         telemetry: dict from Ground Redis with keys: temp, battery, angle, eclipse
         """
-        self.temp      = telemetry.get("temp", 25.0)
-        self.battery   = telemetry.get("battery", 100.0)
-        self.angle     = telemetry.get("angle", 0.0)
-        self.is_working = telemetry.get("is_working", True)
+        self.temp       = telemetry.get("temp", 25.0)
+        self.battery    = telemetry.get("battery", 100.0)
+        self.angle      = telemetry.get("angle", 0.0)
+        self.has_sml    = has_sml
+        self.has_master = has_master
 
     def predict_future(self, horizon_seconds=30):
         """
@@ -118,7 +121,12 @@ class VirtualSatellite:
             in_eclipse = (ECLIPSE_START <= sim_angle <= ECLIPSE_END)
 
             # Compute heat input (CPU load + optional solar radiation)
-            p_in = HEATING_CPU_LOAD if self.is_working else HEATING_CPU_IDLE
+            p_in = HEATING_CPU_IDLE
+            if self.has_sml:
+                p_in += HEATING_SML_LOAD
+            if self.has_master:
+                p_in += HEATING_MASTER_LOAD
+
             if not in_eclipse:
                 p_in += HEATING_SUN
 
@@ -138,6 +146,23 @@ class VirtualSatellite:
 
         # Satellite will remain cool throughout the forecast horizon
         return True, "NOMINAL"
+
+
+def _get_local_workloads():
+    """
+    Queries the local container runtime (CRI-O) to independently verify exactly
+    which workloads are currently running on this physical node.
+    """
+    try:
+        crio_resp = subprocess.check_output(
+            ["curl", "-s", "--unix-socket", "/run/crio/crio.sock", "http://localhost/containers/json"]
+        )
+        has_sml = b'payload-phoenix' in crio_resp
+        has_master = b'topology-redis' in crio_resp
+        return has_sml, has_master
+    except Exception:
+        # Fallback if socket is unavailable
+        return False, False
 
 
 # =============================================================================
@@ -667,9 +692,9 @@ def main():
                     topology_redis, local_state, last_pushed
                 )
 
-                # ---- GATE 0: Am I hosting the payload? ----
-                # If no pod is running here, nothing to migrate
-                if not local_state.get("is_working", False):
+                # ---- GATE 0: Check Local Workloads ----
+                has_sml, has_master = _get_local_workloads()
+                if not has_sml and not has_master:
                     continue
 
                 # Prevent starting two migrations simultaneously
@@ -677,7 +702,7 @@ def main():
                     continue  # Migration already in progress
 
                 # ---- TRIGGER A: Thermal Self-Preservation ----
-                twin = VirtualSatellite(local_state)
+                twin = VirtualSatellite(local_state, has_sml, has_master)
                 is_safe, reason = twin.predict_future(30)
 
                 if not is_safe:
@@ -687,55 +712,59 @@ def main():
                         shell=True, capture_output=True, text=True
                     )
 
-                    if not pod_check.stdout.strip():
+                    if not pod_check.stdout.strip() and has_sml:
                         # The telemetry hasn't updated yet, but the pod has already left. Ignore the alert.
                         continue
 
                     print(f"🌡️  TRIGGER A FIRED: {reason}", flush=True)
-                    # Run migration in background thread so listener keeps ticking
-                    threading.Thread(
-                        target=_run_migration_with_lock,
-                        args=(topology_redis, "thermal", migration_lock),
-                        daemon=True
-                    ).start()
+                    if has_sml:
+                        # Run migration in background thread so listener keeps ticking
+                        threading.Thread(
+                            target=_run_migration_with_lock,
+                            args=(topology_redis, "thermal", migration_lock),
+                            daemon=True
+                        ).start()
+                    elif has_master:
+                        print("🚨 MASTER OVERHEATING: Topology Master thermal migration sequence initiated!", flush=True)
                     continue   # Skip Trigger B check this cycle
 
-                # ---- TRIGGER B: Lateral Fire Tracking ----
-                # Query the Guardian for the worker's latest Center of Mass
-                try:
-                    resp = requests.get(f"{GUARDIAN_URL}/state", timeout=1)
-                    if resp.status_code == 200:
-                        worker_state = resp.json()
-                        com = worker_state.get("center_of_mass", {})
-                        com_x = com.get("x", GRID_W / 2)  # Default to centre
+                # ---- TRIGGER B: Lateral Fire Tracking (ONLY for Payload) ----
+                if has_sml:
+                    # Query the Guardian for the worker's latest Center of Mass
+                    try:
+                        resp = requests.get(f"{GUARDIAN_URL}/state", timeout=1)
+                        if resp.status_code == 200:
+                            worker_state = resp.json()
+                            com = worker_state.get("center_of_mass", {})
+                            com_x = com.get("x", GRID_W / 2)  # Default to centre
 
-                        # Check if the fire has drifted to the edge of the swath
-                        lateral_edge = (
-                            com_x < LATERAL_THRESHOLD or
-                            com_x > (GRID_W - LATERAL_THRESHOLD)
-                        )
-                        if lateral_edge:
-                            # NEW: Verify Ownership before panicking! (Fixes Phantom Limb bug)
-                            pod_check = subprocess.run(
-                                f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[*].metadata.name}}'",
-                                shell=True, capture_output=True, text=True
+                            # Check if the fire has drifted to the edge of the swath
+                            lateral_edge = (
+                                com_x < LATERAL_THRESHOLD or
+                                com_x > (GRID_W - LATERAL_THRESHOLD)
                             )
+                            if lateral_edge:
+                                # NEW: Verify Ownership before panicking! (Fixes Phantom Limb bug)
+                                pod_check = subprocess.run(
+                                    f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[*].metadata.name}}'",
+                                    shell=True, capture_output=True, text=True
+                                )
 
-                            if not pod_check.stdout.strip():
-                                continue
+                                if not pod_check.stdout.strip():
+                                    continue
 
-                            print(
-                                f"🔥 TRIGGER B FIRED: CoM_x={com_x:.1f} "
-                                f"(threshold={LATERAL_THRESHOLD}px from edge)",
-                                flush=True
-                            )
-                            threading.Thread(
-                                target=_run_migration_with_lock,
-                                args=(topology_redis, "lateral", migration_lock),
-                                daemon=True
-                            ).start()
-                except requests.exceptions.RequestException:
-                    pass  # Guardian temporarily unavailable — safe to skip this tick
+                                print(
+                                    f"🔥 TRIGGER B FIRED: CoM_x={com_x:.1f} "
+                                    f"(threshold={LATERAL_THRESHOLD}px from edge)",
+                                    flush=True
+                                )
+                                threading.Thread(
+                                    target=_run_migration_with_lock,
+                                    args=(topology_redis, "lateral", migration_lock),
+                                    daemon=True
+                                ).start()
+                    except requests.exceptions.RequestException:
+                        pass  # Guardian temporarily unavailable — safe to skip this tick
 
         except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
             print(f"⚠️  AGENT: Ground Redis connection lost. Retrying in 3s...", flush=True)

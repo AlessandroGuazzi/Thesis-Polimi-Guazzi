@@ -36,6 +36,22 @@ spec:
       nodeSelector:
         type: satellite
 
+      # === PHASE 1: QoS PREVENTION (SOFT ANTI-AFFINITY) ===
+      # Instructs K8s to avoid placing the heavy SML payload on the same
+      # physical node as the Floating Master, IF other nodes are available.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                      - key: app
+                        operator: In
+                        values:
+                          - topology-master
+                  topologyKey: kubernetes.io/hostname
+
       # === CRIU PERSISTENCE LAYER ===
       # Maps the physical directory where CRI-O stores checkpoint TARs.
       # The Node Agent reads the checkpoint path from the Kubelet API response.

@@ -580,22 +580,31 @@ def main():
                 is_safe, reason = twin.predict_future(30)
 
                 if not is_safe:
-                    print(f"🌡️  TRIGGER A FIRED: {reason}", flush=True)
+                    # SCENARIO 1: DOUBLE EVACUATION (Both Master and Payload are here)
+                    if has_sml and has_master:
+                        if (time.time() - last_mig_sml > COOLDOWN_SEC) and (
+                                time.time() - last_mig_master > COOLDOWN_SEC):
+                            print(f"🚨 TRIGGER A FIRED: {reason} (Double Evacuation Initiated)", flush=True)
+                            last_mig_sml = time.time()
+                            last_mig_master = time.time()
+                            threading.Thread(target=_run_predictive_double_evacuation,
+                                             args=(topology_redis, migration_lock), daemon=True).start()
 
-                    # Enforce Cooldowns to prevent Oracle Race Condition
-                    if has_sml and (time.time() - last_mig_sml > COOLDOWN_SEC):
+                    # SCENARIO 2: ONLY SML PAYLOAD IS HERE
+                    elif has_sml and (time.time() - last_mig_sml > COOLDOWN_SEC):
+                        print(f"🔥 TRIGGER A FIRED: {reason} (Payload Evacuation)", flush=True)
                         last_mig_sml = time.time()
                         threading.Thread(target=_run_migration_with_lock,
                                          args=(topology_redis, "thermal", migration_lock), daemon=True).start()
 
-                    # Changed from 'elif' to 'if' so it creates a sequential queue
-                    if has_master and (time.time() - last_mig_master > COOLDOWN_SEC):
+                    # SCENARIO 3: ONLY FLOATING MASTER IS HERE
+                    elif has_master and (time.time() - last_mig_master > COOLDOWN_SEC):
+                        print(f"🧠 TRIGGER A FIRED: {reason} (Master Evacuation)", flush=True)
                         last_mig_master = time.time()
                         threading.Thread(target=_run_master_migration_with_lock,
                                          args=(topology_redis, "thermal", migration_lock), daemon=True).start()
 
                     continue
-
                     # ---- TRIGGER B: Lateral Fire Tracking ----
                 if has_sml and (time.time() - last_mig_sml > COOLDOWN_SEC):
                     try:
@@ -626,6 +635,72 @@ def _run_master_migration_with_lock(topology_redis, migration_type, lock):
     if not acquired: return
     try: trigger_master_migration(topology_redis, migration_type)
     finally: lock.release()
+
+
+def _run_predictive_double_evacuation(topology_redis, lock):
+    """
+    Executes a deterministic, SML-First double evacuation.
+    Relies on active readiness probing rather than brittle time.sleep().
+    """
+    acquired = lock.acquire(blocking=False)
+    if not acquired:
+        return  # Migration already in progress
+
+    try:
+        print("🚨 CRITICAL: DOUBLE EVACUATION TRIGGERED. Initiating SML-First Sequence.", flush=True)
+
+        # STEP 1: Route and Migrate the Data Plane (SML Payload)
+        # The Floating Master is still safely running on this node to provide the route.
+        trigger_local_migration(topology_redis, "thermal")
+
+        print("🚨 CRITICAL: Started local migration, now waiting for arriving.", flush=True)
+
+        # STEP 2: Deterministic Block
+        # Halt this thread until the SML is mathematically proven to be alive on the new node.
+        wait_for_sml_readiness()
+
+        print("🚨 CRITICAL: Arrived now master migration.", flush=True)
+
+        # STEP 3: Route and Migrate the Control Plane (Floating Master)
+        # Now that the SML is safe, the Master asks for its own route and leaves.
+        trigger_master_migration(topology_redis, "thermal")
+
+        # STEP 4: Deterministic Block
+        wait_for_master_readiness()
+
+        print("🎉 CRITICAL: Double Evacuation complete. Both workloads survived.", flush=True)
+
+    finally:
+        lock.release()
+
+def wait_for_sml_readiness():
+    """Blocks until the SML Payload Guardian sidecar is actively accepting traffic."""
+    print("⏳ AGENT: Waiting for SML Payload to rehydrate and route...", flush=True)
+    while True:
+        try:
+            # FIX: Ping the root HTML dashboard instead of the POST-only /state endpoint.
+            # Using the shortened intra-cluster DNS name.
+            res = requests.get("http://space-dashboard-svc/", timeout=1)
+            if res.status_code == 200:
+                print("✅ AGENT: SML Payload successfully landed and is Ready!", flush=True)
+                return
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(0.5)  # Rapid 500ms polling
+
+def wait_for_master_readiness():
+    """Blocks until the Floating Master Redis is actively accepting connections."""
+    print("⏳ AGENT: Waiting for Floating Master to rehydrate and route...", flush=True)
+    # Create a fresh, short-timeout Redis client specifically for the probe
+    probe_client = redis.Redis(host=TOPOLOGY_REDIS_HOST, port=TOPOLOGY_REDIS_PORT, socket_timeout=1)
+    while True:
+        try:
+            if probe_client.ping():
+                print("✅ AGENT: Floating Master successfully landed and is Ready!", flush=True)
+                return
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
+            pass
+        time.sleep(0.5)
 
 if __name__ == "__main__":
     main()

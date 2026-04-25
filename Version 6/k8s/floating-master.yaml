@@ -95,6 +95,13 @@ spec:
       - name: topology-redis
         # FIX: Pinned to 6.2 to disable io_uring and ensure CRIU compatibility
         image: docker.io/library/redis:6.2-alpine
+
+        # === INJECT THIS MISSING CRIU SECURITY CONTEXT ===
+        securityContext:
+          privileged: true
+          appArmorProfile:
+            type: Unconfined
+
         ports:
           - containerPort: 6379
             name: redis

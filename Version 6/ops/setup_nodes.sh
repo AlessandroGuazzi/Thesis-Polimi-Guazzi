@@ -90,16 +90,16 @@ CONF
         sysctl -w fs.inotify.max_user_instances=8192
         echo 'fs.inotify.max_user_watches=524288' >> /etc/sysctl.conf
 
-        # G. Runc Wrapper: Implements a binary wrapper to bypass TCP connection checks.
-        RUNC_PATH=\"/usr/libexec/crio/runc\"
-        if [ ! -f \"\${RUNC_PATH}.real\" ]; then
-            mv \"\$RUNC_PATH\" \"\${RUNC_PATH}.real\"
-            cat > \"\$RUNC_PATH\" <<'WRAPPER'
-#!/bin/bash
-exec /usr/libexec/crio/runc.real \"\$@\" --tcp-established
-WRAPPER
-            chmod +x \"\$RUNC_PATH\"
-        fi
+        # G. CRIU Native Configuration: Bypassing K8s Checkpoint API limitations
+        # Instead of a binary wrapper, we inject the flags directly into CRIU's
+        # default configuration path, forcing it to capture live TCP sockets.
+        mkdir -p /etc/criu
+        cat > /etc/criu/runc.conf <<'CRIUCONF'
+tcp-established
+tcp-close
+manage-cgroups=ignore
+CRIUCONF
+        chmod 644 /etc/criu/runc.conf
 EOF"
 
     # H. Mesh Network SSH Keys & Routing Table

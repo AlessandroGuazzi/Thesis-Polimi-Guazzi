@@ -121,6 +121,11 @@ for NODE in "${NODES[@]}"; do
     minikube ssh -n $NODE "sudo buildah pull docker-archive:/tmp/$TAR_AGENT"     > /dev/null 2>&1
     minikube ssh -n $NODE "sudo buildah pull docker-archive:/tmp/$TAR_TOPO_DASH" > /dev/null 2>&1
 
+    # FIX: Pre-cache the Floating Master base image via the CRI-O daemon (crictl)
+    # so Kubelet recognizes the Image ID during CRIU restoration.
+    echo -e "      📥 Pre-caching Redis base image for CRIU restores..."
+    minikube ssh -n $NODE "sudo crictl pull docker.io/library/redis:6.2-alpine" > /dev/null 2>&1
+
     # Clean up transferred TARs to save node disk space
     minikube ssh -n $NODE "sudo rm -f /tmp/$TAR_GUARDIAN /tmp/$TAR_PAYLOAD /tmp/$TAR_AGENT /tmp/$TAR_TOPO_DASH"
 

@@ -489,12 +489,19 @@ def _rebuild_and_deploy(tar_path):
 
 def _rebuild_and_deploy_master(tar_path):
     print("🔨 AGENT [BUILDAH]: Reconstructing Topology Master...", flush=True)
+
+    # FIX: Generate a unique, time-stamped image tag for every migration
+    # This prevents Kubelet from using a stale cached image ID
+    mig_id = int(time.time())
+    new_image_tag = f"localhost/space-master:restored-{mig_id}"
+
     build_script = f"""
     buildah rm restoration-master 2>/dev/null || true
     buildah from --name restoration-master scratch
     buildah add restoration-master {tar_path} /
-    buildah config --annotation "io.kubernetes.cri-o.annotations.checkpoint.name=redis" restoration-master
-    buildah commit restoration-master localhost/space-master:restored
+    buildah config --annotation "io.kubernetes.cri-o.annotations.checkpoint.name=topology-redis" restoration-master
+    # Commit using the dynamic tag
+    buildah commit restoration-master {new_image_tag}
     buildah rm restoration-master
     """
     subprocess.run(build_script, shell=True, check=False)
@@ -503,8 +510,10 @@ def _rebuild_and_deploy_master(tar_path):
         "terminationGracePeriodSeconds": 0,
         "nodeSelector": {"type": "satellite", "kubernetes.io/hostname": NODE_NAME},
         "containers": [
-            {"name": "redis", "image": "localhost/space-master:restored", "imagePullPolicy": "Never"},
-            {"name": "topology-dashboard", "image": "localhost/space-topology-dashboard:latest", "imagePullPolicy": "Never"}
+            # Patch the deployment with the exact new dynamic tag
+            {"name": "topology-redis", "image": new_image_tag, "imagePullPolicy": "Never"},
+            {"name": "topology-dashboard", "image": "localhost/space-topology-dashboard:latest",
+             "imagePullPolicy": "Never"}
         ]
     }}}})
     subprocess.run("kubectl scale deployment topology-master --replicas=0", shell=True)

@@ -90,11 +90,32 @@ local function edge_weight(from_name, to_name)
     local w = snr_cost + battery_cost + heat_penalty
 
     -- Apply lateral routing bias: prefer different orbital planes for Trigger B migrations
-    if mig_type == "lateral" then
-        if planes[from_name] == planes[to_name] then
-            w = w * 1.5   -- Same plane → discourage (this is a "trailing" satellite)
-        else
-            w = w * 0.5   -- Different plane → strongly prefer (lateral neighbor)
+    -- Convert string planes ("A", "B", "C") to numerical indices (West to East)
+    local plane_idx = { ["A"] = 1, ["B"] = 2, ["C"] = 3 }
+
+    if mig_type == "lateral_east" or mig_type == "lateral_west" then
+        local p_from = plane_idx[planes[from_name]]
+        local p_to = plane_idx[planes[to_name]]
+
+        if p_from and p_to then
+            -- Calculate the directional jump (-1 means West, +1 means East)
+            local diff = p_to - p_from
+
+            -- Handle cyclic orbital wrap-around for a 3-plane constellation
+            -- e.g., jumping East from Plane C (3) to Plane A (1) gives -2. Wrap it to +1.
+            if diff == -2 then diff = 1 end
+            -- e.g., jumping West from Plane A (1) to Plane C (3) gives 2. Wrap it to -1.
+            if diff == 2 then diff = -1 end
+
+            -- Apply massive discount (0.1) ONLY for the mathematically correct direction
+            if mig_type == "lateral_east" and diff == 1 then
+                w = w * 0.1
+            elseif mig_type == "lateral_west" and diff == -1 then
+                w = w * 0.1
+            else
+                -- Heavily penalize jumping backward or staying in the same plane
+                w = w * 2.0
+            end
         end
     end
 
@@ -154,17 +175,37 @@ end
 
 -- -----------------------------------------------------------------------
 -- STEP 5: Reconstruct the shortest path from source to the best destination.
--- The best destination is the node with the lowest cost (excluding source).
+-- The selection logic depends entirely on the migration objective.
 -- -----------------------------------------------------------------------
 
--- Find the best reachable destination (lowest dist, excluding source and impassable nodes)
 local best_dest = nil
-local best_cost = INF
+local best_score = INF
 
 for _, name in ipairs(all_nodes) do
-    if name ~= source and dist[name] < best_cost then
-        best_cost = dist[name]
-        best_dest = name
+    -- Only evaluate nodes we can actually reach (dist < INF)
+    if name ~= source and dist[name] < INF then
+
+        local target_score
+
+        if mig_type == "thermal" then
+            -- THERMAL LOGIC: The primary goal is finding the absolute coldest node.
+            -- We use the target's physical temperature as the main score.
+            -- We add a tiny fraction of the path distance (dist * 0.1) as a penalty,
+            -- so if two nodes are equally cold, it prefers the one that requires fewer hops.
+            target_score = temps[name] + (dist[name] * 0.1)
+
+        else
+            -- LATERAL LOGIC: We want the closest node in the correct orbital direction.
+            -- Because we already applied a massive 0.1 discount to the correct
+            -- direction in Step 3, the accumulated 'dist' perfectly represents this.
+            target_score = dist[name]
+        end
+
+        -- Pick the node with the best overall score
+        if target_score < best_score then
+            best_score = target_score
+            best_dest = name
+        end
     end
 end
 
@@ -173,11 +214,11 @@ if not best_dest then
     return cjson.encode({ error = "NO_ROUTE", source = source })
 end
 
--- Walk back through the predecessor map to build the complete route
+-- Walk back through the predecessor map to build the complete multi-hop route
 local route = {}
 local current = best_dest
 while current and current ~= source do
-    table.insert(route, 1, current)  -- Prepend to get source→destination order
+    table.insert(route, 1, current)  -- Prepend to get source->destination order
     current = prev[current]
 end
 
@@ -188,5 +229,5 @@ end
 return cjson.encode({
     route = route,         -- e.g. ["minikube-m03", "minikube-m04"]
     type  = mig_type,      -- "thermal" or "lateral"
-    cost  = best_cost      -- Total path cost (useful for telemetry/logging)
+    cost  = dist[best_dest]      -- Total path cost (useful for telemetry/logging)
 })

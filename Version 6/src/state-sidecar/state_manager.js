@@ -19,6 +19,8 @@ const bodyParser = require('body-parser');
 const app  = express();
 const PORT = 80;
 
+let isFlushing = false;
+
 // Accept large JSON payloads because the fire mask is a 4096-element array
 // and the STM/LTM serialization during flush can be significantly larger
 app.use(bodyParser.json({ limit: '50mb' }));
@@ -50,6 +52,7 @@ let dirWatcher     = null;
 let fleetState  = {};   // Cache of satellite hardware telemetry for the dashboard
 let sseClients  = [];   // Connected web browser SSE streams
 let redisSubscriber = null;
+let payloadLastLandedTime = Date.now() / 1000;
 
 
 // ---------------------------------------------------------------------------
@@ -93,14 +96,33 @@ async function initRedisSub() {
 
 // The tinySML worker POSTs its current SAMKNN state here (periodic sync + flush)
 app.post('/state', (req, res) => {
-    // Reject writes during the CRIU freeze window — data would be lost anyway
-    if (flightMode) return res.status(503).json({ error: "MIGRATION_IN_PROGRESS" });
+    if (flightMode) {
+        console.log("⚠️ GUARDIAN: Rejecting /state POST — flightMode is ACTIVE.");
+        return res.status(503).json({ error: "MIGRATION_IN_PROGRESS" });
+    }
 
-    // Merge the incoming state with a timestamp (spread operator keeps all fields)
+    // Merge the incoming state
     guardianMemory = { ...req.body, last_contact: Date.now() };
 
-    // TODO Relay the new state to any open dashboard browser windows in real-time
-    //broadcastToClients();
+    const stmSize = guardianMemory.stm_size ?? 0;
+    const ltmSize = guardianMemory.ltm_size ?? 0;
+    const isFullFlush = req.body.is_full_flush === true;
+
+    // ----- THE DEMULTIPLEXING SYNCHRONIZATION GATE -----
+    const fs = require('fs');
+    if (fs.existsSync('/tmp/flush_state')) {
+        if (isFullFlush) {
+            console.log(`✅ GUARDIAN: Massive pre-freeze payload verified (STM: ${stmSize}). Signaling Agent.`);
+            try { fs.writeFileSync('/tmp/flush_complete', ''); } catch (e) {}
+        } else {
+            // Log the collision but DO NOT write flush_complete!
+            console.log("⏳ GUARDIAN: Received periodic lightweight sync. Ignoring. Awaiting massive flush payload...");
+        }
+    } else {
+        // Normal periodic logging when no migration is pending
+        console.log(`💾 GUARDIAN: Periodic Sync. STM: ${stmSize} | LTM: ${ltmSize}`);
+    }
+
     res.json({ status: "SAVED" });
 });
 
@@ -179,11 +201,22 @@ function startServer() {
 // Polls for '/tmp/landed' which the Node Agent writes after CRIU restore
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// LANDING RECOVERY WATCHER
+// Polls for '/tmp/landed' which the Node Agent writes after CRIU restore
+// ---------------------------------------------------------------------------
+
 setInterval(() => {
+    const fs = require('fs');
     if (flightMode && fs.existsSync('/tmp/landed')) {
-        console.log("🛬 LANDING CONFIRMED! Reanimating Guardian...");
+        console.log("✅ LANDING CONFIRMED! Reanimating Guardian...");
         try { fs.unlinkSync('/tmp/landed'); } catch (e) {}
+
         flightMode = false;
+        isFlushing = false;
+
+        // Reset the migration cooldown timer exactly when we wake up on the new node
+        payloadLastLandedTime = Date.now() / 1000;
 
         // Restart all subsystems in order after the CRIU restore
         startServer();
@@ -201,45 +234,23 @@ setInterval(() => {
 
 function setupWatcher() {
     /**
-     * Monitors /tmp for two trigger files:
-     *
-     * 1. /tmp/flush_state — written by the Node Agent to start the pre-freeze flush.
-     *    Flow: Node Agent writes flush_state →
-     *          Guardian calls POST localhost:9000/flush on the tinySML worker →
-     *          Worker serializes and POSTs its full SAMKNN state back →
-     *          Guardian writes /tmp/flush_complete →
-     *          Node Agent detects flush_complete and writes /tmp/prepare_jump
-     *
-     * 2. /tmp/prepare_jump — written by the Node Agent after flush_complete.
-     *    Triggers the graceful freeze: lock state, close sockets, disconnect Redis.
+     * Monitors /tmp for the CRIU preparation trigger.
+     * Note: The flush_state handshake is now securely handled by the setInterval
+     * loop to prevent asynchronous event-loop race conditions.
      */
 
     // Clean up any stale trigger files from a previous migration cycle
     const FILES_TO_CLEAN = ['/tmp/flush_state', '/tmp/flush_complete', '/tmp/prepare_jump'];
-    FILES_TO_CLEAN.forEach(f => { if (fs.existsSync(f)) try { fs.unlinkSync(f); } catch(e){} });
+    FILES_TO_CLEAN.forEach(f => {
+        if (fs.existsSync(f)) {
+            try { fs.unlinkSync(f); } catch(e){}
+        }
+    });
 
     try {
         dirWatcher = fs.watch('/tmp', async (eventType, filename) => {
-
             // ----------------------------------------------------------------
-            // TRIGGER 1: Pre-Freeze Flush
-            // ----------------------------------------------------------------
-            if (filename === 'flush_state' && fs.existsSync('/tmp/flush_state')) {
-                console.log("💾 GUARDIAN: flush_state detected — calling worker /flush...");
-                try { fs.unlinkSync('/tmp/flush_state'); } catch(e) {}
-
-                // Call the tinySML worker's flush endpoint (intra-Pod localhost)
-                // The worker will serialize its SAMKNN state and POST it back to /state
-                await callWorkerFlush();
-
-                // Signal the Node Agent that the flush is complete
-                // The Node Agent is polling for this file before writing prepare_jump
-                fs.writeFileSync('/tmp/flush_complete', '');
-                console.log("✅ GUARDIAN: flush_complete written. Node Agent may proceed.");
-            }
-
-            // ----------------------------------------------------------------
-            // TRIGGER 2: Graceful Freeze (CRIU Preparation)
+            // TRIGGER: Graceful Freeze (CRIU Preparation)
             // ----------------------------------------------------------------
             if (filename === 'prepare_jump' && !flightMode) {
                 console.log("🚨 GUARDIAN: prepare_jump detected — entering flight mode...");
@@ -254,15 +265,13 @@ function setupWatcher() {
                 // Graceful disconnect: give the OS 200ms to flush TCP buffers,
                 // then destroy all sockets and shut down cleanly before CRIU freezes
                 setTimeout(async () => {
-                    console.log("🔌 GUARDIAN: Disconnecting all systems for CRIU...");
+                    console.log("💤 GUARDIAN: Disconnecting all systems for CRIU...");
 
                     // Close all SSE browser streams gracefully
                     sseClients.forEach(c => c.end());
                     sseClients = [];
 
                     // Forcefully destroy remaining TCP sockets to avoid kernel state issues
-                    // (The runc --tcp-established wrapper allows CRIU to handle them,
-                    //  but destroying them first makes the checkpoint smaller and cleaner)
                     for (const socket of activeSockets) socket.destroy();
                     activeSockets.clear();
 
@@ -275,7 +284,7 @@ function setupWatcher() {
                         redisSubscriber = null;
                     }
 
-                    console.log("🔒 GUARDIAN: Ready for CRIU checkpoint freeze.");
+                    console.log("❄️ GUARDIAN: Ready for CRIU checkpoint freeze.");
                 }, 200);
             }
         });
@@ -291,37 +300,40 @@ function setupWatcher() {
 // ---------------------------------------------------------------------------
 
 function callWorkerFlush() {
-    /**
-     * Sends POST http://localhost:9000/flush to the tinySML worker.
-     * The worker responds only after it has serialized and POSTed its full state.
-     * We wrap the http.request in a Promise so we can await it cleanly.
-     */
-    return new Promise((resolve) => {
-        const options = {
-            hostname: 'localhost',
-            port:     9000,
-            path:     '/flush',
-            method:   'POST',
-            headers:  { 'Content-Length': 0 }
-        };
+    console.log("🚨 GUARDIAN: flush_state detected — calling worker /flush...");
 
-        const req = http.request(options, (res) => {
-            // Drain the response body (we don't need to read it)
-            res.on('data', () => {});
-            res.on('end', resolve);
+    const options = {
+        hostname: 'localhost',
+        port:     9000,
+        path:     '/flush',
+        method:   'POST',
+        headers:  { 'Content-Length': 0 }
+    };
+
+    const req = http.request(options, (res) => {
+        // We only care that the worker acknowledged the command.
+        // We DO NOT write flush_complete here.
+        res.on('data', () => {});
+        res.on('end', () => {
+             console.log("✅ GUARDIAN: Worker acknowledged flush command. Awaiting payload...");
         });
-
-        req.on('error', (e) => {
-            // Worker may be temporarily unavailable — log and continue
-            console.log(`⚠️  GUARDIAN: Worker flush request failed: ${e.message}`);
-            resolve();  // Resolve anyway so the migration can still proceed
-        });
-
-        // 5-second timeout: if the worker doesn't respond, proceed without it
-        req.setTimeout(5000, () => { req.destroy(); resolve(); });
-
-        req.end();
     });
+
+    req.on('error', (e) => {
+        console.log(`⚠️ GUARDIAN: Worker /flush trigger failed: ${e.message}`);
+        // Failsafe: If the worker is dead, we must release the Agent's lock
+        // to prevent the entire node from stalling during a thermal emergency.
+        require('fs').writeFileSync('/tmp/flush_complete', '');
+    });
+
+    // 25-second timeout to accommodate CPU-throttled serialization
+    req.setTimeout(25000, () => {
+        console.log(`⚠️ GUARDIAN: Worker /flush trigger timed out!`);
+        req.destroy();
+        require('fs').writeFileSync('/tmp/flush_complete', '');
+    });
+
+    req.end();
 }
 
 
@@ -336,5 +348,33 @@ setupWatcher();
 setInterval(() => {
     if (!flightMode) {
         broadcastToClients();
+
+        // ASYNC IPC: Dump the state for the Node Agent to read instantly
+        const agentState = {
+            center_of_mass: guardianMemory.center_of_mass || {x: 32, y: 32},
+            fire_pixel_count: guardianMemory.fire_pixel_count || 0,
+            last_migration_time: payloadLastLandedTime
+        };
+
+        // Write non-blockingly to the shared /tmp volume
+        const fs = require('fs');
+        fs.writeFile('/tmp/payload_state.json', JSON.stringify(agentState), (err) => {
+            // Silently ignore write collisions
+        });
+
+        // ---------------------------------------------------------
+        // NEW: THE SYNCHRONIZATION GATE (Handshake Trigger)
+        // ---------------------------------------------------------
+        if (fs.existsSync('/tmp/flush_state') && !isFlushing) {
+            console.log("🚨 GUARDIAN: Node Agent requested pre-freeze flush.");
+            isFlushing = true; // Lock the trigger to prevent spamming the worker
+            callWorkerFlush();
+        }
+
+        // Release the lock automatically when the Agent deletes the trigger file
+        // (which happens right after the Guardian writes flush_complete)
+        if (!fs.existsSync('/tmp/flush_state')) {
+            isFlushing = false;
+        }
     }
-}, 100);
+}, 500);

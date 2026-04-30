@@ -47,7 +47,7 @@ DELTA_TEMP    = 1.0   # Degrees Celsius
 DELTA_BATTERY = 5.0   # Percentage points
 
 # How long (seconds) to wait for the Guardian's flush_complete signal
-FLUSH_TIMEOUT_SECONDS = 10.0
+FLUSH_TIMEOUT_SECONDS = 25.0
 
 # Heartbeat: push telemetry to Floating Master every N seconds regardless of delta
 HEARTBEAT_INTERVAL = 10.0
@@ -70,8 +70,8 @@ THERMAL_MASS   = 80.0
 HEATING_SUN    = 100.0
 HEATING_CPU_IDLE = 10.0
 # --- DUAL WORKLOAD THERMAL CONSTANTS ---
-HEATING_SML_LOAD     = 10.0
-HEATING_MASTER_LOAD  = 85.0
+HEATING_SML_LOAD     = 85.0
+HEATING_MASTER_LOAD  = 10.0
 COOLING_K      = 4.0
 
 
@@ -123,10 +123,6 @@ class VirtualSatellite:
 
             # Apply Newton's law of cooling
             sim_temp += (p_in - p_out) / THERMAL_MASS
-
-            # Early exit: if we already exceed fuse temperature, no need to simulate further
-            if sim_temp >= T_FUSE:
-                return False, f"THERMAL_FUSE: predicted {sim_temp:.1f}°C in {_+1}s"
 
             # Moderate early warning: exceeds safe limit but not yet critical
             if sim_temp >= T_SAFE:
@@ -267,9 +263,9 @@ def _update_adjacency(topology_redis, telemetry):
     # Static ISL topology for the 3-satellite Minikube constellation
     # In a real deployment this would be computed from TLE ephemeris data
     static_adjacency = {
-        "minikube-m02": ["minikube-m03", "minikube-m04"],
+        "minikube-m02": ["minikube-m03"],
         "minikube-m03": ["minikube-m02", "minikube-m04"],
-        "minikube-m04": ["minikube-m02", "minikube-m03"],
+        "minikube-m04": ["minikube-m03"],
     }
     neighbours = static_adjacency.get(NODE_NAME, [])
     if neighbours:
@@ -316,6 +312,12 @@ def trigger_local_migration(topology_redis, migration_type):
     print(f"📡 AGENT: Starting relay transfer to {route_result['route']}...", flush=True)
     relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
     subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
+
+    # Delete the local state file so we don't read "ghost" data after the payload leaves
+    try:
+        os.remove("/tmp/payload_state.json")
+    except Exception:
+        pass
 
 
 def trigger_master_migration(topology_redis, migration_type):
@@ -448,47 +450,112 @@ def relay_receiver_loop():
 
 
 def _rebuild_and_deploy(tar_path):
-    print("🔨 AGENT [BUILDAH]: Reconstructing SML Payload...", flush=True)
+    """
+    Converts the received TAR checkpoint into a running K8s Pod on this node.
+    Uses Buildah to layer the CRIU memory pages on top of a blank image,
+    then patches the Deployment to schedule on this node.
+    """
+    t_start = time.time()
+
+    # Sanitize the landing zone: Nuke any stale IPC files from previous runs
+    try:
+        os.remove("/tmp/payload_state.json")
+    except Exception:
+        pass
+
+    # FIX: Generate a unique, time-stamped image tag for the payload
+    # This prevents Kubelet from using a stale cached image ID on multi-bounce migrations
+    mig_id = int(time.time())
+    new_image_tag = f"localhost/space-sidecar:restored-{mig_id}"
+
+    # ---- STEP 1: Buildah — reconstruct the container image ----
+    print("🔨 AGENT [BUILDAH]: Reconstructing container from checkpoint...", flush=True)
     build_script = f"""
     buildah rm restoration-lab 2>/dev/null || true
     buildah from --name restoration-lab scratch
     buildah add restoration-lab {tar_path} /
     MNT=$(buildah mount restoration-lab) && rm -f $MNT/tmp/prepare_jump && buildah unmount restoration-lab
     buildah config --annotation "io.kubernetes.cri-o.annotations.checkpoint.name=sidecar-guardian" restoration-lab
-    buildah commit restoration-lab localhost/space-sidecar:restored
+    buildah commit restoration-lab {new_image_tag}
     buildah rm restoration-lab
     """
     subprocess.run(build_script, shell=True, check=False)
+    print(f"⏱️  AGENT: Buildah done in {time.time() - t_start:.2f}s", flush=True)
 
-    patch = json.dumps({"spec": {"template": {"spec": {
-        "terminationGracePeriodSeconds": 0,
-        "nodeSelector": {"type": "satellite", "kubernetes.io/hostname": NODE_NAME},
-        "containers": [
-            {"name": "sidecar-guardian", "image": "localhost/space-sidecar:restored", "imagePullPolicy": "Never"},
-            {"name": "payload-phoenix", "image": "localhost/space-workload:latest", "imagePullPolicy": "Never"}
-        ]
-    }}}})
+    # ---- STEP 2: K8s — reschedule the Pod on this node ----
+    t0 = time.time()
+    print("🗺️ AGENT [K8S]: Patching Deployment to this node...", flush=True)
+
+    patch = json.dumps({
+        "spec": {"template": {"spec": {
+            "terminationGracePeriodSeconds": 0,
+            "nodeSelector": {"type": "satellite", "kubernetes.io/hostname": NODE_NAME},
+            "containers": [
+                {
+                    "name": "sidecar-guardian",
+                    "image": new_image_tag,  # Use the new dynamic tag here
+                    "imagePullPolicy": "Never"
+                },
+                {
+                    "name": "payload-phoenix",
+                    "image": "localhost/space-workload:latest",
+                    "imagePullPolicy": "Never"
+                }
+            ]
+        }}}
+    })
+
     subprocess.run("kubectl scale deployment space-mission --replicas=0", shell=True)
-    subprocess.run("kubectl delete pod -l app=space-mission --force --grace-period=0", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    subprocess.run("kubectl delete pod -l app=space-mission --force --grace-period=0",
+                   shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     subprocess.run(f"kubectl patch deployment space-mission --type=strategic -p '{patch}'", shell=True)
     subprocess.run("kubectl scale deployment space-mission --replicas=1", shell=True)
+    print(f"⏱️  AGENT: K8s patch done in {time.time() - t0:.2f}s", flush=True)
 
+    # ---- STEP 3: Wait for pod to boot and signal it has landed ----
+    t0 = time.time()
     pod_name = None
     for _ in range(50):
         if not pod_name:
             try:
-                out = subprocess.check_output(f"kubectl get pod -l app=space-mission --field-selector spec.nodeName={NODE_NAME} -o jsonpath='{{.items[0].metadata.name}}'", shell=True, stderr=subprocess.DEVNULL)
-                if out.decode().strip(): pod_name = out.decode().strip()
-            except Exception: pass
+                out = subprocess.check_output(
+                    f"kubectl get pod -l app=space-mission"
+                    f" --field-selector spec.nodeName={NODE_NAME}"
+                    f" -o jsonpath='{{.items[0].metadata.name}}'",
+                    shell=True, stderr=subprocess.DEVNULL
+                )
+                found = out.decode().strip()
+                if found:
+                    pod_name = found
+            except Exception:
+                pass
 
         if pod_name:
-            res = subprocess.run(f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/landed", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            if res.returncode == 0: return
+            # Touch /tmp/landed inside the Guardian container — this exits flightMode
+            res = subprocess.run(
+                f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/landed",
+                shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
+            )
+            if res.returncode == 0:
+                print(f"✅ AGENT: Pod landed and Guardian awakened in {time.time() - t0:.2f}s", flush=True)
+                print(f"✅ AGENT: Total restore time: {time.time() - t_start:.2f}s", flush=True)
+                return
+
         time.sleep(0.1)
+
+    print(f"⚠️ AGENT: Pod did not awaken within timeout ({time.time() - t0:.2f}s)", flush=True)
 
 
 def _rebuild_and_deploy_master(tar_path):
     print("🔨 AGENT [BUILDAH]: Reconstructing Topology Master...", flush=True)
+
+    # Sanitize the landing zone: Nuke any stale IPC files from previous runs
+    # BEFORE the new pod boots. This guarantees the agent will wait for the
+    # newly restored Guardian to write a fresh state with a fresh 30s cooldown.
+    try:
+        os.remove("/tmp/payload_state.json")
+    except Exception:
+        pass
 
     # FIX: Generate a unique, time-stamped image tag for every migration
     # This prevents Kubelet from using a stale cached image ID
@@ -527,12 +594,13 @@ def _rebuild_and_deploy_master(tar_path):
 # =============================================================================
 
 def main():
-    print(f"🛸 NODE AGENT V6 ONLINE — satellite: {NODE_NAME}", flush=True)
+    print(f"🚀 NODE AGENT V6 ONLINE — satellite: {NODE_NAME}", flush=True)
 
     topology_redis = None
     while not topology_redis:
         try:
-            r = redis.Redis(host=TOPOLOGY_REDIS_HOST, port=TOPOLOGY_REDIS_PORT, decode_responses=True, socket_connect_timeout=3)
+            r = redis.Redis(host=TOPOLOGY_REDIS_HOST, port=TOPOLOGY_REDIS_PORT, decode_responses=True,
+                            socket_connect_timeout=3)
             r.ping()
             topology_redis = r
             print("✅ AGENT: Connected to Floating Master Redis.", flush=True)
@@ -550,11 +618,12 @@ def main():
     COOLDOWN_SEC = 15.0
 
     channel = f"telemetry/{NODE_NAME}"
-    print(f"📻 AGENT: Subscribing to {channel}...", flush=True)
+    print(f"📡 AGENT: Subscribing to {channel}...", flush=True)
 
     while True:
         try:
-            ground_redis = redis.Redis(host=GROUND_REDIS_HOST, port=6379, decode_responses=True, socket_connect_timeout=3)
+            ground_redis = redis.Redis(host=GROUND_REDIS_HOST, port=6379, decode_responses=True,
+                                       socket_connect_timeout=3)
             ground_redis.ping()
             pubsub = ground_redis.pubsub()
             pubsub.subscribe(channel)
@@ -575,66 +644,134 @@ def main():
                 if not has_sml and not has_master: continue
                 if migration_lock.locked(): continue
 
-                # ---- TRIGGER A: Thermal Self-Preservation ----
-                twin = VirtualSatellite(local_state, has_sml, has_master)
-                is_safe, reason = twin.predict_future(30)
+                # ==============================================================
+                # TRIGGER A: Dual-Tier Thermal Self-Preservation
+                # ==============================================================
+                current_temp = local_state.get("temp", -999)
+                should_thermally_migrate = False
+                migration_reason = ""
 
-                if not is_safe:
-                    # SCENARIO 1: DOUBLE EVACUATION (Both Master and Payload are here)
+                # 1. THE REACTIVE FAILSAFE (Instant execution if already melting)
+                if current_temp >= T_FUSE:
+                    should_thermally_migrate = True
+                    migration_reason = f"CRITICAL FAILSAFE: Temp is {current_temp:.1f}°C (>= {T_FUSE}°C)"
+
+                # 2. THE PROACTIVE MPC (Predictive forecast for the next 30 seconds)
+                else:
+                    twin = VirtualSatellite(local_state, has_sml, has_master)
+                    is_safe, pred_reason = twin.predict_future(30)
+                    if not is_safe:
+                        should_thermally_migrate = True
+                        migration_reason = f"PROACTIVE MPC: {pred_reason}"
+
+                # ---- EXECUTE THERMAL MIGRATION SCENARIOS ----
+                if should_thermally_migrate:
+                    # SCENARIO 1: DOUBLE EVACUATION
                     if has_sml and has_master:
                         if (time.time() - last_mig_sml > COOLDOWN_SEC) and (
                                 time.time() - last_mig_master > COOLDOWN_SEC):
-                            print(f"🚨 TRIGGER A FIRED: {reason} (Double Evacuation Initiated)", flush=True)
-                            last_mig_sml = time.time()
-                            last_mig_master = time.time()
-                            threading.Thread(target=_run_predictive_double_evacuation,
-                                             args=(topology_redis, migration_lock), daemon=True).start()
+                            # Acquire lock synchronously BEFORE spawning thread to prevent race conditions
+                            if migration_lock.acquire(blocking=False):
+                                print(f"🔥 TRIGGER A FIRED: {migration_reason} (Double Evacuation Initiated)",
+                                      flush=True)
+                                last_mig_sml = time.time()
+                                last_mig_master = time.time()
+                                threading.Thread(target=_run_predictive_double_evacuation,
+                                                 args=(topology_redis, migration_lock), daemon=True).start()
 
                     # SCENARIO 2: ONLY SML PAYLOAD IS HERE
                     elif has_sml and (time.time() - last_mig_sml > COOLDOWN_SEC):
-                        print(f"🔥 TRIGGER A FIRED: {reason} (Payload Evacuation)", flush=True)
-                        last_mig_sml = time.time()
-                        threading.Thread(target=_run_migration_with_lock,
-                                         args=(topology_redis, "thermal", migration_lock), daemon=True).start()
+                        if migration_lock.acquire(blocking=False):
+                            print(f"🔥 TRIGGER A FIRED: {migration_reason} (Payload Evacuation)", flush=True)
+                            last_mig_sml = time.time()
+                            threading.Thread(target=_run_migration, args=(topology_redis, "thermal", migration_lock),
+                                             daemon=True).start()
 
                     # SCENARIO 3: ONLY FLOATING MASTER IS HERE
                     elif has_master and (time.time() - last_mig_master > COOLDOWN_SEC):
-                        print(f"🧠 TRIGGER A FIRED: {reason} (Master Evacuation)", flush=True)
-                        last_mig_master = time.time()
-                        threading.Thread(target=_run_master_migration_with_lock,
-                                         args=(topology_redis, "thermal", migration_lock), daemon=True).start()
+                        if migration_lock.acquire(blocking=False):
+                            print(f"🔥 TRIGGER A FIRED: {migration_reason} (Master Evacuation)", flush=True)
+                            last_mig_master = time.time()
+                            threading.Thread(target=_run_master_migration,
+                                             args=(topology_redis, "thermal", migration_lock), daemon=True).start()
 
+                    # Skip Trigger B evaluation if we are already evacuating due to heat
                     continue
-                    # ---- TRIGGER B: Lateral Fire Tracking ----
-                if has_sml and (time.time() - last_mig_sml > COOLDOWN_SEC):
+
+                # ==============================================================
+                # TRIGGER B: Lateral Fire Tracking (Async IPC)
+                # ==============================================================
+                if has_sml:
                     try:
-                        resp = requests.get(f"{GUARDIAN_URL}/state", timeout=1)
-                        if resp.status_code == 200:
-                            com_x = resp.json().get("center_of_mass", {}).get("x", GRID_W / 2)
-                            if (com_x < LATERAL_THRESHOLD or com_x > (GRID_W - LATERAL_THRESHOLD)):
-                                print(f"🔥 TRIGGER B FIRED: CoM_x={com_x:.1f}", flush=True)
-                                last_mig_sml = time.time()
-                                threading.Thread(target=_run_migration_with_lock,
-                                                 args=(topology_redis, "lateral", migration_lock), daemon=True).start()
-                    except requests.exceptions.RequestException:
+                        if os.path.exists("/tmp/payload_state.json"):
+                            with open("/tmp/payload_state.json", "r") as f:
+                                state_data = json.load(f)
+
+                            com_x = state_data.get("center_of_mass", {}).get("x", GRID_W / 2)
+                            fire_pixel_count = state_data.get("fire_pixel_count", 0)
+                            payload_last_migrated = state_data.get("last_migration_time", 0)
+
+                            # THE ZERO-STATE GATE: If there is no fire, there is nothing to track laterally!
+                            if fire_pixel_count == 0:
+                                pass  # Silently ignore empty grids
+
+                            # SPATIAL COOLDOWN: 30 seconds since the payload itself arrived
+                            elif (time.time() - payload_last_migrated) > 30.0:
+
+                                # Extract our physical location in the constellation
+                                current_plane = local_state.get("orbit_plane", "B")
+
+                                # ESCAPING WEST (Left Edge)
+                                if com_x < LATERAL_THRESHOLD:
+                                    # Boundary Check: Plane A is the absolute Western limit
+                                    if current_plane == "A":
+                                        print(f"⚠️ BOUNDARY LIMIT: Fire escaping WEST, but Plane A is the edge of coverage. Target lost.", flush=True)
+                                    elif migration_lock.acquire(blocking=False):
+                                        print(f"🎯 TRIGGER B: Fire escaping WEST (CoM_x={com_x:.1f})", flush=True)
+                                        threading.Thread(target=_run_migration,
+                                                         args=(topology_redis, "lateral_west", migration_lock),
+                                                         daemon=True).start()
+
+                                # ESCAPING EAST (Right Edge)
+                                elif com_x > (GRID_W - LATERAL_THRESHOLD):
+                                    # Boundary Check: Plane C is the absolute Eastern limit
+                                    if current_plane == "C":
+                                        print(f"⚠️ BOUNDARY LIMIT: Fire escaping EAST, but Plane C is the edge of coverage. Target lost.", flush=True)
+                                    elif migration_lock.acquire(blocking=False):
+                                        print(f"🎯 TRIGGER B: Fire escaping EAST (CoM_x={com_x:.1f})", flush=True)
+                                        threading.Thread(target=_run_migration,
+                                                        args=(topology_redis, "lateral_east", migration_lock),
+                                                        daemon=True).start()
+
+                    except (json.JSONDecodeError, IOError):
+                        # Silently pass if we read exactly as the file is being written
                         pass
 
         except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
             time.sleep(3)
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ AGENT LOOP EXCEPTION: {e}", flush=True)
             time.sleep(3)
 
-def _run_migration_with_lock(topology_redis, migration_type, lock):
-    acquired = lock.acquire(blocking=False)
-    if not acquired: return
-    try: trigger_local_migration(topology_redis, migration_type)
-    finally: lock.release()
 
-def _run_master_migration_with_lock(topology_redis, migration_type, lock):
-    acquired = lock.acquire(blocking=False)
-    if not acquired: return
-    try: trigger_master_migration(topology_redis, migration_type)
-    finally: lock.release()
+# =============================================================================
+# THREAD RUNNER HELPERS (Lock Management)
+# Note: The lock is now acquired in the main thread to prevent race conditions.
+# These functions simply execute the migration and ensure the lock is released.
+# =============================================================================
+
+def _run_migration(topology_redis, migration_type, lock):
+    try:
+        trigger_local_migration(topology_redis, migration_type)
+    finally:
+        lock.release()
+
+
+def _run_master_migration(topology_redis, migration_type, lock):
+    try:
+        trigger_master_migration(topology_redis, migration_type)
+    finally:
+        lock.release()
 
 
 def _run_predictive_double_evacuation(topology_redis, lock):
@@ -642,33 +779,23 @@ def _run_predictive_double_evacuation(topology_redis, lock):
     Executes a deterministic, SML-First double evacuation.
     Relies on active readiness probing rather than brittle time.sleep().
     """
-    acquired = lock.acquire(blocking=False)
-    if not acquired:
-        return  # Migration already in progress
-
     try:
         print("🚨 CRITICAL: DOUBLE EVACUATION TRIGGERED. Initiating SML-First Sequence.", flush=True)
 
         # STEP 1: Route and Migrate the Data Plane (SML Payload)
-        # The Floating Master is still safely running on this node to provide the route.
         trigger_local_migration(topology_redis, "thermal")
-
         print("🚨 CRITICAL: Started local migration, now waiting for arriving.", flush=True)
 
         # STEP 2: Deterministic Block
-        # Halt this thread until the SML is mathematically proven to be alive on the new node.
         wait_for_sml_readiness()
-
-        print("🚨 CRITICAL: Arrived now master migration.", flush=True)
+        print("🚨 CRITICAL: Arrived. Now routing master migration.", flush=True)
 
         # STEP 3: Route and Migrate the Control Plane (Floating Master)
-        # Now that the SML is safe, the Master asks for its own route and leaves.
         trigger_master_migration(topology_redis, "thermal")
 
         # STEP 4: Deterministic Block
         wait_for_master_readiness()
-
-        print("🎉 CRITICAL: Double Evacuation complete. Both workloads survived.", flush=True)
+        print("✅ CRITICAL: Double Evacuation complete. Both workloads survived.", flush=True)
 
     finally:
         lock.release()

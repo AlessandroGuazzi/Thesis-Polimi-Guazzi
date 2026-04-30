@@ -25,8 +25,8 @@ HEATING_SUN = 100.0  # Heat gain from direct solar radiation
 HEATING_CPU_IDLE = 10.0  # Heat gain from hardware in standby
 
 # --- DUAL WORKLOAD THERMAL CONSTANTS ---
-HEATING_SML_LOAD = 10.0  # Massive matrix multiplications
-HEATING_MASTER_LOAD = 85.0  # Graph database & Lua script execution
+HEATING_SML_LOAD = 85.0  # Massive matrix multiplications
+HEATING_MASTER_LOAD = 10.0  # Graph database & Lua script execution
 
 COOLING_K = 4.0  # Radiative cooling efficiency constant
 
@@ -225,8 +225,8 @@ def main():
     fleet = [
         Satellite("minikube", "ground"),
         Satellite("minikube-m02", "satellite", start_offset_deg=0, orbit_plane="A"),
-        Satellite("minikube-m03", "satellite", start_offset_deg=120, orbit_plane="B"),
-        Satellite("minikube-m04", "satellite", start_offset_deg=240, orbit_plane="C"),
+        Satellite("minikube-m03", "satellite", start_offset_deg=45, orbit_plane="B"),
+        Satellite("minikube-m04", "satellite", start_offset_deg=90, orbit_plane="C"),
     ]
 
     start_time = time.time()

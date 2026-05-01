@@ -51,7 +51,7 @@ echo -e "${BLUE}>>> Route: ${HOPS[*]}${NC}"
 # ---- Compute source SHA256 ----
 SOURCE_SHA=$(sha256sum "$CHECKPOINT_PATH" | cut -d' ' -f1)
 FILE_SIZE=$(du -h "$CHECKPOINT_PATH" | cut -f1)
-echo -e "${GREEN}[SRC] Checkpoint: $CHECKPOINT_PATH ($FILE_SIZE) SHA256: ${SOURCE_SHA:0:16}...${NC}"
+# echo -e "${GREEN}[SRC] Checkpoint: $CHECKPOINT_PATH ($FILE_SIZE) SHA256: ${SOURCE_SHA:0:16}...${NC}"
 
 t_start=$(date +%s%N)
 
@@ -90,7 +90,7 @@ for i in "${!HOPS[@]}"; do
     echo -e "  ⏱️  Transfer time: ${t_hop_ms}ms"
 
     # ---- SHA256 Integrity Verification ----
-    echo -e "  🔍 Verifying integrity on ${DEST_NODE}..."
+    # echo -e "  🔍 Verifying integrity on ${DEST_NODE}..."
     DEST_SHA=$(ssh -o StrictHostKeyChecking=no root@$DEST_IP "sha256sum /tmp/relay/checkpoint.tar" | awk '{print $1}')
 
     if [[ "$DEST_SHA" != "$SOURCE_SHA" ]]; then
@@ -100,7 +100,7 @@ for i in "${!HOPS[@]}"; do
         exit 2
     fi
 
-    echo -e "  ${GREEN}✅ SHA256 verified: ${DEST_SHA:0:16}...${NC}"
+    # echo -e "  ${GREEN}✅ SHA256 verified: ${DEST_SHA:0:16}...${NC}"
 
     # Clean up the staging file on the PREVIOUS intermediate node
     if [[ "$PREV_NODE" != "localhost" ]]; then
@@ -115,7 +115,7 @@ done
 FINAL_NODE="${HOPS[$((TOTAL_HOPS-1))]}"
 FINAL_IP="${NODE_IPS[$FINAL_NODE]}"
 echo ""
-echo -e "${GREEN}[FINAL] Promoting checkpoint on ${FINAL_NODE} (${FINAL_IP})...${NC}"
+# echo -e "${GREEN}[FINAL] Promoting checkpoint on ${FINAL_NODE} (${FINAL_IP})...${NC}"
 
 # Move from staging to the absolute, permanent restore path
 ssh -o StrictHostKeyChecking=no root@$FINAL_IP "mkdir -p /var/lib/space_cloud"
@@ -124,11 +124,11 @@ ssh -o StrictHostKeyChecking=no root@$FINAL_IP "mv /tmp/relay/checkpoint.tar /va
 # Compute total wall-clock transfer time
 t_end=$(date +%s%N)
 t_total_ms=$(( (t_end - t_start) / 1000000 ))
-echo -e "⏱️  Total relay time: ${t_total_ms}ms (${TOTAL_HOPS} hops)"
-echo -e "📊 Expected at 50 Mbps + 40ms latency: ~$((TOTAL_HOPS * 4000))ms per hop"
+# echo -e "⏱️  Total relay time: ${t_total_ms}ms (${TOTAL_HOPS} hops)"
+# echo -e "📊 Expected at 50 Mbps + 40ms latency: ~$((TOTAL_HOPS * 4000))ms per hop"
 
 # Write the Atomic Trigger File directly to the permanent mailbox
-echo -e "${GREEN}✅ Writing trigger on ${FINAL_NODE}...${NC}"
+# echo -e "${GREEN}✅ Writing trigger on ${FINAL_NODE}...${NC}"
 ssh -o StrictHostKeyChecking=no root@$FINAL_IP "touch /var/lib/space_cloud/relay_complete"
 
 echo -e "${BLUE}>>> RELAY COMPLETE ✓ Checkpoint delivered to ${FINAL_NODE} in ${t_total_ms}ms${NC}"

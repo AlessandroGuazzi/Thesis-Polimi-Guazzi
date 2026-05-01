@@ -25,15 +25,20 @@ HEATING_SUN = 100.0  # Heat gain from direct solar radiation
 HEATING_CPU_IDLE = 10.0  # Heat gain from hardware in standby
 
 # --- DUAL WORKLOAD THERMAL CONSTANTS ---
-HEATING_SML_LOAD = 85.0  # Massive matrix multiplications
+HEATING_SML_LOAD = 80.0  # Massive matrix multiplications
 HEATING_MASTER_LOAD = 10.0  # Graph database & Lua script execution
 
 COOLING_K = 4.0  # Radiative cooling efficiency constant
 
 BATTERY_CHARGE_RATE = 5.0  # Power gain per second from solar panels
-BATTERY_DRAIN_IDLE = 1.0  # Power consumption in standby
-BATTERY_DRAIN_SML = 1.0  # Heavy power draw
-BATTERY_DRAIN_MASTER = 10.0  # Moderate power draw
+BATTERY_DRAIN_IDLE_SUN = 1.0  # Power consumption in standby (sunlight)
+BATTERY_DRAIN_IDLE_ECLIPSE = 0.25  # Deep sleep hibernation in eclipse
+
+# Differentiated payload drain (Sun vs. Eclipse)
+BATTERY_DRAIN_SML_SUN = 3.0
+BATTERY_DRAIN_SML_ECLIPSE = 4.0    # Higher drain: requires active heaters in the dark
+BATTERY_DRAIN_MASTER_SUN = 1.0
+BATTERY_DRAIN_MASTER_ECLIPSE = 1.5 # Moderate heater overhead
 
 # Setup logging for simulation monitoring
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [SIM] %(message)s', datefmt='%H:%M:%S')
@@ -84,12 +89,30 @@ class Satellite:
         self.temp += (p_in - p_out) / THERMAL_MASS
 
         # 3. Energy Dynamics
-        charge = BATTERY_CHARGE_RATE if not self.in_eclipse else 0.0
-        drain = BATTERY_DRAIN_IDLE
-        if self.has_sml:
-            drain += BATTERY_DRAIN_SML
-        if self.has_master:
-            drain += BATTERY_DRAIN_MASTER
+        if self.in_eclipse:
+            charge = 0.0
+            if not self.has_sml and not self.has_master:
+                # Case 1: Eclipse WITHOUT Payload -> Deep Sleep
+                drain = BATTERY_DRAIN_IDLE_ECLIPSE
+            else:
+                # Case 2: Eclipse WITH Payload -> Base Power + Eclipse-Specific Payload Drain
+                drain = BATTERY_DRAIN_IDLE_SUN
+                if self.has_sml:
+                    drain += BATTERY_DRAIN_SML_ECLIPSE
+                if self.has_master:
+                    drain += BATTERY_DRAIN_MASTER_ECLIPSE
+        else:
+            charge = BATTERY_CHARGE_RATE
+            if not self.has_sml and not self.has_master:
+                # Case 3: Sun WITHOUT Payload -> Standard Idle
+                drain = BATTERY_DRAIN_IDLE_SUN
+            else:
+                # Case 4: Sun WITH Payload -> Base Power + Sun-Specific Payload Drain
+                drain = BATTERY_DRAIN_IDLE_SUN
+                if self.has_sml:
+                    drain += BATTERY_DRAIN_SML_SUN
+                if self.has_master:
+                    drain += BATTERY_DRAIN_MASTER_SUN
 
         self.battery += (charge - drain)
         self.battery = max(0.0, min(100.0, self.battery))

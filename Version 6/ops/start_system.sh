@@ -58,6 +58,10 @@ fi
 cleanup() {
     echo -e "\n${RED}🛑 ABORT: Shutting down local subsystems...${NC}"
     kill $(jobs -p) 2>/dev/null
+    kubectl delete deployment space-mission topology-master ground-redis --ignore-not-found=true
+    kubectl delete daemonset  space-node-agent --ignore-not-found=true
+    kubectl delete service    ground-redis topology-master topology-dashboard \
+                              space-dashboard-svc space-udp-uplink --ignore-not-found=true
     exit
 }
 trap cleanup SIGINT SIGTERM EXIT

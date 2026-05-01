@@ -15,6 +15,7 @@ local mig_type   = ARGV[1]   -- "thermal" → find coolest trailing satellite
                               -- "lateral" → prefer adjacent parallel orbital plane
 local T_safe     = tonumber(ARGV[2])
 local T_fuse     = tonumber(ARGV[3])
+local exclude_node = ARGV[4] or "" -- Parameter to split workloads during Double Evacuation
 
 -- -----------------------------------------------------------------------
 -- STEP 1: Load all node telemetry from the Floating Master's Redis Hashes.
@@ -174,34 +175,49 @@ for _ = 1, #all_nodes do
 end
 
 -- -----------------------------------------------------------------------
--- STEP 5: Reconstruct the shortest path from source to the best destination.
--- The selection logic depends entirely on the migration objective.
+-- STEP 5: Reconstruct the shortest path using Composite Scalarization.
+-- Multi-Objective Optimization (MOO) balances Thermal, Energy, and Path costs.
 -- -----------------------------------------------------------------------
 
 local best_dest = nil
 local best_score = INF
 
+-- Define dynamic weighting parameters (alpha, beta) based on the emergency trigger.
+-- We bias heavily toward solving the immediate crisis, but retain a secondary
+-- weight to prevent migrating into a different type of hardware failure.
+local w_temp, w_batt
+if mig_type == "thermal" then
+    w_temp, w_batt = 0.8, 0.2  -- Existential thermal threat: prioritize cold nodes
+elseif mig_type == "energy" then
+    w_temp, w_batt = 0.2, 0.8  -- Existential energy threat: prioritize charged nodes
+else
+    w_temp, w_batt = 0.5, 0.5  -- Lateral tracking: balance hardware evenly
+end
+
 for _, name in ipairs(all_nodes) do
     -- Only evaluate nodes we can actually reach (dist < INF)
-    if name ~= source and dist[name] < INF then
+    if name ~= source and name ~= exclude_node and dist[name] < INF then
 
         local target_score
 
-        if mig_type == "thermal" then
-            -- THERMAL LOGIC: The primary goal is finding the absolute coldest node.
-            -- We use the target's physical temperature as the main score.
-            -- We add a tiny fraction of the path distance (dist * 0.1) as a penalty,
-            -- so if two nodes are equally cold, it prefers the one that requires fewer hops.
-            target_score = temps[name] + (dist[name] * 0.1)
-
-        else
-            -- LATERAL LOGIC: We want the closest node in the correct orbital direction.
-            -- Because we already applied a massive 0.1 discount to the correct
-            -- direction in Step 3, the accumulated 'dist' perfectly represents this.
+        if mig_type == "lateral_east" or mig_type == "lateral_west" then
+            -- LATERAL LOGIC: Rely entirely on the directional path cost
+            -- computed in Step 3 (which applies the 0.1 directional discount).
             target_score = dist[name]
+        else
+            -- MULTI-OBJECTIVE SCALARIZATION (Thermal & Energy)
+            -- 1. Normalize Temperature: 0.0 (at T_safe) to 1.0 (at T_fuse)
+            local t_norm = math.max(0, (temps[name] - T_safe) / (T_fuse - T_safe))
+
+            -- 2. Normalize Battery: 0.0 (100% full) to 1.0 (0% dead)
+            local b_norm = 1.0 - (batts[name] / 100.0)
+
+            -- 3. Composite Score: S(v) = (α * C_T) + (β * C_B) + (γ * D)
+            -- We use dist[name] * 0.1 as the small path penalty (γ)
+            target_score = (w_temp * t_norm) + (w_batt * b_norm) + (dist[name] * 0.1)
         end
 
-        -- Pick the node with the best overall score
+        -- Pick the node with the lowest overall penalty score
         if target_score < best_score then
             best_score = target_score
             best_dest = name

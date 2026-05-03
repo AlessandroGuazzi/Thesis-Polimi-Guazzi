@@ -315,10 +315,14 @@ def _update_adjacency(topology_redis, telemetry):
     }
     neighbours = static_adjacency.get(NODE_NAME, [])
     if neighbours:
-        # Replace the whole adjacency set atomically
+        # FIX (Change 3.1): Replace DELETE+SADD with an atomic pipeline.
+        # Without this, the Dijkstra Lua script can observe zero neighbors for this
+        # node between the DELETE and SADD, causing a spurious NO_ROUTE error.
         adj_key = f"adj:{NODE_NAME}"
-        topology_redis.delete(adj_key)
-        topology_redis.sadd(adj_key, *neighbours)
+        pipe = topology_redis.pipeline()
+        pipe.delete(adj_key)
+        pipe.sadd(adj_key, *neighbours)
+        pipe.execute()
 
 
 # =============================================================================
@@ -569,10 +573,11 @@ def _rebuild_and_deploy(tar_path):
     subprocess.run("kubectl scale deployment space-mission --replicas=1", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     # print(f"⏱️  AGENT: K8s patch done in {time.time() - t0:.2f}s", flush=True)
 
-    # ---- STEP 3: Wait for pod to boot and signal it has landed ----
+    # ---- STEP 3: Wait for pod to boot, signal landing, then confirm readiness ----
     t0 = time.time()
     pod_name = None
-    for _ in range(50):
+    landed_signaled = False
+    for _ in range(120):  # 12-second maximum wait (120 × 100ms)
         if not pod_name:
             try:
                 out = subprocess.check_output(
@@ -587,20 +592,33 @@ def _rebuild_and_deploy(tar_path):
             except Exception:
                 pass
 
-        if pod_name:
-            # Touch /tmp/landed inside the Guardian container — this exits flightMode
+        if pod_name and not landed_signaled:
+            # Step 3a: Touch /tmp/landed — triggers the Guardian's setInterval to exit flightMode
             res = subprocess.run(
                 f"kubectl exec {pod_name} -c sidecar-guardian -- touch /tmp/landed",
                 shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
             )
             if res.returncode == 0:
-                # print(f"✅ AGENT: Pod landed and Guardian awakened in {time.time() - t0:.2f}s", flush=True)
-                print(f"✅ AGENT: Total restore time: {time.time() - t_start:.2f}s", flush=True)
+                landed_signaled = True
+
+        if landed_signaled:
+            # FIX (Change 2.1): Readiness Probe — confirm the Guardian has actually exited
+            # flightMode and restarted its HTTP server before declaring the landing complete.
+            # Previously we returned immediately after 'touch /tmp/landed', but the Guardian
+            # only processes that file up to 1s later via setInterval, creating a window
+            # where a new migration could fire against a still-frozen Guardian.
+            probe = subprocess.run(
+                f"kubectl exec {pod_name} -c sidecar-guardian -- "
+                f"wget -q -O /dev/null --timeout=1 http://localhost:80/state",
+                shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
+            )
+            if probe.returncode == 0:
+                print(f"\u2705 AGENT: Total restore time: {time.time() - t_start:.2f}s", flush=True)
                 return
 
         time.sleep(0.1)
 
-    print(f"⚠️ AGENT: Pod did not awaken within timeout ({time.time() - t0:.2f}s)", flush=True)
+    print(f"\u26a0\ufe0f AGENT: Pod did not awaken within timeout ({time.time() - t0:.2f}s)", flush=True)
 
 
 def _rebuild_and_deploy_master(tar_path):
@@ -700,7 +718,9 @@ def main():
                 has_master = local_state.get("has_master", False)
 
                 if not has_sml and not has_master: continue
-                if migration_lock.locked(): continue
+                # FIX (Change 2.2): Removed migration_lock.locked() advisory check.
+                # It was a non-atomic read — not a real guard. The acquire(blocking=False)
+                # calls downstream are the correct atomic gates.
 
                 # ==============================================================
                 # GLOBAL PAYLOAD COOLDOWN (The Ping-Pong Fix)
@@ -878,9 +898,12 @@ def _run_predictive_double_evacuation(topology_redis, routing_type, lock):
 def wait_for_sml_readiness():
     """Blocks until the SML Payload Guardian sidecar is actively accepting traffic."""
     print("⏳ AGENT: Waiting for SML Payload to rehydrate and route...", flush=True)
-    while True:
+    # FIX (Change 3.2): Bounded 60-second timeout prevents migration_lock deadlock
+    # if the destination pod enters CrashLoopBackOff.
+    deadline = time.time() + 60
+    while time.time() < deadline:
         try:
-            # FIX: Ping the root HTML dashboard instead of the POST-only /state endpoint.
+            # Ping the root HTML dashboard instead of the POST-only /state endpoint.
             # Using the shortened intra-cluster DNS name.
             res = requests.get("http://space-dashboard-svc/", timeout=1)
             if res.status_code == 200:
@@ -889,13 +912,17 @@ def wait_for_sml_readiness():
         except requests.exceptions.RequestException:
             pass
         time.sleep(0.5)  # Rapid 500ms polling
+    print("⚠️ AGENT: SML readiness timeout (60s). Proceeding to prevent deadlock.", flush=True)
 
 def wait_for_master_readiness():
     """Blocks until the Floating Master Redis is actively accepting connections."""
     print("⏳ AGENT: Waiting for Floating Master to rehydrate and route...", flush=True)
     # Create a fresh, short-timeout Redis client specifically for the probe
     probe_client = redis.Redis(host=TOPOLOGY_REDIS_HOST, port=TOPOLOGY_REDIS_PORT, socket_timeout=1)
-    while True:
+    # FIX (Change 3.2): Bounded 60-second timeout prevents migration_lock deadlock
+    # if the destination Redis pod enters CrashLoopBackOff.
+    deadline = time.time() + 60
+    while time.time() < deadline:
         try:
             if probe_client.ping():
                 print("✅ AGENT: Floating Master successfully landed and is Ready!", flush=True)
@@ -903,6 +930,7 @@ def wait_for_master_readiness():
         except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
             pass
         time.sleep(0.5)
+    print("⚠️ AGENT: Master readiness timeout (60s). Proceeding to prevent deadlock.", flush=True)
 
 if __name__ == "__main__":
     main()

@@ -99,6 +99,11 @@ instances_trained = 0
 # Synchronization flags used during the pre-freeze flush handshake with the Guardian
 flush_requested = threading.Event()
 flush_done = threading.Event()
+# FIX: Permanent one-way kill switch for the background sync thread.
+# Set by FlushHandler after a successful heavy POST — never cleared within a process
+# lifetime. Because the worker cold-boots as a fresh process on the destination node,
+# a new Event() is created automatically, so the sync thread runs normally after landing.
+sync_thread_killed = threading.Event()
 running = True
 
 
@@ -458,13 +463,23 @@ def build_state_payload():
 # -----------------------------------------------------------------------------
 def sync_state_to_guardian():
     """
-    Background thread continuously pushing state to Guardian.
+    Background thread continuously pushing lightweight telemetry to Guardian.
+
+    Permanently terminates (returns) after a successful pre-freeze flush so that
+    no lightweight POST can race against the heavy STM/LTM payload in Guardian RAM.
     """
     _pending_state = None
 
     while running:
+        # FIX: Permanent kill switch — once the flush handler confirms a successful
+        # heavy POST, this thread exits entirely. It will never touch the Guardian
+        # again in this process lifetime, eliminating the post-flush TOCTOU window.
+        if sync_thread_killed.is_set():
+            print("🛑 WORKER: Sync thread permanently terminated after flush.", flush=True)
+            return
+
         # --- THE CHANNEL POLLUTION FIX ---
-        # Silence periodic syncs while the emergency serialization is running
+        # Silence periodic syncs while the emergency serialization is running.
         if flush_requested.is_set():
             time.sleep(0.5)
             continue
@@ -476,6 +491,11 @@ def sync_state_to_guardian():
             if resp.status_code == 503:
                 if _pending_state is None:
                     _pending_state = payload
+            elif resp.status_code == 409:
+                # Guardian is flush-locked — the heavy payload is already stored.
+                # Stop immediately; any further POST risks being a destructive overwrite.
+                print("🔒 WORKER: Guardian flush-locked. Halting sync thread permanently.", flush=True)
+                return
             else:
                 _pending_state = None
         except requests.exceptions.RequestException:
@@ -554,6 +574,15 @@ class FlushHandler(BaseHTTPRequestHandler):
         if self.path == "/flush":
             flush_requested.set()
 
+            # FIX: TOCTOU drain window.
+            # The sync thread checks flush_requested at the top of its loop, but it
+            # may have already passed that check and be mid-POST when we set the flag.
+            # Sleeping 300ms here gives any in-flight lightweight POST time to finish
+            # and return before we snapshot the heavy state. The Guardian's defensive
+            # merge means that race is now non-destructive, but we close the window
+            # anyway as defense-in-depth.
+            time.sleep(0.3)
+
             full_state = build_state_payload()
             full_state["is_full_flush"] = True
 
@@ -567,12 +596,25 @@ class FlushHandler(BaseHTTPRequestHandler):
 
             try:
                 print("🚨 WORKER: Beginning massive POST /state to Guardian...", flush=True)
-                requests.post(f"{GUARDIAN_URL}/state", json=full_state, timeout=20)
+                # Timeout raised to 25s to match Agent's FLUSH_TIMEOUT_SECONDS.
+                resp = requests.post(f"{GUARDIAN_URL}/state", json=full_state, timeout=25)
                 print("✅ WORKER: Massive POST /state completed.", flush=True)
+                # Only signal success if the Guardian actually accepted the payload.
+                if resp.status_code == 200:
+                    flush_done.set()
+                    # FIX: Permanently kill the sync thread AFTER the flush is confirmed.
+                    # This is the definitive fix for the post-flush TOCTOU race:
+                    # even if the sync thread somehow woke up in the 300ms drain window
+                    # and queued a lightweight POST, the thread will now exit before its
+                    # next iteration, and the Guardian's merge strategy blocks any
+                    # lightweight POST that already arrived.
+                    sync_thread_killed.set()
+                    print("🛑 WORKER: Sync thread kill switch engaged.", flush=True)
+                else:
+                    print(f"⚠️ WORKER: Guardian rejected flush payload: HTTP {resp.status_code}", flush=True)
             except Exception as e:
                 print(f"⚠️ WORKER: Failed to POST full state to Guardian: {e}", flush=True)
 
-            flush_done.set()
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'{"status": "FLUSHED"}')
@@ -702,9 +744,12 @@ def main():
     while running:
         # Check if the Node Agent ordered an emergency freeze. If so, pause execution.
         if flush_requested.is_set():
-            flush_done.wait(timeout=10)
-            flush_requested.clear()
-            flush_done.clear()
+            # FIX (Change 1.1): Do NOT clear the Events after the flush completes.
+            # Keeping flush_requested set permanently blocks the periodic sync thread
+            # (sync_state_to_guardian) from overwriting the flushed STM/LTM matrices
+            # in the Guardian's RAM before CRIU freezes this process.
+            # On the destination node the worker cold-boots with fresh (unset) Events.
+            flush_done.wait(timeout=30)
             continue
 
         try:

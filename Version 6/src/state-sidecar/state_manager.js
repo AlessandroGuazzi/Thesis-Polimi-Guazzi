@@ -19,7 +19,8 @@ const bodyParser = require('body-parser');
 const app  = express();
 const PORT = 80;
 
-let isFlushing = false;
+let isFlushing  = false;
+let flushLocked = false;  // FIX (Change 1.3): Blocks lightweight POSTs after a full flush is received
 
 // Accept large JSON payloads because the fire mask is a 4096-element array
 // and the STM/LTM serialization during flush can be significantly larger
@@ -101,18 +102,54 @@ app.post('/state', (req, res) => {
         return res.status(503).json({ error: "MIGRATION_IN_PROGRESS" });
     }
 
-    // Merge the incoming state
-    guardianMemory = { ...req.body, last_contact: Date.now() };
+    const isFullFlush = req.body.is_full_flush === true;
+
+    // FIX (Change 1.3): Defense-in-depth against the amnesia bug.
+    // After the massive flush payload is accepted, reject all subsequent lightweight
+    // POSTs from the periodic sync thread. This prevents the 2-second sync cycle
+    // from overwriting guardianMemory (and erasing STM/LTM) before CRIU freezes.
+    if (flushLocked && !isFullFlush) {
+        console.log("🔒 GUARDIAN: Rejecting lightweight POST — flush payload is locked in memory.");
+        return res.status(409).json({ error: "FLUSH_LOCKED" });
+    }
+
+    // =========================================================================
+    // FIX: DEFENSIVE MERGE (replaces the former destructive spread operator)
+    // =========================================================================
+    // Invariant: lightweight periodic syncs must NEVER delete the stm_X/stm_y/
+    // ltm_X/ltm_y keys from guardianMemory. Those keys are written exclusively
+    // by a full flush (is_full_flush === true) and must survive until CRIU freeze.
+    //
+    // Strategy:
+    //   Full flush  → wholesale replace (payload is fully authoritative).
+    //   Lightweight → merge only telemetry keys; existing heavy arrays are
+    //                 preserved by keeping them from the previous guardianMemory.
+    // =========================================================================
+    const PROTECTED_KEYS = ['stm_X', 'stm_y', 'ltm_X', 'ltm_y'];
+
+    if (isFullFlush) {
+        // Full flush: replace everything — the payload contains all keys
+        guardianMemory = { ...req.body, last_contact: Date.now() };
+    } else {
+        // Lightweight sync: strip any protected keys from the incoming body
+        // (they should not be present, but this is defense-in-depth), then
+        // merge over the existing guardianMemory so heavy arrays are preserved.
+        const incoming = { ...req.body, last_contact: Date.now() };
+        for (const key of PROTECTED_KEYS) {
+            delete incoming[key];
+        }
+        guardianMemory = { ...guardianMemory, ...incoming };
+    }
 
     const stmSize = guardianMemory.stm_size ?? 0;
     const ltmSize = guardianMemory.ltm_size ?? 0;
-    const isFullFlush = req.body.is_full_flush === true;
 
     // ----- THE DEMULTIPLEXING SYNCHRONIZATION GATE -----
     const fs = require('fs');
     if (fs.existsSync('/tmp/flush_state')) {
         if (isFullFlush) {
             console.log(`✅ GUARDIAN: Massive pre-freeze payload verified (STM: ${stmSize}). Signaling Agent.`);
+            flushLocked = true;  // FIX (Change 1.3): Lock memory — no more lightweight overwrites
             try { fs.writeFileSync('/tmp/flush_complete', ''); } catch (e) {}
         } else {
             // Log the collision but DO NOT write flush_complete!
@@ -212,8 +249,9 @@ setInterval(() => {
         console.log("✅ LANDING CONFIRMED! Reanimating Guardian...");
         try { fs.unlinkSync('/tmp/landed'); } catch (e) {}
 
-        flightMode = false;
-        isFlushing = false;
+        flightMode  = false;
+        isFlushing  = false;
+        flushLocked = false;  // FIX (Change 1.3): Unlock for the next migration cycle
 
         // Reset the migration cooldown timer exactly when we wake up on the new node
         payloadLastLandedTime = Date.now() / 1000;
@@ -239,13 +277,19 @@ function setupWatcher() {
      * loop to prevent asynchronous event-loop race conditions.
      */
 
-    // Clean up any stale trigger files from a previous migration cycle
-    const FILES_TO_CLEAN = ['/tmp/flush_state', '/tmp/flush_complete', '/tmp/prepare_jump'];
+    // FIX (Change 1.4): Only clean flush_complete and prepare_jump unconditionally.
+    // flush_state is only removed if no active flush is pending — otherwise the Guardian
+    // could delete a trigger the Node Agent just wrote for the next migration, causing
+    // a 25s timeout before the satellite can leave.
+    const FILES_TO_CLEAN = ['/tmp/flush_complete', '/tmp/prepare_jump'];
     FILES_TO_CLEAN.forEach(f => {
         if (fs.existsSync(f)) {
             try { fs.unlinkSync(f); } catch(e){}
         }
     });
+    if (!isFlushing && fs.existsSync('/tmp/flush_state')) {
+        try { fs.unlinkSync('/tmp/flush_state'); } catch(e){}
+    }
 
     try {
         dirWatcher = fs.watch('/tmp', async (eventType, filename) => {

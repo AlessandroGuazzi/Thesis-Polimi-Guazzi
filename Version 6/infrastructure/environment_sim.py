@@ -20,25 +20,25 @@ ECLIPSE_START = 220    # Degrees where the satellite enters Earth's shadow
 ECLIPSE_END   = 320    # Degrees where the satellite exits Earth's shadow
 
 TEMP_SPACE = -270.0  # Deep space background temperature (°C)
-THERMAL_MASS = 80.0  # Resistance of the satellite body to temperature changes
+THERMAL_MASS = 180.0  # Resistance of the satellite body to temperature changes
 HEATING_SUN = 100.0  # Heat gain from direct solar radiation
 HEATING_CPU_IDLE = 10.0  # Heat gain from hardware in standby
 
 # --- DUAL WORKLOAD THERMAL CONSTANTS ---
-HEATING_SML_LOAD = 80.0  # Massive matrix multiplications
-HEATING_MASTER_LOAD = 10.0  # Graph database & Lua script execution
+HEATING_SML_LOAD = 60.0  # Massive matrix multiplications
+HEATING_MASTER_LOAD = 15.0  # Graph database & Lua script execution
 
 COOLING_K = 4.0  # Radiative cooling efficiency constant
 
 BATTERY_CHARGE_RATE = 5.0  # Power gain per second from solar panels
-BATTERY_DRAIN_IDLE_SUN = 1.0  # Power consumption in standby (sunlight)
-BATTERY_DRAIN_IDLE_ECLIPSE = 0.25  # Deep sleep hibernation in eclipse
+BATTERY_DRAIN_IDLE_SUN = 0.1  # Power consumption in standby (sunlight)
+BATTERY_DRAIN_IDLE_ECLIPSE = 0.1  # Deep sleep hibernation in eclipse
 
 # Differentiated payload drain (Sun vs. Eclipse)
-BATTERY_DRAIN_SML_SUN = 3.0
-BATTERY_DRAIN_SML_ECLIPSE = 4.0    # Higher drain: requires active heaters in the dark
-BATTERY_DRAIN_MASTER_SUN = 1.0
-BATTERY_DRAIN_MASTER_ECLIPSE = 1.5 # Moderate heater overhead
+BATTERY_DRAIN_SML_SUN = 0.7
+BATTERY_DRAIN_SML_ECLIPSE = 0.7    # Higher drain: requires active heaters in the dark
+BATTERY_DRAIN_MASTER_SUN = 0.2
+BATTERY_DRAIN_MASTER_ECLIPSE = 0.2 # Moderate heater overhead
 
 # Setup logging for simulation monitoring
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [SIM] %(message)s', datefmt='%H:%M:%S')

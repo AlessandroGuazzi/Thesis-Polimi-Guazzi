@@ -190,6 +190,11 @@ def main():
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     frame_idx = 0
+    # FIX (Change 3.3): Monotonic counter replaces time-based frame ID.
+    # int(time.time()*1000) & 0xFFFFFFFF can collide if the streamer restarts within
+    # the same millisecond, causing the ingestion thread to merge chunks from unrelated
+    # frames into corrupted blobs. A counter always produces a unique, ordered ID.
+    frame_id_counter = 0
 
     # We now target the K8s Post Office instead of the internal Pod
     target_ip = get_minikube_ip()
@@ -206,8 +211,9 @@ def main():
                 CHUNK_SIZE = 60000
                 total_chunks = (len(blob) // CHUNK_SIZE) + (1 if len(blob) % CHUNK_SIZE > 0 else 0)
 
-                # Create a Unique Order Number for this specific frame
-                frame_id = int(time.time() * 1000) & 0xFFFFFFFF
+                # Advance and wrap the monotonic counter within the 32-bit header field
+                frame_id_counter = (frame_id_counter + 1) & 0xFFFFFFFF
+                frame_id = frame_id_counter
 
                 try:
                     for i in range(total_chunks):

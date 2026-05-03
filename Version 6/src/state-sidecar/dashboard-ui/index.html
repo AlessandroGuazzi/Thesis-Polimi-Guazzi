@@ -1,386 +1,394 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Space Cloud V6 — Modern SML Payload</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space Cloud V6 — Guardian SML Sidecar</title>
 
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* ── DESIGN TOKENS (Apple Dark Mode) ────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    <style>
-        /* ====================================================================
-           MODERN DESIGN SYSTEM
-           Tailwind-inspired color palette, Glassmorphism, and smooth UI.
-           ==================================================================== */
-        :root {
-            --bg-base:      #0b0f19;
-            --bg-glass:     rgba(17, 24, 39, 0.7);
-            --border-glass: rgba(255, 255, 255, 0.08);
+  :root {
+    --surface-black   : #000000;
+    --tile-1          : #1c1c1e;
+    --tile-2          : #2c2c2e;
+    --tile-3          : #3a3a3c;
+    --tile-deep       : #141416;
 
-            --accent-cyan:  #22d3ee;
-            --accent-cyan-glow: rgba(34, 211, 238, 0.2);
-            --accent-rose:  #f43f5e;
-            --accent-emerald: #34d399;
-            --accent-amber: #fbbf24;
+    --primary         : #0066cc;
+    --primary-on-dark : #2997ff;
 
-            --text-bright:  #f8fafc;
-            --text-muted:   #94a3b8;
+    --on-dark         : #ffffff;
+    --muted           : #ebebf5cc;
+    --ink-muted-48    : #7a7a7a;
 
-            --font-ui:      'Inter', sans-serif;
-            --font-data:    'JetBrains Mono', monospace;
+    --ok              : #30d158;
+    --warn            : #ffd60a;
+    --critical        : #ff453a;
 
-            --radius-lg:    16px;
-            --radius-md:    12px;
-            --radius-sm:    8px;
-        }
+    --hairline        : rgba(255,255,255,0.08);
+    --hairline-strong : rgba(255,255,255,0.14);
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+    --rounded-sm      : 8px;
+    --rounded-md      : 11px;
+    --rounded-lg      : 18px;
+    --rounded-pill    : 9999px;
 
-        body {
-            background: var(--bg-base);
-            /* Subtle radial gradient background for depth */
-            background-image: radial-gradient(circle at 50% 0%, #1e293b 0%, #0b0f19 50%);
-            color: var(--text-bright);
-            font-family: var(--font-ui);
-            min-height: 100vh;
-            padding: 24px;
-            font-size: 14px;
-        }
+    --space-xs        : 8px;
+    --space-sm        : 12px;
+    --space-md        : 17px;
+    --space-lg        : 24px;
+    --space-xl        : 32px;
 
-        /* ====================================================================
-           GLASSMORPHISM PANELS & LAYOUT
-           ==================================================================== */
-        .glass-panel {
-            background: var(--bg-glass);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid var(--border-glass);
-            border-radius: var(--radius-lg);
-            box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.5);
-        }
+    --font-display    : -apple-system, "SF Pro Display", system-ui, BlinkMacSystemFont, sans-serif;
+    --font-body       : -apple-system, "SF Pro Text", system-ui, BlinkMacSystemFont, sans-serif;
+    --font-mono       : "SF Mono", "Courier New", monospace;
+  }
 
-        header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 24px;
-            margin-bottom: 24px;
-        }
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
-        .header-left {
-            display: flex;
-            align-items: center;
-            gap: 24px;
-        }
+  body {
+    background: var(--tile-deep);
+    color: var(--on-dark);
+    font-family: var(--font-body);
+    font-size: 17px;
+    line-height: 1.47;
+    letter-spacing: -0.374px;
+    min-height: 100vh;
+    padding-bottom: var(--space-xl);
+  }
 
-        .header-title {
-            font-size: 1.25rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
+  /* ── GLOBAL NAV ─────────────────────────────────────────────── */
+  .global-nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--surface-black);
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 var(--space-xl);
+    border-bottom: 1px solid var(--hairline-strong);
+  }
+  .global-nav__brand {
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    color: var(--on-dark);
+    text-transform: uppercase;
+  }
+  .global-nav__brand span { color: var(--primary-on-dark); font-weight: 400; }
 
-        .header-title svg {
-            color: var(--accent-cyan);
-            width: 24px; height: 24px;
-        }
+  .global-nav__cluster { display: flex; align-items: center; gap: var(--space-lg); }
+  .global-nav__clock {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-muted-48);
+    letter-spacing: 0.5px;
+  }
+  .global-nav__clock strong { color: var(--muted); font-weight: 400; }
 
-        .clocks {
-            display: flex;
-            gap: 16px;
-            font-family: var(--font-data);
-            color: var(--text-muted);
-            font-size: 0.85rem;
-        }
+  /* Status Pill */
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--rounded-pill);
+    padding: 4px 12px;
+    font-family: var(--font-body);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: -0.12px;
+    color: var(--ink-muted-48);
+    transition: all 0.3s ease;
+  }
+  .status-pill.nominal {
+    color: var(--ok);
+    border-color: rgba(48,209,88,0.3);
+    background: rgba(48,209,88,0.08);
+  }
+  .status-pill.migrating {
+    color: var(--critical);
+    border-color: rgba(255,69,58,0.3);
+    background: rgba(255,69,58,0.08);
+  }
+  .status-pill__dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+  }
+  .status-pill.migrating .status-pill__dot {
+    animation: pulse-critical 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse-critical {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,69,58,0.6); }
+    50%      { opacity: 0.5; box-shadow: 0 0 0 4px rgba(255,69,58,0); }
+  }
 
-        .guardian-badge {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid var(--border-glass);
-            padding: 6px 12px;
-            border-radius: var(--radius-sm);
-            font-family: var(--font-data);
-            font-size: 0.85rem;
-        }
+  /* ── PAGE LAYOUT ────────────────────────────────────────────── */
+  .page-header {
+    padding: var(--space-xl) var(--space-xl) var(--space-lg);
+    max-width: 1440px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+  .page-header__title {
+    font-family: var(--font-display);
+    font-size: 40px;
+    font-weight: 600;
+    line-height: 1.10;
+    letter-spacing: -0.374px;
+    color: var(--on-dark);
+  }
+  .node-badge {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--primary-on-dark);
+    background: rgba(41,151,255,0.12);
+    border: 1px solid rgba(41,151,255,0.25);
+    padding: 6px 14px;
+    border-radius: var(--rounded-pill);
+  }
 
-        .guardian-badge span:first-child { color: var(--text-muted); font-family: var(--font-ui); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .dashboard {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 0 var(--space-xl);
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    gap: 24px;
+  }
 
-        /* Modern Status Pill with Pulsing Dot */
-        .status-pill {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 16px;
-            border-radius: 9999px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            letter-spacing: 0.02em;
-            transition: all 0.3s ease;
-        }
+  /* ── PANELS ─────────────────────────────────────────────────── */
+  .panel {
+    background: var(--tile-1);
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-lg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .panel__title {
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+  }
+  .panel__body { padding: var(--space-lg); flex-grow: 1; }
 
-        .status-dot {
-            width: 8px; height: 8px;
-            border-radius: 50%;
-        }
+  /* ── TACTICAL GRIDS (CANVAS) ────────────────────────────────── */
+  .tactical-grid-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-lg);
+  }
+  .canvas-wrapper {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: var(--surface-black);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--rounded-md);
+    overflow: hidden;
+  }
+  canvas {
+    display: block; width: 100%; height: 100%;
+    image-rendering: pixelated;
+  }
 
-        .status-nominal {
-            background: rgba(52, 211, 153, 0.1);
-            border: 1px solid rgba(52, 211, 153, 0.2);
-            color: var(--accent-emerald);
-        }
-        .status-nominal .status-dot { background: var(--accent-emerald); box-shadow: 0 0 8px var(--accent-emerald); }
+  /* Reticle SVG */
+  #com-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .reticle-line { stroke: var(--primary-on-dark); stroke-width: 0.3; stroke-dasharray: 4 2; opacity: 0.5; }
+  .reticle-center { fill: none; stroke: var(--primary-on-dark); stroke-width: 0.8; }
+  .reticle-text { font-family: var(--font-mono); font-size: 2px; fill: var(--on-dark); }
 
-        .status-migrating {
-            background: rgba(244, 63, 94, 0.1);
-            border: 1px solid rgba(244, 63, 94, 0.2);
-            color: var(--accent-rose);
-        }
-        .status-migrating .status-dot {
-            background: var(--accent-rose);
-            box-shadow: 0 0 8px var(--accent-rose);
-            animation: pulse-dot 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
+  .reticle-alert .reticle-line, .reticle-alert .reticle-center { stroke: var(--critical); opacity: 1; }
+  .reticle-alert .reticle-text { fill: var(--critical); font-weight: bold; }
 
-        @keyframes pulse-dot {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(1.2); }
-        }
+  /* ── DIAGNOSTICS & MEMORY BANKS ─────────────────────────────── */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
+  }
+  .metric-box {
+    background: var(--tile-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-md);
+    padding: var(--space-md);
+  }
+  .metric-box__label { font-size: 11px; font-weight: 600; color: var(--ink-muted-48); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .metric-box__val { font-family: var(--font-display); font-size: 28px; font-weight: 600; color: var(--on-dark); letter-spacing: -0.374px; }
 
-        /* ====================================================================
-           DASHBOARD GRID
-           ==================================================================== */
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr 380px;
-            gap: 24px;
-        }
+  .progress-wrap { margin-bottom: var(--space-md); }
+  .progress-header { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 8px; }
+  .progress-header span:first-child { color: var(--muted); }
+  .progress-header span:last-child { font-family: var(--font-mono); color: var(--ink-muted-48); }
+  .progress-track { height: 6px; background: rgba(0,0,0,0.4); border-radius: var(--rounded-pill); overflow: hidden; border: 1px solid var(--hairline); }
+  .progress-fill { height: 100%; border-radius: var(--rounded-pill); transition: width 0.3s ease; }
+  .fill-stm { background: var(--primary-on-dark); }
+  .fill-ltm { background: var(--ink-muted-48); }
 
-        .panel-content { padding: 20px; display: flex; flex-direction: column; height: 100%; }
+  /* ── SWARM MATRIX ───────────────────────────────────────────── */
+  .telemetry-table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: var(--font-mono); margin-bottom: var(--space-lg); }
+  .telemetry-table th { font-family: var(--font-body); font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--ink-muted-48); padding: 8px; text-align: left; border-bottom: 1px solid var(--hairline-strong); }
+  .telemetry-table td { padding: 10px 8px; border-bottom: 1px solid var(--hairline); color: var(--on-dark); }
+  .val-warn { color: var(--warn); }
+  .val-danger { color: var(--critical); font-weight: bold; }
 
-        .panel-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-        }
-
-        .panel-title {
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        /* ====================================================================
-           TACTICAL GRIDS (Canvases)
-           ==================================================================== */
-        .canvas-wrapper {
-            position: relative;
-            width: 100%;
-            aspect-ratio: 1 / 1;
-            background: #000;
-            border-radius: var(--radius-md);
-            overflow: hidden;
-            border: 1px solid var(--border-glass);
-            /* Soft glow behind the canvas */
-            box-shadow: inset 0 0 40px rgba(255,255,255,0.02);
-        }
-
-        /* Subtle grid overlay */
-        .canvas-grid-bg {
-            position: absolute; inset: 0; pointer-events: none;
-            background-image:
-                linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
-            background-size: 15.625% 15.625%;
-        }
-
-        canvas {
-            display: block; width: 100%; height: 100%;
-            image-rendering: pixelated;
-        }
-
-        #com-overlay {
-            position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
-        }
-        .reticle-line { stroke: var(--accent-cyan); stroke-width: 0.3; stroke-dasharray: 4 2; opacity: 0.7; }
-        .reticle-center { fill: none; stroke: var(--accent-cyan); stroke-width: 0.8; }
-        .reticle-text { font-family: var(--font-data); font-size: 2px; fill: var(--text-bright); }
-
-        .reticle-alert .reticle-line, .reticle-alert .reticle-center { stroke: var(--accent-rose); opacity: 1; }
-        .reticle-alert .reticle-text { fill: var(--accent-rose); font-weight: bold; }
-
-        /* ====================================================================
-           STATS & DIAGNOSTICS
-           ==================================================================== */
-        .stats-col { display: flex; flex-direction: column; gap: 24px; }
-
-        .metric-group { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-        .metric-box {
-            background: rgba(0,0,0,0.2);
-            border: 1px solid var(--border-glass);
-            border-radius: var(--radius-sm);
-            padding: 12px;
-        }
-        .metric-box-label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase;}
-        .metric-box-val { font-family: var(--font-data); font-size: 1.25rem; font-weight: 700; color: var(--text-bright); }
-
-        /* Modern Progress Bars */
-        .progress-wrapper { margin-bottom: 12px; }
-        .progress-header { display: flex; justify-content: space-between; font-size: 0.75rem; margin-bottom: 6px; }
-        .progress-header span:first-child { color: var(--text-muted); }
-        .progress-header span:last-child { font-family: var(--font-data); color: var(--text-bright); }
-        .progress-track {
-            height: 6px; background: rgba(0,0,0,0.3); border-radius: 99px; overflow: hidden;
-            border: 1px solid rgba(255,255,255,0.05);
-        }
-        .progress-fill { height: 100%; border-radius: 99px; transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
-        .fill-stm { background: linear-gradient(90deg, #06b6d4, #22d3ee); box-shadow: 0 0 10px var(--accent-cyan-glow); }
-        .fill-ltm { background: linear-gradient(90deg, #475569, #94a3b8); }
-
-        /* Modern Table */
-        .data-table { width: 100%; border-collapse: collapse; font-family: var(--font-data); font-size: 0.8rem; }
-        .data-table th { text-align: left; padding: 12px 8px; color: var(--text-muted); font-family: var(--font-ui); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; border-bottom: 1px solid var(--border-glass); }
-        .data-table td { padding: 12px 8px; border-bottom: 1px solid rgba(255,255,255,0.02); color: var(--text-bright); }
-        .data-table tr:hover td { background: rgba(255,255,255,0.02); }
-
-        .val-danger { color: var(--accent-rose); font-weight: 700; }
-        .val-warn { color: var(--accent-amber); font-weight: 700; }
-
-        /* Node Indicator */
-        .node-indicator { display: inline-flex; align-items: center; gap: 8px; }
-        .node-dot { width: 6px; height: 6px; border-radius: 50%; background: transparent; }
-        .node-active { background: var(--accent-emerald); box-shadow: 0 0 6px var(--accent-emerald); }
-
-        /* Console */
-        #system-console {
-            flex-grow: 1; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); border: 1px solid var(--border-glass);
-            padding: 12px; font-family: var(--font-data); font-size: 0.75rem; color: var(--text-muted);
-            height: 180px; overflow-y: auto; line-height: 1.6;
-        }
-        .log-time { color: #64748b; margin-right: 8px; }
-        .log-action-err { color: var(--accent-rose); }
-        .log-action-ok { color: var(--accent-emerald); }
-
-    </style>
+  /* ── SYSTEM CONSOLE ─────────────────────────────────────────── */
+  .terminal {
+    background: var(--tile-3);
+    border-radius: var(--rounded-sm);
+    border: 1px solid var(--hairline);
+    height: 160px;
+    overflow-y: auto;
+    padding: var(--space-sm) var(--space-md);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--muted);
+    scrollbar-width: thin;
+    scrollbar-color: var(--hairline-strong) transparent;
+  }
+  .log-time { color: var(--ink-muted-48); margin-right: 8px; }
+  .log-info { color: var(--muted); }
+  .log-warn { color: var(--warn); }
+  .log-action { color: var(--primary-on-dark); }
+</style>
 </head>
 <body>
 
-<header class="glass-panel">
-    <div class="header-left">
-        <div class="header-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-            Space Cloud V6
-        </div>
-        <div class="clocks">
-            <span>UTC <span id="clock-utc" style="color:var(--text-bright)">00:00:00Z</span></span>
-            <span>MET <span id="clock-met" style="color:var(--text-bright)">T+00:00:00</span></span>
-        </div>
+<nav class="global-nav">
+  <div class="global-nav__brand">Space Cloud <span>V6</span></div>
+  <div class="global-nav__cluster">
+    <div class="global-nav__clock"><strong>UTC</strong> <span id="clock-utc">00:00:00Z</span></div>
+    <div class="global-nav__clock"><strong>MET</strong> <span id="clock-met">T+00:00:00</span></div>
+    <div class="status-pill nominal" id="status-lamp">
+      <span class="status-pill__dot"></span>
+      <span id="status-text">System Nominal</span>
     </div>
+  </div>
+</nav>
 
-    <div style="display: flex; align-items: center; gap: 16px;">
-        <div class="guardian-badge">
-            <span>Active Node</span>
-            <span id="guardian-id">AWAITING_UPLINK</span>
-        </div>
-        <div id="status-lamp" class="status-pill status-nominal">
-            <div class="status-dot"></div>
-            <span>System Nominal</span>
-        </div>
-    </div>
+<header class="page-header">
+  <h1 class="page-header__title">Guardian Sidecar</h1>
+  <div class="node-badge" id="guardian-id">AWAITING_UPLINK</div>
 </header>
 
-<div class="dashboard-grid">
+<main class="dashboard">
+  <!-- TACTICAL GRIDS -->
+  <div class="panel">
+    <div class="panel__header">
+      <span class="panel__title">Tactical Optical Grids</span>
+    </div>
+    <div class="panel__body tactical-grid-container">
 
-    <div class="glass-panel panel-content">
-        <div class="panel-header">
-            <span class="panel-title">Raw OP-IR Feed</span>
-            <span class="guardian-badge" style="border:none; background:transparent; padding:0;">64x64</span>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
+          <span>Raw OP-IR Feed</span> <span style="font-family:var(--font-mono)">64x64</span>
         </div>
         <div class="canvas-wrapper">
-            <div class="canvas-grid-bg"></div>
-            <canvas id="canvas-current" width="64" height="64"></canvas>
+          <canvas id="canvas-current" width="64" height="64"></canvas>
         </div>
-    </div>
+      </div>
 
-    <div class="glass-panel panel-content">
-        <div class="panel-header">
-            <span class="panel-title">SAMKNN Prediction</span>
-            <span class="guardian-badge" style="border:none; background:transparent; padding:0;">62x62</span>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
+          <span>SAMKNN Prediction</span> <span style="font-family:var(--font-mono)">62x62</span>
         </div>
         <div class="canvas-wrapper">
-            <div class="canvas-grid-bg"></div>
-            <canvas id="canvas-predicted" width="62" height="62"></canvas>
-            <svg id="com-overlay" viewBox="0 0 62 62" xmlns="http://www.w3.org/2000/svg">
-                <g id="reticle-group">
-                    <line id="com-h" class="reticle-line" x1="0" y1="31" x2="62" y2="31" />
-                    <line id="com-v" class="reticle-line" x1="31" y1="0" x2="31" y2="62" />
-                    <circle id="com-dot" class="reticle-center" cx="31" cy="31" r="1.5" />
-                    <rect id="com-bg" x="32.5" y="27.5" width="18" height="3" fill="rgba(0,0,0,0.5)" rx="0.5"/>
-                    <text id="com-text" class="reticle-text" x="33" y="30">X:-- Y:--</text>
-                </g>
-            </svg>
+          <canvas id="canvas-predicted" width="62" height="62"></canvas>
+          <svg id="com-overlay" viewBox="0 0 62 62" xmlns="http://www.w3.org/2000/svg">
+            <g id="reticle-group">
+                <line id="com-h" class="reticle-line" x1="0" y1="31" x2="62" y2="31" />
+                <line id="com-v" class="reticle-line" x1="31" y1="0" x2="31" y2="62" />
+                <circle id="com-dot" class="reticle-center" cx="31" cy="31" r="1.5" />
+                <rect id="com-bg" x="32.5" y="27.5" width="18" height="3" fill="var(--surface-black)" rx="0.5"/>
+                <text id="com-text" class="reticle-text" x="33" y="30">X:-- Y:--</text>
+            </g>
+          </svg>
         </div>
-    </div>
-
-    <div class="stats-col">
-
-        <div class="glass-panel panel-content" style="height: auto;">
-            <div class="panel-header" style="margin-bottom: 20px;">
-                <span class="panel-title">Model Diagnostics</span>
-            </div>
-
-            <div class="metric-group">
-                <div class="metric-box">
-                    <div class="metric-box-label">Frames</div>
-                    <div class="metric-box-val" id="sample-count">0</div>
-                </div>
-                <div class="metric-box">
-                    <div class="metric-box-label">Fire Pixels</div>
-                    <div class="metric-box-val" id="fire-count" style="color: var(--accent-rose)">0</div>
-                </div>
-            </div>
-
-            <div class="progress-wrapper">
-                <div class="progress-header"><span>STM Saturation</span><span id="stm-label">0 / 5000</span></div>
-                <div class="progress-track"><div class="progress-fill fill-stm" id="stm-bar" style="width:0%"></div></div>
-            </div>
-            <div class="progress-wrapper" style="margin-bottom: 0;">
-                <div class="progress-header"><span>LTM Saturation</span><span id="ltm-label">0 / 15000</span></div>
-                <div class="progress-track"><div class="progress-fill fill-ltm" id="ltm-bar" style="width:0%"></div></div>
-            </div>
-        </div>
-
-        <div class="glass-panel panel-content">
-            <div class="panel-header">
-                <span class="panel-title">Swarm Matrix</span>
-            </div>
-            <table class="data-table" style="margin-bottom: 16px;">
-                <thead>
-                    <tr><th>Node</th><th>Temp</th><th>Bat</th><th>Mode</th></tr>
-                </thead>
-                <tbody id="fleet-tbody"></tbody>
-            </table>
-
-            <div class="panel-title" style="margin-top: 8px;">System Event Log</div>
-            <div id="system-console">
-                <div><span class="log-time">[Init]</span> Awaiting orbital telemetry...</div>
-            </div>
-        </div>
+      </div>
 
     </div>
-</div>
+  </div>
+
+  <!-- DIAGNOSTICS & SYSTEM CONSOLE -->
+  <div style="display: flex; flex-direction: column; gap: 24px;">
+
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__title">Payload Diagnostics</span>
+      </div>
+      <div class="panel__body">
+
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <div class="metric-box__label">Frames Evaluated</div>
+            <div class="metric-box__val" id="sample-count">0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-box__label">Fire Pixels Detected</div>
+            <div class="metric-box__val" id="fire-count" style="color: var(--critical)">0</div>
+          </div>
+        </div>
+
+        <div class="progress-wrap">
+          <div class="progress-header"><span>STM Saturation</span><span id="stm-label">0 / 5000</span></div>
+          <div class="progress-track"><div class="progress-fill fill-stm" id="stm-bar" style="width:0%"></div></div>
+        </div>
+        <div class="progress-wrap" style="margin-bottom: 0;">
+          <div class="progress-header"><span>LTM Saturation</span><span id="ltm-label">0 / 15000</span></div>
+          <div class="progress-track"><div class="progress-fill fill-ltm" id="ltm-bar" style="width:0%"></div></div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__title">Swarm & Console</span>
+      </div>
+      <div class="panel__body" style="padding-top: 12px;">
+
+        <table class="telemetry-table">
+          <thead><tr><th>Node</th><th>Temp</th><th>Battery</th><th>Eclipse</th></tr></thead>
+          <tbody id="fleet-tbody"></tbody>
+        </table>
+
+        <div class="panel__title" style="margin-bottom: 8px;">System Terminal</div>
+        <div class="terminal" id="system-console">
+          <div><span class="log-time">[Init]</span> <span class="log-info">Awaiting orbital telemetry...</span></div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+</main>
 
 <script>
 // ============================================================================
-// SYSTEM CLOCKS
+// CLOCKS (UTC & MET)
 // ============================================================================
 const startTime = Date.now();
 setInterval(() => {
@@ -393,7 +401,7 @@ setInterval(() => {
 }, 1000);
 
 // ============================================================================
-// CANVAS RENDERING
+// CANVAS MATHEMATICS & RENDERING
 // ============================================================================
 const ctxCurrent   = document.getElementById('canvas-current').getContext('2d');
 const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
@@ -413,21 +421,21 @@ function drawFireMask(flatMask, ctx, width, colorFn) {
     }
 }
 
-// Deep orange to bright red gradient for sensor
+// Deep red/orange mapping for raw feed
 function currentFireColor(val) {
     const intensity = Math.min(1, val);
     const r = 255;
-    const g = Math.round(90 * (1 - intensity)); // High intensity = less green = redder
+    const g = Math.round(110 * (1 - intensity));
     return `rgb(${r}, ${g}, 0)`;
 }
 
-// Cyan for prediction
+// Solid Sky Link Blue for prediction map
 function predictedFireColor(val) {
-    return '#22d3ee'; // var(--accent-cyan)
+    return '#2997ff'; // var(--primary-on-dark)
 }
 
 // ============================================================================
-// SCIENTIFIC RETICLE (CoM)
+// COG RETICLE LOGIC
 // ============================================================================
 function updateReticle(comX, comY) {
     const INNER = 62;
@@ -443,7 +451,6 @@ function updateReticle(comX, comY) {
     document.getElementById('com-dot').setAttribute('cx', x);
     document.getElementById('com-dot').setAttribute('cy', y);
 
-    // Dynamic text background width
     const textStr = `X:${x.toFixed(1)} Y:${y.toFixed(1)}`;
     const textEl = document.getElementById('com-text');
     const bgEl = document.getElementById('com-bg');
@@ -453,10 +460,8 @@ function updateReticle(comX, comY) {
     bgEl.setAttribute('x', x + 1);
     bgEl.setAttribute('y', y - 3.5);
 
-    // Alert Logic
-    const nearEdge = x < THRESH || x > (INNER - THRESH);
     const group = document.getElementById('reticle-group');
-    if (nearEdge) {
+    if (x < THRESH || x > (INNER - THRESH) || y < THRESH || y > (INNER - THRESH)) {
         group.classList.add('reticle-alert');
         textEl.textContent = textStr + " [EDGE_WARN]";
         bgEl.setAttribute('width', '28');
@@ -468,7 +473,7 @@ function updateReticle(comX, comY) {
 }
 
 // ============================================================================
-// DIAGNOSTICS & TELEMETRY MATRIX
+// DOM INJECTION HELPERS
 // ============================================================================
 function updateBuffers(stm, ltm) {
     const STM_MAX = 5000, LTM_MAX = 15000;
@@ -483,17 +488,21 @@ function renderTelemetryMatrix(envData) {
     tbody.innerHTML = '';
 
     Object.entries(envData).forEach(([node, data]) => {
+        if(data.type === 'ground') return; // Hide ground stations from view
+
         const temp = data.temp || 0;
         const bat = data.battery || 0;
 
         let tempClass = temp >= 120 ? 'val-danger' : temp > 80 ? 'val-warn' : '';
-        let batClass = bat < 20 ? 'val-warn' : '';
-        const eclipseTxt = data.eclipse ? 'ECL' : 'VIS';
-        const activeDot = data.is_working ? '<div class="node-dot node-active"></div>' : '<div class="node-dot"></div>';
+        let batClass = bat < 15 ? 'val-danger' : bat < 30 ? 'val-warn' : '';
+        const eclipseTxt = data.eclipse ? '🌑 ECL' : '☀️ VIS';
+
+        // Indicate payload location visually
+        const nodeLabel = data.is_working ? `[ ${node.replace('minikube-','')} ]` : node.replace('minikube-','');
 
         tbody.innerHTML += `
             <tr>
-                <td><div class="node-indicator">${activeDot}${node.replace('minikube-','')}</div></td>
+                <td style="${data.is_working ? 'color: var(--primary-on-dark);' : ''}">${nodeLabel}</td>
                 <td class="${tempClass}">${temp.toFixed(1)}°</td>
                 <td class="${batClass}">${bat.toFixed(1)}%</td>
                 <td>${eclipseTxt}</td>
@@ -502,10 +511,7 @@ function renderTelemetryMatrix(envData) {
     });
 }
 
-// ============================================================================
-// SYSTEM CONSOLE
-// ============================================================================
-function sysLog(msg, typeClass = '') {
+function sysLog(msg, typeClass = 'log-info') {
     const consoleEl = document.getElementById('system-console');
     const ts = new Date().toISOString().substring(11, 19);
     const entry = document.createElement('div');
@@ -515,7 +521,7 @@ function sysLog(msg, typeClass = '') {
 }
 
 // ============================================================================
-// SSE STREAM INGESTION
+// SSE STREAM INGESTION (BACKEND BINDING)
 // ============================================================================
 let lastFlightState = false;
 const evtSource = new EventSource('/api/stream');
@@ -528,29 +534,30 @@ evtSource.onmessage = (event) => {
     const env = data.environment || {};
     const flightMode = data.flight_mode;
 
-    // Header Updates
     document.getElementById('guardian-id').textContent = data.guardian_id || 'UNKNOWN';
 
-    // Status Lamp Logic
+    // Contextual Status Toggling
     const lamp = document.getElementById('status-lamp');
+    const statusText = document.getElementById('status-text');
+
     if (flightMode) {
-        lamp.className = 'status-pill status-migrating';
-        lamp.innerHTML = '<div class="status-dot"></div><span>ISL Migration Active</span>';
-        if (!lastFlightState) sysLog(`Initiating CRIU checkpoint... Route calculated.`, 'log-action-err');
+        lamp.className = 'status-pill migrating';
+        statusText.textContent = 'ISL Migration Active';
+        if (!lastFlightState) sysLog(`Initiating CRIU checkpoint sequence. Lock acquired.`, 'log-warn');
     } else {
-        lamp.className = 'status-pill status-nominal';
-        lamp.innerHTML = '<div class="status-dot"></div><span>System Nominal</span>';
-        if (lastFlightState) sysLog(`Payload restored on ${data.guardian_id}. Socket open.`, 'log-action-ok');
+        lamp.className = 'status-pill nominal';
+        statusText.textContent = 'System Nominal';
+        if (lastFlightState) sysLog(`Payload restored on ${data.guardian_id}. UDP socket open.`, 'log-action');
     }
     lastFlightState = flightMode;
 
-    // Draw Grids
+    // Mathematics Rendering
     drawFireMask(state.prev_fire_mask || state.predicted_fire_mask || [], ctxCurrent, 64, currentFireColor);
     drawFireMask(state.predicted_fire_mask || [], ctxPredicted, 62, predictedFireColor);
 
     if (state.center_of_mass) updateReticle(state.center_of_mass.x, state.center_of_mass.y);
 
-    // Diagnostics
+    // Diagnostics Assignment
     document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();
     document.getElementById('fire-count').textContent = (state.fire_pixel_count || 0).toLocaleString();
     updateBuffers(state.stm_size || 0, state.ltm_size || 0);
@@ -561,11 +568,11 @@ evtSource.onmessage = (event) => {
 evtSource.onerror = () => {
     const lamp = document.getElementById('status-lamp');
     lamp.className = 'status-pill';
-    lamp.style.color = 'var(--text-muted)';
-    lamp.style.border = '1px solid var(--border-glass)';
-    lamp.innerHTML = '<div class="status-dot" style="background: var(--text-muted)"></div><span>Uplink Lost</span>';
+    lamp.style.color = 'var(--ink-muted-48)';
+    lamp.style.borderColor = 'var(--hairline-strong)';
+    lamp.style.background = 'transparent';
+    document.getElementById('status-text').textContent = 'Uplink Lost';
 };
 </script>
-
 </body>
 </html>

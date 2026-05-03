@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space Cloud V6 — Global Swarm Dashboard</title>
+
+<!--
+  ============================================================
+  SPACE CLOUD V6 — GLOBAL SWARM DASHBOARD
+  Design System: Apple Design Language (from Design.md)
+  Applied to: Dark-tile context (surface-tile-1/2/3 family)
+  ============================================================
+
+  COLOR TOKENS (from Design.md, dark-surface mode):
+    --surface-black   : #000000  (nav bar)
+    --tile-1          : #272729  (primary panel surface)
+    --tile-2          : #2a2a2c  (secondary panel surface)
+    --tile-3          : #252527  (deep/terminal surface)
+    --primary         : #0066cc  (Action Blue)
+    --primary-on-dark : #2997ff  (Sky Link Blue — for dark tiles)
+    --on-dark         : #ffffff  (body text on dark)
+    --muted           : #cccccc  (secondary on dark)
+    --ink-muted-48    : #7a7a7a  (disabled / fine print)
+    --hairline        : rgba(0,0,0,0.08) → on dark: rgba(255,255,255,0.08)
+    --warn            : #ffcc00  (semantic warning — temperature/battery)
+    --critical        : #ff3b30  (semantic critical — inferred iOS red family)
+    --ok              : #30d158  (semantic success — inferred iOS green family)
+
+  TYPOGRAPHY (SF Pro stack, negative tracking at display sizes):
+    Display: -apple-system, SF Pro Display, system-ui, sans-serif
+    Body:    -apple-system, SF Pro Text, system-ui, sans-serif
+
+  SHAPE:
+    --rounded-sm  : 8px   (utility buttons)
+    --rounded-lg  : 18px  (cards)
+    --rounded-pill: 9999px
+============================================================
+-->
+
+<style>
+  /* ── RESET & TOKENS ─────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    /* Surfaces */
+    --surface-black   : #000000;
+    --tile-1          : #1c1c1e;   /* iOS dark tile, slightly warmer than spec */
+    --tile-2          : #2c2c2e;
+    --tile-3          : #3a3a3c;
+    --tile-deep       : #141416;   /* deeper backdrop */
+
+    /* Brand */
+    --primary         : #0066cc;
+    --primary-on-dark : #2997ff;
+    --primary-focus   : #0071e3;
+
+    /* Text */
+    --on-dark         : #ffffff;
+    --muted           : #ebebf5cc; /* ~80% white with warm tint */
+    --ink-muted-48    : #7a7a7a;
+
+    /* Semantic */
+    --ok              : #30d158;
+    --warn            : #ffd60a;
+    --critical        : #ff453a;
+
+    /* Hairlines */
+    --hairline        : rgba(255,255,255,0.08);
+    --hairline-strong : rgba(255,255,255,0.14);
+
+    /* Shape */
+    --rounded-sm      : 8px;
+    --rounded-md      : 11px;
+    --rounded-lg      : 18px;
+    --rounded-pill    : 9999px;
+
+    /* Spacing (8px base unit) */
+    --space-xs  : 8px;
+    --space-sm  : 12px;
+    --space-md  : 17px;    /* matches body type size */
+    --space-lg  : 24px;
+    --space-xl  : 32px;
+    --space-xxl : 48px;
+    --space-sec : 80px;
+
+    /* Typography */
+    --font-display : -apple-system, "SF Pro Display", system-ui, BlinkMacSystemFont, sans-serif;
+    --font-body    : -apple-system, "SF Pro Text",    system-ui, BlinkMacSystemFont, sans-serif;
+    --font-mono    : "SF Mono", "Courier New", monospace; /* terminal */
+  }
+
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+  body {
+    background: var(--tile-deep);
+    color: var(--on-dark);
+    font-family: var(--font-body);
+    font-size: 17px;
+    line-height: 1.47;
+    letter-spacing: -0.374px;
+    min-height: 100vh;
+    padding-bottom: var(--space-xxl);
+  }
+
+  /* ── GLOBAL NAV (Apple: pure black, 44px, quiet) ────────── */
+  .global-nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--surface-black);
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 var(--space-xl);
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .global-nav__brand {
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: -0.12px;
+    color: var(--on-dark);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
+  .global-nav__brand span { color: var(--primary-on-dark); }
+
+  .global-nav__cluster {
+    display: flex;
+    align-items: center;
+    gap: var(--space-lg);
+  }
+  .global-nav__clock {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-muted-48);
+    letter-spacing: 0.5px;
+  }
+  .global-nav__clock strong {
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  /* Connection status pill — uses primary-on-dark accent */
+  .conn-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--rounded-pill);
+    padding: 4px 12px;
+    font-family: var(--font-body);
+    font-size: 12px;
+    letter-spacing: -0.12px;
+    color: var(--ink-muted-48);
+    transition: color 0.3s, border-color 0.3s;
+  }
+  .conn-pill.live  { color: var(--ok);   border-color: rgba(48,209,88,0.3); }
+  .conn-pill.warn  { color: var(--warn); border-color: rgba(255,214,10,0.3); }
+  .conn-pill__dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+  }
+  .conn-pill.live .conn-pill__dot {
+    animation: pulse-ok 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse-ok {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(48,209,88,0.6); }
+    50%       { opacity: 0.8; box-shadow: 0 0 0 4px rgba(48,209,88,0); }
+  }
+
+  /* ── PAGE SHELL ─────────────────────────────────────────── */
+  .page-header {
+    padding: var(--space-xxl) var(--space-xl) var(--space-xl);
+    max-width: 1440px;
+    margin: 0 auto;
+  }
+  .page-header__eyebrow {
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: -0.224px;
+    color: var(--primary-on-dark);
+    margin-bottom: var(--space-xs);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+  .page-header__title {
+    font-family: var(--font-display);
+    font-size: 40px;
+    font-weight: 600;
+    line-height: 1.10;
+    letter-spacing: -0.374px;
+    color: var(--on-dark);
+  }
+  .page-header__sub {
+    font-size: 21px;
+    font-weight: 400;
+    line-height: 1.19;
+    letter-spacing: 0.231px;
+    color: var(--muted);
+    margin-top: var(--space-xs);
+  }
+
+  /* ── DASHBOARD GRID ─────────────────────────────────────── */
+  .dashboard {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 0 var(--space-xl);
+    display: grid;
+    grid-template-columns: 420px 1fr;
+    grid-template-rows: auto auto;
+    gap: 2px;               /* Apple: color-change IS the divider */
+  }
+  @media (max-width: 1068px) {
+    .dashboard { grid-template-columns: 1fr; }
+    .dashboard__globe { min-height: 460px; }
+  }
+  @media (max-width: 640px) {
+    .global-nav { padding: 0 var(--space-md); }
+    .page-header { padding: var(--space-xl) var(--space-md) var(--space-md); }
+    .page-header__title { font-size: 28px; }
+    .page-header__sub { font-size: 17px; }
+    .dashboard { padding: 0 var(--space-xs); }
+  }
+
+  /* ── PANEL (Apple: tile-1, no shadow, 1px hairline) ─────── */
+  .panel {
+    background: var(--tile-1);
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-lg);
+    overflow: hidden;
+  }
+  .panel + .panel { margin-top: 2px; } /* edge-to-edge feel */
+
+  .panel__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-lg) var(--space-lg) var(--space-md);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .panel__title {
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.224px;
+    color: var(--on-dark);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+  .panel__badge {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--ink-muted-48);
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--rounded-pill);
+    padding: 3px 10px;
+    font-family: var(--font-mono);
+    letter-spacing: 0;
+  }
+  .panel__body { padding: var(--space-lg); }
+
+  /* ── GLOBE COLUMN (left) ────────────────────────────────── */
+  .dashboard__globe {
+    grid-row: 1 / 3;
+    display: flex;
+    flex-direction: column;
+  }
+  @media (max-width: 1068px) {
+    .dashboard__globe { grid-row: auto; }
+  }
+
+  /* ── GLOBE VISUALIZER ───────────────────────────────────── */
+  /*
+    The 3D-illusion globe uses pure CSS + SVG:
+    1. A <div> with radial-gradient mimicking a lit sphere (top-left light source)
+    2. An ::after pseudo-element with a dark radial overlay for the terminator/night side
+    3. SVG layered on top for the orbit ellipse and satellite nodes
+    4. CSS grid lines drawn via SVG <line> elements for lat/lon graticule
+  */
+  .globe-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    max-width: 360px;
+    margin: var(--space-lg) auto;
+  }
+
+  /* The Earth sphere — radial gradient for 3D lit feel */
+  .globe-sphere {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    /*
+      Lit from top-left (the Sun). Layers:
+        1. Bright specular highlight (top-left)
+        2. Midtone ocean blue-gray (day side)
+        3. Dark night side (bottom-right)
+    */
+    background:
+      radial-gradient(
+        ellipse 55% 55% at 35% 32%,
+        rgba(100,160,220,0.45) 0%,
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse 80% 80% at 40% 38%,
+        #2a5f8f 0%,
+        #1a3d6b 40%,
+        #0d2040 70%,
+        #070e1f 100%
+      );
+    box-shadow:
+      /* Product shadow — one drop only, per Design.md */
+      rgba(0,0,0,0.22) 3px 5px 30px 0,
+      /* Inner rim light on day side */
+      inset rgba(100,180,255,0.12) -8px -8px 30px 0;
+    overflow: hidden;
+  }
+
+  /* Land mass silhouettes — drawn as simple CSS shapes */
+  .globe-sphere::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background:
+      /* Rough continent patches via radial gradients for atmospheric feel */
+      radial-gradient(ellipse 18% 12% at 42% 38%, rgba(30,80,30,0.35) 60%, transparent 100%),
+      radial-gradient(ellipse 14% 9%  at 55% 34%, rgba(30,80,30,0.30) 60%, transparent 100%),
+      radial-gradient(ellipse 10% 8%  at 36% 52%, rgba(30,80,30,0.25) 60%, transparent 100%),
+      radial-gradient(ellipse 12% 6%  at 62% 48%, rgba(30,80,30,0.20) 60%, transparent 100%),
+      radial-gradient(ellipse 8%  10% at 28% 44%, rgba(30,80,30,0.25) 60%, transparent 100%);
+  }
+
+  /* Night terminator — dark gradient from the right side */
+  .globe-sphere::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(
+      ellipse 60% 100% at 100% 60%,
+      rgba(2,4,15,0.88) 0%,
+      rgba(2,4,15,0.60) 35%,
+      transparent 65%
+    );
+  }
+
+  /* Atmosphere glow ring */
+  .globe-atmosphere {
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    background: transparent;
+    box-shadow:
+      0 0 18px 4px rgba(41,151,255,0.18),
+      0 0 40px 8px rgba(41,151,255,0.06);
+    pointer-events: none;
+  }
+
+  /* The SVG overlay for orbit + satellites */
+  .globe-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+
+  /* ── TELEMETRY TABLE ─────────────────────────────────────── */
+  .telemetry-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    letter-spacing: -0.224px;
+  }
+  .telemetry-table thead th {
+    font-family: var(--font-body);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--ink-muted-48);
+    padding: var(--space-xs) var(--space-sm);
+    text-align: left;
+    border-bottom: 1px solid var(--hairline-strong);
+    white-space: nowrap;
+  }
+  .telemetry-table tbody tr {
+    border-bottom: 1px solid var(--hairline);
+    transition: background 0.15s;
+  }
+  .telemetry-table tbody tr:last-child { border-bottom: none; }
+  .telemetry-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+  .telemetry-table td {
+    padding: var(--space-xs) var(--space-sm);
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+
+  /* Node name chip */
+  .node-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--rounded-pill);
+    padding: 3px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0;
+  }
+
+  /* Temp / battery semantic states (from Design.md thresholds) */
+  .val-ok       { color: var(--ok);       }
+  .val-warn     { color: var(--warn);     }
+  .val-critical { color: var(--critical); font-weight: 600; }
+
+  /* Payload / working status indicator */
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .status-badge__dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-badge.active .status-badge__dot {
+    background: var(--ok);
+    box-shadow: 0 0 5px var(--ok);
+    animation: pulse-ok 1.8s ease-in-out infinite;
+  }
+  .status-badge.active { color: var(--ok); }
+  .status-badge.idle .status-badge__dot { background: var(--ink-muted-48); }
+  .status-badge.idle { color: var(--ink-muted-48); }
+
+  /* Eclipse indicator */
+  .eclipse-badge {
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+
+  /* Plane label */
+  .plane-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--primary-on-dark);
+    letter-spacing: 0;
+  }
+
+  /* ── TERMINAL / EVENT LOG ────────────────────────────────── */
+  /*
+    Uses tile-3 (darkest) — the deepest surface in the system.
+    Monospaced type, semantic color coding per migration type.
+  */
+  .terminal {
+    background: var(--tile-3);
+    border-radius: var(--rounded-lg);
+    border: 1px solid var(--hairline);
+    overflow: hidden;
+  }
+
+  .terminal__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-sm) var(--space-lg);
+    background: rgba(0,0,0,0.25);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .terminal__title {
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: -0.12px;
+    color: var(--ink-muted-48);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+  /* macOS traffic light dots — decorative, purely aesthetic */
+  .terminal__lights {
+    display: flex;
+    gap: 6px;
+  }
+  .terminal__light {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    opacity: 0.7;
+  }
+  .terminal__light--close  { background: #ff5f57; }
+  .terminal__light--min    { background: #febc2e; }
+  .terminal__light--expand { background: #28c840; }
+
+  .terminal__body {
+    padding: var(--space-md) var(--space-lg);
+    height: 220px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.8;
+    letter-spacing: 0;
+    /* Subtle scrollbar */
+    scrollbar-width: thin;
+    scrollbar-color: var(--tile-3) transparent;
+  }
+  .terminal__body::-webkit-scrollbar { width: 4px; }
+  .terminal__body::-webkit-scrollbar-track { background: transparent; }
+  .terminal__body::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 2px; }
+
+  .terminal__empty {
+    color: var(--ink-muted-48);
+    font-size: 12px;
+    font-style: italic;
+  }
+
+  /* Log line semantic colors — migration types */
+  .log-line { display: block; line-height: 1.7; }
+  .log-ts   { color: var(--ink-muted-48); margin-right: 8px; }
+
+  /* thermal → warn (yellow) */
+  .log-thermal .log-msg { color: var(--warn); }
+  /* lateral  → primary-on-dark (sky blue) */
+  .log-lateral .log-msg { color: var(--primary-on-dark); }
+  /* land     → ok (green) */
+  .log-land .log-msg    { color: var(--ok); }
+
+  /* Type prefix badges */
+  .log-prefix {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    margin-right: 6px;
+    vertical-align: middle;
+    line-height: 1.6;
+  }
+  .log-thermal .log-prefix { background: rgba(255,214,10,0.15);  color: var(--warn); }
+  .log-lateral .log-prefix { background: rgba(41,151,255,0.15);  color: var(--primary-on-dark); }
+  .log-land    .log-prefix { background: rgba(48,209,88,0.15);   color: var(--ok); }
+
+  /* ── STATS ROW (below globe, above terminal) ─────────────── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    margin-top: 2px;
+  }
+  .stat-card {
+    background: var(--tile-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--rounded-lg);
+    padding: var(--space-lg) var(--space-lg);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .stat-card__label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--ink-muted-48);
+  }
+  .stat-card__value {
+    font-family: var(--font-display);
+    font-size: 34px;
+    font-weight: 600;
+    line-height: 1.1;
+    letter-spacing: -0.374px;
+    color: var(--on-dark);
+    transition: color 0.4s;
+  }
+  .stat-card__unit {
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--muted);
+  }
+
+  /* ── LAYOUT WIRING ──────────────────────────────────────── */
+  .dashboard__right {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* ── ANIMATIONS ─────────────────────────────────────────── */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .panel, .terminal, .stat-card {
+    animation: fadeInUp 0.4s ease both;
+  }
+  .dashboard__globe .panel { animation-delay: 0.05s; }
+  .stats-row .stat-card:nth-child(1) { animation-delay: 0.10s; }
+  .stats-row .stat-card:nth-child(2) { animation-delay: 0.15s; }
+  .stats-row .stat-card:nth-child(3) { animation-delay: 0.20s; }
+  .dashboard__right .panel:nth-child(1) { animation-delay: 0.08s; }
+  .dashboard__right .terminal          { animation-delay: 0.12s; }
+
+  /* Satellite node glow pulse on SVG — applied via class */
+  @keyframes sat-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.5; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     GLOBAL NAV
+     Apple: pure black (#000), 44px, ultra-thin, quiet links
+     Connection status lives here as a right-aligned pill CTA
+═══════════════════════════════════════════════════════════ -->
+<nav class="global-nav" role="banner" aria-label="Space Cloud V6 navigation">
+  <div class="global-nav__brand">
+    Space Cloud <span>V6</span>
+  </div>
+  <div class="global-nav__cluster">
+    <!-- UTC Clock -->
+    <div class="global-nav__clock" aria-live="polite" aria-atomic="true">
+      <strong>UTC</strong> <span id="clock-utc">—</span>
+    </div>
+    <!-- MET Clock -->
+    <div class="global-nav__clock" aria-live="polite" aria-atomic="true">
+      <strong>MET</strong> <span id="clock-met">—</span>
+    </div>
+    <!-- Connection status pill -->
+    <div class="conn-pill" id="conn-pill" role="status" aria-live="polite">
+      <span class="conn-pill__dot" aria-hidden="true"></span>
+      <span id="conn-label">Connecting</span>
+    </div>
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════════════════════════
+     PAGE HEADER — Apple tile-deep, display typography
+═══════════════════════════════════════════════════════════ -->
+<header class="page-header" role="heading" aria-level="1">
+  <p class="page-header__eyebrow">Global Operations Center</p>
+  <h1 class="page-header__title">Swarm Dashboard</h1>
+  <p class="page-header__sub">Constellation telemetry &amp; migration event log.</p>
+</header>
+
+<!-- ══════════════════════════════════════════════════════════
+     DASHBOARD GRID
+     Left col : Globe + Stat cards (sticky feel)
+     Right col : Telemetry table + Terminal
+═══════════════════════════════════════════════════════════ -->
+<main class="dashboard" role="main">
+
+  <!-- ── LEFT COLUMN: GLOBE + STATS ────────────────────── -->
+  <div class="dashboard__globe">
+
+    <!-- Orbital Visualizer panel -->
+    <div class="panel" style="flex: 1;" aria-label="Orbital topology visualizer">
+      <div class="panel__header">
+        <span class="panel__title">Orbital Topology</span>
+        <span class="panel__badge" id="sat-count">—</span>
+      </div>
+      <div class="panel__body" style="display:flex; flex-direction:column; align-items:center;">
+
+        <!--
+          GLOBE STRUCTURE:
+            .globe-wrap        — square container, max 360px
+              .globe-sphere    — CSS radial-gradient sphere (3D illusion)
+                ::before       — continent patch layer
+                ::after        — terminator / night-side gradient
+              .globe-atmosphere — glow ring
+              .globe-svg        — SVG for orbit ellipse + satellite nodes
+        -->
+        <div class="globe-wrap" role="img" aria-label="3D globe showing satellite orbital positions">
+          <div class="globe-sphere" id="globe-sphere"></div>
+          <div class="globe-atmosphere"></div>
+
+          <!--
+            SVG OVERLAY
+            viewBox matches the globe-wrap square: 360×360
+            Origin (CX, CY) = (180, 180) — center of the globe
+            Globe radius (GR) = 160px
+            Orbit radius (OR) = 185px — slightly outside globe edge
+
+            Orbit ellipse: semi-axes (a=OR, b=OR*0.35) for perspective tilt
+            Satellites: positioned on the ellipse using:
+              sx = CX + a * cos(angleRad - π/2)
+              sy = CY + b * sin(angleRad - π/2)
+            where angleRad = angle * π / 180
+          -->
+          <svg class="globe-svg" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg"
+               aria-hidden="true">
+            <defs>
+              <!-- Orbit ring gradient — fades on the "behind-globe" arc -->
+              <linearGradient id="orbit-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%"   stop-color="#2997ff" stop-opacity="0.15"/>
+                <stop offset="30%"  stop-color="#2997ff" stop-opacity="0.55"/>
+                <stop offset="50%"  stop-color="#2997ff" stop-opacity="0.7"/>
+                <stop offset="70%"  stop-color="#2997ff" stop-opacity="0.55"/>
+                <stop offset="100%" stop-color="#2997ff" stop-opacity="0.15"/>
+              </linearGradient>
+              <!-- Satellite glow filter -->
+              <filter id="sat-glow" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="2.5" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <!-- Earth center glow -->
+              <radialGradient id="earth-center-glow" cx="50%" cy="50%" r="50%">
+                <stop offset="0%"   stop-color="#1a6aaa" stop-opacity="0.4"/>
+                <stop offset="100%" stop-color="#1a6aaa" stop-opacity="0"/>
+              </radialGradient>
+            </defs>
+
+            <!-- Orbit ring — dashed ellipse for orbital plane indicator -->
+            <!-- Front half (visible, higher opacity) -->
+            <ellipse id="orbit-ellipse-front" cx="180" cy="180"
+                     rx="185" ry="65"
+                     fill="none"
+                     stroke="url(#orbit-grad)"
+                     stroke-width="1"
+                     stroke-dasharray="4 3"
+                     opacity="0.7"/>
+
+            <!-- Satellite nodes — populated by JS -->
+            <g id="sat-nodes"></g>
+          </svg>
+        </div>
+
+        <!-- Orbit plane legend — Apple: small caption, muted -->
+        <div style="display:flex; gap:var(--space-lg); margin-top:var(--space-xs);">
+          <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-muted-48);">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block;"></span>
+            Nominal
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-muted-48);">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block;"></span>
+            Warm
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-muted-48);">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--critical);display:inline-block;"></span>
+            Critical
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-muted-48);">
+            <span style="width:8px;height:8px;border-radius:50%;background:#3a4a6a;display:inline-block;"></span>
+            Eclipse
+          </div>
+        </div>
+
+      </div><!-- /panel__body -->
+    </div><!-- /panel -->
+
+    <!-- Stat Cards Row — below globe -->
+    <div class="stats-row" role="region" aria-label="Fleet summary statistics">
+      <div class="stat-card">
+        <span class="stat-card__label">Active</span>
+        <span class="stat-card__value" id="stat-active">—</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-card__label">Avg Temp</span>
+        <span class="stat-card__value" id="stat-temp">—<span class="stat-card__unit"> °C</span></span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-card__label">In Eclipse</span>
+        <span class="stat-card__value" id="stat-eclipse">—</span>
+      </div>
+    </div>
+
+  </div><!-- /dashboard__globe -->
+
+  <!-- ── RIGHT COLUMN: TABLE + TERMINAL ────────────────── -->
+  <div class="dashboard__right">
+
+    <!-- Telemetry Matrix panel -->
+    <div class="panel" role="region" aria-label="Constellation hardware status">
+      <div class="panel__header">
+        <span class="panel__title">Telemetry Matrix</span>
+        <span class="panel__badge" id="telem-ts">—</span>
+      </div>
+      <div style="overflow-x: auto;">
+        <table class="telemetry-table" aria-label="Satellite fleet status">
+          <thead>
+            <tr>
+              <th scope="col">Node</th>
+              <th scope="col">Plane</th>
+              <th scope="col">°Angle</th>
+              <th scope="col">Temp</th>
+              <th scope="col">Battery</th>
+              <th scope="col">Eclipse</th>
+              <th scope="col">Payload</th>
+            </tr>
+          </thead>
+          <tbody id="fleet-tbody">
+            <!-- populated by JS -->
+          </tbody>
+        </table>
+      </div>
+    </div><!-- /panel -->
+
+    <!-- System Terminal / Event Log -->
+    <div class="terminal" role="region" aria-label="Migration event log terminal">
+      <div class="terminal__toolbar">
+        <div class="terminal__lights" aria-hidden="true">
+          <span class="terminal__light terminal__light--close"></span>
+          <span class="terminal__light terminal__light--min"></span>
+          <span class="terminal__light terminal__light--expand"></span>
+        </div>
+        <span class="terminal__title">System Terminal — Migration Events</span>
+        <span style="font-size:11px;color:var(--ink-muted-48);font-family:var(--font-mono);" id="log-count">0 events</span>
+      </div>
+      <div class="terminal__body" id="timeline" aria-live="polite" aria-relevant="additions">
+        <span class="terminal__empty">Waiting for satellite telemetry...</span>
+      </div>
+    </div><!-- /terminal -->
+
+  </div><!-- /dashboard__right -->
+
+</main>
+
+<script>
+/*
+  ============================================================
+  SPACE CLOUD V6 — DASHBOARD JS
+  ============================================================
+  Responsibilities:
+  1. Clock: UTC + Mission Elapsed Time (MET) updated every second
+  2. SSE: Connect to /stream, parse JSON, dispatch to renderers
+  3. Globe: Pure SVG math — satellites on ellipse orbit path
+  4. Table: Telemetry Matrix with semantic color coding
+  5. Terminal: Migration event log with type-colored entries
+  6. Stats: Active count, avg temp, eclipse count
+  ============================================================
+*/
+
+/* ── CONSTANTS ────────────────────────────────────────── */
+// Globe SVG coordinate system
+const CX = 180;           // center X (matches viewBox 360)
+const CY = 180;           // center Y
+const ORBIT_A = 185;      // orbit ellipse semi-major axis (horizontal)
+const ORBIT_B = 65;       // orbit ellipse semi-minor axis (tilted perspective)
+const GLOBE_R = 160;      // visual globe radius in SVG units
+
+// MET epoch: mission start — set to when the page loaded
+const MET_EPOCH = Date.now();
+
+/* ── CLOCK ────────────────────────────────────────────── */
+function padZ(n) { return String(n).padStart(2, '0'); }
+
+function updateClocks() {
+  const now = new Date();
+
+  // UTC
+  const utc = `${padZ(now.getUTCHours())}:${padZ(now.getUTCMinutes())}:${padZ(now.getUTCSeconds())} Z`;
+  document.getElementById('clock-utc').textContent = utc;
+
+  // MET — days + hh:mm:ss since page load
+  const elapsed = Date.now() - MET_EPOCH;
+  const totalSec = Math.floor(elapsed / 1000);
+  const ss = totalSec % 60;
+  const mm = Math.floor(totalSec / 60) % 60;
+  const hh = Math.floor(totalSec / 3600) % 24;
+  const dd = Math.floor(totalSec / 86400);
+  const met = `${padZ(dd)}:${padZ(hh)}:${padZ(mm)}:${padZ(ss)}`;
+  document.getElementById('clock-met').textContent = met;
+}
+
+setInterval(updateClocks, 1000);
+updateClocks(); // immediate first tick
+
+/* ── HELPER: Satellite angular position → SVG coordinates ──
+  The orbit is an ellipse centered at (CX, CY) with
+  semi-axes ORBIT_A (horizontal) and ORBIT_B (vertical tilt).
+
+  The satellite's `angle` property (0–360°) maps clockwise
+  around the orbit starting from the top (12-o'clock).
+
+  Standard polar → ellipse:
+    x = CX + a * cos(θ)
+    y = CY + b * sin(θ)
+
+  We subtract π/2 so that angle=0 places the satellite at top,
+  matching the original canvas implementation.
+──────────────────────────────────────────────────────────── */
+function angleToSVG(angleDeg) {
+  const rad = (angleDeg - 90) * Math.PI / 180;
+  return {
+    x: CX + ORBIT_A * Math.cos(rad),
+    y: CY + ORBIT_B * Math.sin(rad)
+  };
+}
+
+/*
+  Whether a satellite's SVG y-coordinate places it "in front"
+  of the globe (lower half of the ellipse → y > CY) or "behind"
+  it (upper half → y < CY). Used for opacity/size depth cue.
+*/
+function isInFront(svgY) { return svgY >= CY; }
+
+/* ── HELPER: Temp/Battery → CSS class ──────────────────── */
+function tempClass(temp) {
+  if (temp > 80) return 'val-critical';
+  if (temp > 60) return 'val-warn';
+  return 'val-ok';
+}
+
+function batteryClass(batt) {
+  if (batt < 15) return 'val-critical';
+  if (batt < 30) return 'val-warn';
+  return 'val-ok';
+}
+
+/* ── HELPER: Satellite color by temp ───────────────────── */
+function satColor(temp, isEclipse) {
+  if (isEclipse) return '#3a4a6a';           // muted blue-gray
+  if (temp > 80)  return '#ff453a';           // critical red
+  if (temp > 60)  return '#ffd60a';           // warn yellow
+  return '#30d158';                            // ok green
+}
+
+/* ── GLOBE RENDERER ─────────────────────────────────────── */
+function drawGlobe(fleet) {
+  const satNodes = document.getElementById('sat-nodes');
+  satNodes.innerHTML = ''; // clear previous frame
+
+  let activeSats = 0;
+  let totalTemp = 0;
+  let tempCount = 0;
+  let eclipseCount = 0;
+
+  // Collect satellite entries (skip ground stations)
+  const satellites = Object.entries(fleet).filter(([, d]) => d.type !== 'ground');
+
+  document.getElementById('sat-count').textContent =
+    `${satellites.length} satellite${satellites.length !== 1 ? 's' : ''}`;
+
+  // Sort by y-position so satellites "in front" render on top
+  const sorted = satellites
+    .map(([name, data]) => ({ name, data, pos: angleToSVG(data.angle || 0) }))
+    .sort((a, b) => a.pos.y - b.pos.y);
+
+  sorted.forEach(({ name, data, pos }) => {
+    const { x, y } = pos;
+    const front = isInFront(y);
+    const color = satColor(data.temp || 0, data.eclipse);
+    const shortName = name.replace('minikube-', '');
+    const alpha = front ? 1.0 : 0.35;   // depth cue: behind-globe satellites are dim
+    const r = front ? 5.5 : 4;           // depth cue: slightly smaller when behind
+
+    // Outer ring (working satellites only)
+    if (data.is_working) {
+      const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      ring.setAttribute('cx', x);
+      ring.setAttribute('cy', y);
+      ring.setAttribute('r', r + 5);
+      ring.setAttribute('fill', 'none');
+      ring.setAttribute('stroke', color);
+      ring.setAttribute('stroke-width', '1');
+      ring.setAttribute('opacity', (alpha * 0.4).toFixed(2));
+      satNodes.appendChild(ring);
+    }
+
+    // Main satellite dot
+    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot.setAttribute('cx', x);
+    dot.setAttribute('cy', y);
+    dot.setAttribute('r', r);
+    dot.setAttribute('fill', color);
+    dot.setAttribute('opacity', alpha);
+    if (front) dot.setAttribute('filter', 'url(#sat-glow)');
+    satNodes.appendChild(dot);
+
+    // Label (only for front satellites — behind ones would clutter)
+    if (front) {
+      const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('x', x);
+      label.setAttribute('y', y - r - 5);
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('fill', '#cccccc');
+      label.setAttribute('font-size', '9');
+      label.setAttribute('font-family', 'SF Mono, Courier New, monospace');
+      label.setAttribute('opacity', alpha);
+      label.textContent = shortName;
+      satNodes.appendChild(label);
+    }
+
+    // Stats accumulation
+    if (data.is_working) activeSats++;
+    if (data.temp !== undefined) { totalTemp += data.temp; tempCount++; }
+    if (data.eclipse) eclipseCount++;
+  });
+
+  // Update stat cards
+  document.getElementById('stat-active').textContent = activeSats;
+  const avgTemp = tempCount > 0 ? (totalTemp / tempCount).toFixed(1) : '—';
+  document.getElementById('stat-temp').innerHTML =
+    `${avgTemp}<span class="stat-card__unit"> °C</span>`;
+  document.getElementById('stat-eclipse').textContent = eclipseCount;
+
+  // Color stat-temp by threshold
+  const tempEl = document.getElementById('stat-temp');
+  if (tempCount > 0) {
+    const t = totalTemp / tempCount;
+    tempEl.style.color = t > 80 ? 'var(--critical)' : t > 60 ? 'var(--warn)' : 'var(--on-dark)';
+  }
+}
+
+/* ── TELEMETRY TABLE RENDERER ───────────────────────────── */
+function renderFleetTable(fleet) {
+  const tbody = document.getElementById('fleet-tbody');
+  tbody.innerHTML = '';
+
+  const satellites = Object.entries(fleet).filter(([, d]) => d.type !== 'ground');
+
+  if (satellites.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--ink-muted-48);padding:var(--space-lg);text-align:center;font-size:14px;">No satellites in fleet data.</td></tr>`;
+    return;
+  }
+
+  satellites.forEach(([name, data]) => {
+    const shortName = name.replace('minikube-', '');
+    const temp    = data.temp    !== undefined ? data.temp.toFixed(1)    : '—';
+    const battery = data.battery !== undefined ? data.battery.toFixed(0) : '—';
+    const angle   = data.angle   !== undefined ? Math.round(data.angle)  : '—';
+    const plane   = data.orbit_plane || '—';
+    const eclipse = data.eclipse ? '🌑' : '☀️';
+
+    // Payload / working status badge
+    const isActive = data.is_working;
+    const payloadBadge = `
+      <span class="status-badge ${isActive ? 'active' : 'idle'}">
+        <span class="status-badge__dot"></span>
+        ${isActive ? 'ACTIVE' : 'IDLE'}
+      </span>`;
+
+    const tClass = typeof data.temp === 'number' ? tempClass(data.temp) : '';
+    const bClass = typeof data.battery === 'number' ? batteryClass(data.battery) : '';
+
+    tbody.innerHTML += `
+      <tr>
+        <td><span class="node-chip">${shortName}</span></td>
+        <td><span class="plane-label">${plane}</span></td>
+        <td style="color:var(--muted);font-family:var(--font-mono);font-size:12px;">${angle}°</td>
+        <td class="${tClass}" style="font-family:var(--font-mono);font-size:12px;">${temp}°C</td>
+        <td class="${bClass}" style="font-family:var(--font-mono);font-size:12px;">${battery}%</td>
+        <td class="eclipse-badge">${eclipse}</td>
+        <td>${payloadBadge}</td>
+      </tr>`;
+  });
+
+  // Timestamp
+  document.getElementById('telem-ts').textContent =
+    new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
+
+/* ── TERMINAL RENDERER ──────────────────────────────────── */
+function renderTerminal(migLog) {
+  if (!migLog || migLog.length === 0) return;
+
+  const timeline = document.getElementById('timeline');
+  document.getElementById('log-count').textContent = `${migLog.length} event${migLog.length !== 1 ? 's' : ''}`;
+
+  // Map log type → display label + CSS class
+  const typeMap = {
+    thermal : { label: 'THERMAL', cls: 'log-thermal' },
+    lateral : { label: 'LATERAL', cls: 'log-lateral' },
+    land    : { label: 'LAND',    cls: 'log-land'    },
+  };
+
+  // Reverse so newest entries appear first
+  const entries = [...migLog].reverse();
+
+  timeline.innerHTML = entries.map(entry => {
+    const ts  = new Date(entry.ts * 1000).toLocaleTimeString('en-GB', { hour12: false });
+    const map = typeMap[entry.type] || { label: entry.type.toUpperCase(), cls: '' };
+    return `
+      <span class="log-line ${map.cls}">
+        <span class="log-ts">[${ts}]</span>
+        <span class="log-prefix">${map.label}</span>
+        <span class="log-msg">${entry.message}</span>
+      </span>`;
+  }).join('');
+
+  // Auto-scroll to top (newest first)
+  timeline.scrollTop = 0;
+}
+
+/* ── CONNECTION STATUS ──────────────────────────────────── */
+const connPill  = document.getElementById('conn-pill');
+const connLabel = document.getElementById('conn-label');
+
+function setConnStatus(state) {
+  connPill.className  = `conn-pill ${state}`;
+  connLabel.textContent = {
+    live: 'Live',
+    warn: 'Reconnecting',
+    off : 'Disconnected'
+  }[state] || 'Connecting';
+}
+
+/* ── SSE STREAM ─────────────────────────────────────────── */
+/*
+  CRITICAL: This EventSource connection must remain intact.
+  Backend streams JSON with shape:
+  {
+    fleet: { [nodeName]: { type, temp, battery, angle, eclipse, is_working, orbit_plane } },
+    migration_log: [{ ts, type, message }]
+  }
+  Ground stations (type === 'ground') are excluded from all visuals.
+*/
+const evtSource = new EventSource('/stream');
+
+evtSource.onopen = () => setConnStatus('live');
+evtSource.onerror = () => setConnStatus('warn');
+
+evtSource.onmessage = (event) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(event.data);
+  } catch (e) {
+    console.error('[SC6] Failed to parse SSE payload:', e);
+    return;
+  }
+
+  const fleet    = parsed.fleet         || {};
+  const migLog   = parsed.migration_log || [];
+
+  // Dispatch to all renderers
+  drawGlobe(fleet);
+  renderFleetTable(fleet);
+  renderTerminal(migLog);
+};
+
+/* ── INIT ───────────────────────────────────────────────── */
+// Draw an empty globe immediately so the UI doesn't feel broken
+// before the first SSE message arrives
+drawGlobe({});
+</script>
+</body>
+</html>

@@ -93,6 +93,7 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 RUN pip install --no-cache-dir redis
 COPY floating_master_dashboard.py .
+COPY floating_master_dashboard.html .
 CMD ["python", "floating_master_dashboard.py"]
 EOF
 docker build -t $IMG_TOPO_DASH -f /tmp/Dockerfile.topo_dash "$PATH_TOPO_DASH" > /dev/null

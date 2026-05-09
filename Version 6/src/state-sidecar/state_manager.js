@@ -10,16 +10,16 @@
 //   - broadcastToClients() sends the 2D fire mask and CoM to the dashboard UI
 // =============================================================================
 
-const express    = require('express');
-const redis      = require('redis');
-const fs         = require('fs');
-const http       = require('http');   // Used for the local /flush call to the worker
+const express = require('express');
+const redis = require('redis');
+const fs = require('fs');
+const http = require('http');   // Used for the local /flush call to the worker
 const bodyParser = require('body-parser');
 
-const app  = express();
+const app = express();
 const PORT = 80;
 
-let isFlushing  = false;
+let isFlushing = false;
 let flushLocked = false;  // FIX (Change 1.3): Blocks lightweight POSTs after a full flush is received
 
 // Accept large JSON payloads because the fire mask is a 4096-element array
@@ -35,23 +35,23 @@ app.use(bodyParser.json({ limit: '50mb' }));
 // During a pre-freeze flush, it contains the full STM + LTM arrays too.
 let guardianMemory = {
     predicted_fire_mask: [],
-    center_of_mass:      { x: 0, y: 0 },
-    fire_pixel_count:    0,
-    sample_count:        0,
-    stm_size:            0,
-    ltm_size:            0,
-    status:              "WAITING_PAYLOAD",
-    last_contact:        null
+    center_of_mass: { x: 0, y: 0 },
+    fire_pixel_count: 0,
+    sample_count: 0,
+    stm_size: 0,
+    ltm_size: 0,
+    status: "WAITING_PAYLOAD",
+    last_contact: null
 };
 
 // flightMode: Blocks new state writes while the pod is being CRIU-frozen
-let flightMode     = false;
+let flightMode = false;
 let serverInstance = null;
-let activeSockets  = new Set();  // Tracks open TCP sockets for cleanup before freeze
-let dirWatcher     = null;
+let activeSockets = new Set();  // Tracks open TCP sockets for cleanup before freeze
+let dirWatcher = null;
 
-let fleetState  = {};   // Cache of satellite hardware telemetry for the dashboard
-let sseClients  = [];   // Connected web browser SSE streams
+let fleetState = {};   // Cache of satellite hardware telemetry for the dashboard
+let sseClients = [];   // Connected web browser SSE streams
 let redisSubscriber = null;
 let payloadLastLandedTime = Date.now() / 1000;
 
@@ -72,7 +72,7 @@ async function initRedisSub() {
 
     // Connect to the Ground Station Redis (renamed from "system-redis" in V6)
     redisSubscriber = redis.createClient({ url: 'redis://ground-redis:6379' });
-    redisSubscriber.on('error', () => {});  // Silently retry on connection drop
+    redisSubscriber.on('error', () => { });  // Silently retry on connection drop
 
     try {
         await redisSubscriber.connect();
@@ -125,7 +125,7 @@ app.post('/state', (req, res) => {
     //   Lightweight → merge only telemetry keys; existing heavy arrays are
     //                 preserved by keeping them from the previous guardianMemory.
     // =========================================================================
-    const PROTECTED_KEYS = ['stm_X', 'stm_y', 'ltm_X', 'ltm_y'];
+    const PROTECTED_KEYS = ['stm_X', 'stm_y', 'ltm_X', 'ltm_y', 'eval_state'];
 
     if (isFullFlush) {
         // Full flush: replace everything — the payload contains all keys
@@ -150,7 +150,7 @@ app.post('/state', (req, res) => {
         if (isFullFlush) {
             console.log(`✅ GUARDIAN: Massive pre-freeze payload verified (STM: ${stmSize}). Signaling Agent.`);
             flushLocked = true;  // FIX (Change 1.3): Lock memory — no more lightweight overwrites
-            try { fs.writeFileSync('/tmp/flush_complete', ''); } catch (e) {}
+            try { fs.writeFileSync('/tmp/flush_complete', ''); } catch (e) { }
         } else {
             // Log the collision but DO NOT write flush_complete!
             console.log("⏳ GUARDIAN: Received periodic lightweight sync. Ignoring. Awaiting massive flush payload...");
@@ -182,19 +182,20 @@ function broadcastToClients() {
      * The 'center_of_mass' drives the crosshair overlay on the predicted mask.
      */
     const payload = JSON.stringify({
-        guardian_id:    process.env.HOSTNAME,
+        guardian_id: process.env.HOSTNAME,
         internal_state: guardianMemory,   // Contains fire mask, CoM, memory sizes
-        environment:    fleetState,        // Hardware telemetry for all satellites
-        flight_mode:    flightMode
+        environment: fleetState,        // Hardware telemetry for all satellites
+        flight_mode: flightMode,
+        migration_epoch: (guardianMemory.eval_metrics || {}).migration_epoch || 0
     });
     sseClients.forEach(client => client.write(`data: ${payload}\n\n`));
 }
 
 // SSE Endpoint: Browsers connect here to receive a live event stream
 app.get('/api/stream', (req, res) => {
-    res.setHeader('Content-Type',  'text/event-stream');
+    res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection',    'keep-alive');
+    res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();  // Flush the headers immediately to open the stream
 
     sseClients.push(res);
@@ -247,10 +248,10 @@ setInterval(() => {
     const fs = require('fs');
     if (flightMode && fs.existsSync('/tmp/landed')) {
         console.log("✅ LANDING CONFIRMED! Reanimating Guardian...");
-        try { fs.unlinkSync('/tmp/landed'); } catch (e) {}
+        try { fs.unlinkSync('/tmp/landed'); } catch (e) { }
 
-        flightMode  = false;
-        isFlushing  = false;
+        flightMode = false;
+        isFlushing = false;
         flushLocked = false;  // FIX (Change 1.3): Unlock for the next migration cycle
 
         // Reset the migration cooldown timer exactly when we wake up on the new node
@@ -284,11 +285,11 @@ function setupWatcher() {
     const FILES_TO_CLEAN = ['/tmp/flush_complete', '/tmp/prepare_jump'];
     FILES_TO_CLEAN.forEach(f => {
         if (fs.existsSync(f)) {
-            try { fs.unlinkSync(f); } catch(e){}
+            try { fs.unlinkSync(f); } catch (e) { }
         }
     });
     if (!isFlushing && fs.existsSync('/tmp/flush_state')) {
-        try { fs.unlinkSync('/tmp/flush_state'); } catch(e){}
+        try { fs.unlinkSync('/tmp/flush_state'); } catch (e) { }
     }
 
     try {
@@ -324,7 +325,7 @@ function setupWatcher() {
 
                     // Disconnect gracefully from Ground Redis
                     if (redisSubscriber) {
-                        try { await redisSubscriber.quit(); } catch (e) {}
+                        try { await redisSubscriber.quit(); } catch (e) { }
                         redisSubscriber = null;
                     }
 
@@ -348,18 +349,18 @@ function callWorkerFlush() {
 
     const options = {
         hostname: 'localhost',
-        port:     9000,
-        path:     '/flush',
-        method:   'POST',
-        headers:  { 'Content-Length': 0 }
+        port: 9000,
+        path: '/flush',
+        method: 'POST',
+        headers: { 'Content-Length': 0 }
     };
 
     const req = http.request(options, (res) => {
         // We only care that the worker acknowledged the command.
         // We DO NOT write flush_complete here.
-        res.on('data', () => {});
+        res.on('data', () => { });
         res.on('end', () => {
-             console.log("✅ GUARDIAN: Worker acknowledged flush command. Awaiting payload...");
+            console.log("✅ GUARDIAN: Worker acknowledged flush command. Awaiting payload...");
         });
     });
 
@@ -395,7 +396,7 @@ setInterval(() => {
 
         // ASYNC IPC: Dump the state for the Node Agent to read instantly
         const agentState = {
-            center_of_mass: guardianMemory.center_of_mass || {x: 32, y: 32},
+            center_of_mass: guardianMemory.center_of_mass || { x: 32, y: 32 },
             fire_pixel_count: guardianMemory.fire_pixel_count || 0,
             last_migration_time: payloadLastLandedTime
         };

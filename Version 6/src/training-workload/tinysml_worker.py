@@ -96,6 +96,30 @@ sample_count = 0
 fire_pixel_count = 0
 instances_trained = 0
 
+# ── EVALUATION BUFFERS (Zero-Allocation) ──────────────────────
+EVAL_ROLLING_N     = 50                                       # Rolling window size
+prev_pred_flat     = np.zeros(((GRID_H - 2) * (GRID_W - 2),), dtype=np.int8)  # T-1 prediction
+has_prev_pred      = False                                    # Guard for first frame
+
+# Rolling F1 ring buffer (pre-allocated, never resized)
+f1_ring            = np.zeros(EVAL_ROLLING_N, dtype=np.float32)
+f1_ring_ptr        = 0
+f1_ring_count      = 0
+
+# Migration delta tracking
+iou_accum_pre      = np.float64(0.0)   # Sum of IoU values before migration
+iou_count_pre      = np.int32(0)
+iou_accum_post     = np.float64(0.0)
+iou_count_post     = np.int32(0)
+migration_epoch    = 0                 # Incremented on each restore
+last_migration_sample = 0             # sample_count at last restore
+
+# Latest scalars (updated every frame, read by build_state_payload)
+current_iou        = np.float32(0.0)
+current_f1         = np.float32(0.0)
+rolling_f1_mean    = np.float32(0.0)
+delta_mig          = np.float32(0.0)
+
 # Synchronization flags used during the pre-freeze flush handshake with the Guardian
 flush_requested = threading.Event()
 flush_done = threading.Event()
@@ -346,6 +370,61 @@ def compute_center_of_mass(pred_mask_2d):
     return {"x": cx / total_mass, "y": cy / total_mass}
 
 
+def evaluate_timeshift(gt_flat, pred_flat):
+    """
+    Time-Shift Evaluation: compare prediction(T-1) against ground_truth(T).
+    All ops are bitwise NumPy — zero Python-level allocation.
+    """
+    global has_prev_pred, prev_pred_flat
+    global current_iou, current_f1, rolling_f1_mean
+    global f1_ring_ptr, f1_ring_count
+    global iou_accum_pre, iou_count_pre, iou_accum_post, iou_count_post, delta_mig
+
+    if not has_prev_pred:
+        # First frame: stash prediction, skip evaluation
+        np.copyto(prev_pred_flat, pred_flat)
+        has_prev_pred = True
+        return
+
+    # ── IoU (Intersection over Union) ────────────────────────
+    # Uses bitwise AND/OR on int8 arrays — runs in C, zero temp allocs
+    intersection = np.count_nonzero(prev_pred_flat & gt_flat)
+    union        = np.count_nonzero(prev_pred_flat | gt_flat)
+    current_iou  = np.float32(intersection / union) if union > 0 else np.float32(1.0)
+
+    # ── F1-Score ─────────────────────────────────────────────
+    tp = intersection                                    # pred=1 AND gt=1
+    fp = np.count_nonzero(prev_pred_flat & ~gt_flat)     # pred=1 AND gt=0
+    fn = np.count_nonzero(~prev_pred_flat & gt_flat)     # pred=0 AND gt=1
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    current_f1 = np.float32(
+        2 * precision * recall / (precision + recall)
+        if (precision + recall) > 0 else 0.0
+    )
+
+    # ── Rolling F1 Ring Buffer ───────────────────────────────
+    f1_ring[f1_ring_ptr] = current_f1
+    f1_ring_ptr   = (f1_ring_ptr + 1) % EVAL_ROLLING_N
+    f1_ring_count = min(f1_ring_count + 1, EVAL_ROLLING_N)
+    rolling_f1_mean = np.float32(np.mean(f1_ring[:f1_ring_count]))
+
+    # ── Migration Delta (ΔMig) ───────────────────────────────
+    if sample_count <= last_migration_sample:
+        iou_accum_pre += current_iou
+        iou_count_pre += 1
+    else:
+        iou_accum_post += current_iou
+        iou_count_post += 1
+
+    avg_pre  = (iou_accum_pre / iou_count_pre)   if iou_count_pre  > 0 else 0.0
+    avg_post = (iou_accum_post / iou_count_post) if iou_count_post > 0 else 0.0
+    delta_mig = np.float32(avg_post - avg_pre)
+
+    # Stash current prediction as T-1 for next frame
+    np.copyto(prev_pred_flat, pred_flat)
+
+
 # =============================================================================
 # SECTION 4: FRAME PROCESSING PIPELINE (Zero-Allocation Execution)
 # =============================================================================
@@ -406,6 +485,10 @@ def process_frame(channels, fire_mask_label):
             valid_ltm_X, valid_ltm_y, valid_ltm_X_sq
         )
 
+    # ── TIME-SHIFT EVALUATION (before tolist destroys the numpy view) ──
+    gt_inner = np.array(fire_mask_label, dtype=np.int8)[1:-1, 1:-1].ravel()
+    evaluate_timeshift(gt_inner, preds.astype(np.int8))
+
     pred_2d = preds.reshape(inner_h, inner_w).tolist()
 
     # Selectively train new examples (We train on all actual fires, and 2% of non-fires
@@ -450,6 +533,14 @@ def build_state_payload():
         "stm_size": int(stm_count),
         "ltm_size": int(ltm_count),
         "status": "TRACKING",
+        "eval_metrics": {
+            "iou":             float(current_iou),
+            "f1":              float(current_f1),
+            "rolling_f1":      float(rolling_f1_mean),
+            "delta_mig":       float(delta_mig),
+            "migration_epoch": int(migration_epoch),
+            "sample_at_migration": int(last_migration_sample)
+        },
         # Explicitly declare this is a lightweight telemetry sync, NOT the
         # massive pre-freeze memory flush. The FlushHandler will override
         # this to True before appending the massive STM/LTM matrices.
@@ -546,6 +637,28 @@ def load_initial_state():
                             ltm_ptr = (ltm_ptr + 1) % LTM_MAX
                             ltm_count = min(ltm_count + 1, LTM_MAX)
                         print(f"✅ WORKER: Restored {ltm_count} LTM memories.", flush=True)
+
+                    # Restore evaluation continuity across migration
+                    if "eval_state" in data:
+                        global has_prev_pred, prev_pred_flat, f1_ring, f1_ring_ptr, f1_ring_count
+                        global migration_epoch, last_migration_sample, iou_accum_pre, iou_count_pre
+                        global iou_accum_post, iou_count_post
+
+                        ev = data["eval_state"]
+                        has_prev_pred      = True
+                        prev_pred_flat[:]  = np.array(ev.get("prev_pred_flat", []), dtype=np.int8)[:len(prev_pred_flat)]
+                        f1_ring[:]         = np.array(ev.get("f1_ring", []), dtype=np.float32)[:EVAL_ROLLING_N]
+                        f1_ring_ptr        = ev.get("f1_ring_ptr", 0)
+                        f1_ring_count      = ev.get("f1_ring_count", 0)
+                        migration_epoch    = ev.get("migration_epoch", 0) + 1
+                        last_migration_sample = sample_count  # Mark "now" as the migration boundary
+                        
+                        # Reset post-migration accumulators; keep pre-migration averages
+                        iou_accum_pre      = np.float64(ev.get("iou_accum_post", 0.0))
+                        iou_count_pre      = np.int32(ev.get("iou_count_post", 0))
+                        iou_accum_post     = np.float64(0.0)
+                        iou_count_post     = np.int32(0)
+
                 return
         except requests.exceptions.RequestException:
             time.sleep(1)
@@ -593,6 +706,18 @@ class FlushHandler(BaseHTTPRequestHandler):
             full_state["stm_y"] = stm_y[:stm_count].tolist() if stm_count > 0 else []
             full_state["ltm_X"] = ltm_X[:ltm_count].tolist() if ltm_count > 0 else []
             full_state["ltm_y"] = ltm_y[:ltm_count].tolist() if ltm_count > 0 else []
+
+            full_state["eval_state"] = {
+                "prev_pred_flat":   prev_pred_flat.tolist(),
+                "f1_ring":          f1_ring[:f1_ring_count].tolist(),
+                "f1_ring_ptr":      int(f1_ring_ptr),
+                "f1_ring_count":    int(f1_ring_count),
+                "migration_epoch":  int(migration_epoch),
+                "iou_accum_pre":    float(iou_accum_pre),
+                "iou_count_pre":    int(iou_count_pre),
+                "iou_accum_post":   float(iou_accum_post),
+                "iou_count_post":   int(iou_count_post)
+            }
 
             try:
                 print("🚨 WORKER: Beginning massive POST /state to Guardian...", flush=True)

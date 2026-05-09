@@ -335,6 +335,44 @@
   <!-- DIAGNOSTICS & SYSTEM CONSOLE -->
   <div style="display: flex; flex-direction: column; gap: 24px;">
 
+    <!-- EVALUATION METRICS -->
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__title">Model Accuracy (Time-Shift)</span>
+        <span id="delta-mig-badge" class="node-badge" style="font-size:11px;">ΔMig: --</span>
+      </div>
+      <div class="panel__body">
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <div class="metric-box__label">IoU (T-1 → T)</div>
+            <div class="metric-box__val" id="iou-val">—</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-box__label">Rolling F1 (N=50)</div>
+            <div class="metric-box__val" id="f1-val">—</div>
+          </div>
+        </div>
+        <div style="margin-bottom:12px;">
+          <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">
+            IoU OVER TIME
+          </div>
+          <canvas id="spark-iou" height="80"
+                  style="width:100%; background:var(--surface-black);
+                         border:1px solid var(--hairline-strong);
+                         border-radius:var(--rounded-sm);"></canvas>
+        </div>
+        <div>
+          <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">
+            F1 OVER TIME
+          </div>
+          <canvas id="spark-f1" height="80"
+                  style="width:100%; background:var(--surface-black);
+                         border:1px solid var(--hairline-strong);
+                         border-radius:var(--rounded-sm);"></canvas>
+        </div>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="panel__header">
         <span class="panel__title">Payload Diagnostics</span>
@@ -432,6 +470,55 @@ function currentFireColor(val) {
 // Solid Sky Link Blue for prediction map
 function predictedFireColor(val) {
     return '#2997ff'; // var(--primary-on-dark)
+}
+
+// ── SPARKLINE STATE ──────────────────────────────────────────
+const SPARK_MAX_POINTS = 200;
+const sparkIoU = { vals: [], migrations: [] };
+const sparkF1  = { vals: [], migrations: [] };
+let lastEpoch = 0;
+
+function drawSparkline(canvasId, data) {
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width = canvas.clientWidth * devicePixelRatio;
+    const H = canvas.height = 80 * devicePixelRatio;
+    ctx.clearRect(0, 0, W, H);
+
+    if (data.vals.length < 2) return;
+    const n = data.vals.length;
+    const xStep = W / (SPARK_MAX_POINTS - 1);
+
+    // ── Migration markers (vertical red lines) ──────────────
+    ctx.strokeStyle = 'rgba(255, 69, 58, 0.7)';
+    ctx.lineWidth = 2 * devicePixelRatio;
+    ctx.setLineDash([4 * devicePixelRatio, 3 * devicePixelRatio]);
+    for (const mi of data.migrations) {
+        const x = mi * xStep;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // ── Data line ───────────────────────────────────────────
+    ctx.strokeStyle = '#2997ff';
+    ctx.lineWidth = 1.5 * devicePixelRatio;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+        const x = i * xStep;
+        const y = H - (data.vals[i] * H);  // 0..1 → bottom..top
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // ── Glow effect under the line ──────────────────────────
+    ctx.lineTo((n - 1) * xStep, H);
+    ctx.lineTo(0, H);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, 'rgba(41, 151, 255, 0.15)');
+    grad.addColorStop(1, 'rgba(41, 151, 255, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fill();
 }
 
 // ============================================================================
@@ -561,6 +648,41 @@ evtSource.onmessage = (event) => {
     document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();
     document.getElementById('fire-count').textContent = (state.fire_pixel_count || 0).toLocaleString();
     updateBuffers(state.stm_size || 0, state.ltm_size || 0);
+
+    // ── Evaluation Metrics ──────────────────────────────────
+    const evalM = state.eval_metrics || {};
+    const iou = evalM.iou ?? 0;
+    const f1  = evalM.rolling_f1 ?? 0;
+
+    document.getElementById('iou-val').textContent  = (iou * 100).toFixed(1) + '%';
+    document.getElementById('f1-val').textContent    = (f1 * 100).toFixed(1) + '%';
+    document.getElementById('delta-mig-badge').textContent =
+        `ΔMig: ${(evalM.delta_mig ?? 0) > 0 ? '+' : ''}${((evalM.delta_mig ?? 0) * 100).toFixed(1)}%`;
+
+    // Push to sparkline buffers
+    sparkIoU.vals.push(iou);
+    sparkF1.vals.push(evalM.f1 ?? 0);
+
+    // Migration marker detection
+    const epoch = data.migration_epoch || 0;
+    if (epoch > lastEpoch) {
+        sparkIoU.migrations.push(sparkIoU.vals.length - 1);
+        sparkF1.migrations.push(sparkF1.vals.length - 1);
+        lastEpoch = epoch;
+        sysLog(`Migration #${epoch} detected — ΔMig marker placed.`, 'log-action');
+    }
+
+    // Ring-buffer trim
+    if (sparkIoU.vals.length > SPARK_MAX_POINTS) {
+        const excess = sparkIoU.vals.length - SPARK_MAX_POINTS;
+        sparkIoU.vals.splice(0, excess);
+        sparkIoU.migrations = sparkIoU.migrations.map(m => m - excess).filter(m => m >= 0);
+        sparkF1.vals.splice(0, excess);
+        sparkF1.migrations = sparkF1.migrations.map(m => m - excess).filter(m => m >= 0);
+    }
+
+    drawSparkline('spark-iou', sparkIoU);
+    drawSparkline('spark-f1', sparkF1);
 
     if (Object.keys(env).length > 0) renderTelemetryMatrix(env);
 };

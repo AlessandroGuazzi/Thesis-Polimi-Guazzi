@@ -370,6 +370,11 @@ def compute_center_of_mass(pred_mask_2d):
     return {"x": cx / total_mass, "y": cy / total_mass}
 
 
+# -----------------------------------------------------------------------------
+# Function: evaluate_timeshift
+# Purpose: Compares prediction(T-1) against ground_truth(T) to compute IoU,
+#          F1, and Migration Delta using zero-allocation bitwise NumPy ops.
+# -----------------------------------------------------------------------------
 def evaluate_timeshift(gt_flat, pred_flat):
     """
     Time-Shift Evaluation: compare prediction(T-1) against ground_truth(T).
@@ -640,24 +645,32 @@ def load_initial_state():
 
                     # Restore evaluation continuity across migration
                     if "eval_state" in data:
-                        global has_prev_pred, prev_pred_flat, f1_ring, f1_ring_ptr, f1_ring_count
-                        global migration_epoch, last_migration_sample, iou_accum_pre, iou_count_pre
-                        global iou_accum_post, iou_count_post
-
                         ev = data["eval_state"]
-                        has_prev_pred      = True
-                        prev_pred_flat[:]  = np.array(ev.get("prev_pred_flat", []), dtype=np.int8)[:len(prev_pred_flat)]
-                        f1_ring[:]         = np.array(ev.get("f1_ring", []), dtype=np.float32)[:EVAL_ROLLING_N]
-                        f1_ring_ptr        = ev.get("f1_ring_ptr", 0)
-                        f1_ring_count      = ev.get("f1_ring_count", 0)
-                        migration_epoch    = ev.get("migration_epoch", 0) + 1
-                        last_migration_sample = sample_count  # Mark "now" as the migration boundary
-                        
-                        # Reset post-migration accumulators; keep pre-migration averages
-                        iou_accum_pre      = np.float64(ev.get("iou_accum_post", 0.0))
-                        iou_count_pre      = np.int32(ev.get("iou_count_post", 0))
-                        iou_accum_post     = np.float64(0.0)
-                        iou_count_post     = np.int32(0)
+                        has_prev_pred = True
+                        restored_prev = np.array(ev.get("prev_pred_flat", []), dtype=np.int8)
+                        n_prev = min(len(restored_prev), len(prev_pred_flat))
+                        if n_prev > 0:
+                            prev_pred_flat[:n_prev] = restored_prev[:n_prev]
+
+                        # FIX: Safe slice-to-length copy — the flushed ring may be
+                        # shorter than EVAL_ROLLING_N if the worker hadn't run 50
+                        # frames yet. Using f1_ring[:] would crash with ValueError.
+                        restored_f1 = np.array(ev.get("f1_ring", []), dtype=np.float32)
+                        n_f1 = min(len(restored_f1), EVAL_ROLLING_N)
+                        if n_f1 > 0:
+                            f1_ring[:n_f1] = restored_f1[:n_f1]
+                        f1_ring_ptr   = ev.get("f1_ring_ptr", 0)
+                        f1_ring_count = ev.get("f1_ring_count", 0)
+
+                        migration_epoch       = ev.get("migration_epoch", 0) + 1
+                        last_migration_sample = sample_count
+
+                        # Promote post → pre for next delta window
+                        iou_accum_pre  = np.float64(ev.get("iou_accum_post", 0.0))
+                        iou_count_pre  = np.int32(ev.get("iou_count_post", 0))
+                        iou_accum_post = np.float64(0.0)
+                        iou_count_post = np.int32(0)
+                        print(f"✅ WORKER: Restored eval state (epoch {migration_epoch}).", flush=True)
 
                 return
         except requests.exceptions.RequestException:

@@ -353,18 +353,14 @@
           </div>
         </div>
         <div style="margin-bottom:12px;">
-          <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">
-            IoU OVER TIME
-          </div>
+          <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">IoU OVER TIME</div>
           <canvas id="spark-iou" height="80"
                   style="width:100%; background:var(--surface-black);
                          border:1px solid var(--hairline-strong);
                          border-radius:var(--rounded-sm);"></canvas>
         </div>
         <div>
-          <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">
-            F1 OVER TIME
-          </div>
+          <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">F1 OVER TIME</div>
           <canvas id="spark-f1" height="80"
                   style="width:100%; background:var(--surface-black);
                          border:1px solid var(--hairline-strong);
@@ -472,7 +468,9 @@ function predictedFireColor(val) {
     return '#2997ff'; // var(--primary-on-dark)
 }
 
-// ── SPARKLINE STATE ──────────────────────────────────────────
+// ============================================================================
+// SPARKLINE ENGINE (Zero-Dependency Canvas Charts)
+// ============================================================================
 const SPARK_MAX_POINTS = 200;
 const sparkIoU = { vals: [], migrations: [] };
 const sparkF1  = { vals: [], migrations: [] };
@@ -481,36 +479,37 @@ let lastEpoch = 0;
 function drawSparkline(canvasId, data) {
     const canvas = document.getElementById(canvasId);
     const ctx = canvas.getContext('2d');
-    const W = canvas.width = canvas.clientWidth * devicePixelRatio;
-    const H = canvas.height = 80 * devicePixelRatio;
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.width = canvas.clientWidth * dpr;
+    const H = canvas.height = 80 * dpr;
     ctx.clearRect(0, 0, W, H);
 
     if (data.vals.length < 2) return;
     const n = data.vals.length;
     const xStep = W / (SPARK_MAX_POINTS - 1);
 
-    // ── Migration markers (vertical red lines) ──────────────
+    // ── Migration markers (vertical red dashed lines) ─────
     ctx.strokeStyle = 'rgba(255, 69, 58, 0.7)';
-    ctx.lineWidth = 2 * devicePixelRatio;
-    ctx.setLineDash([4 * devicePixelRatio, 3 * devicePixelRatio]);
+    ctx.lineWidth = 2 * dpr;
+    ctx.setLineDash([4 * dpr, 3 * dpr]);
     for (const mi of data.migrations) {
         const x = mi * xStep;
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     }
     ctx.setLineDash([]);
 
-    // ── Data line ───────────────────────────────────────────
+    // ── Data line ─────────────────────────────────────────
     ctx.strokeStyle = '#2997ff';
-    ctx.lineWidth = 1.5 * devicePixelRatio;
+    ctx.lineWidth = 1.5 * dpr;
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
         const x = i * xStep;
-        const y = H - (data.vals[i] * H);  // 0..1 → bottom..top
+        const y = H - (data.vals[i] * H);
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     }
     ctx.stroke();
 
-    // ── Glow effect under the line ──────────────────────────
+    // ── Gradient fill under line ───────────────────────────
     ctx.lineTo((n - 1) * xStep, H);
     ctx.lineTo(0, H);
     ctx.closePath();

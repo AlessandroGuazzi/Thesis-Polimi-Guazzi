@@ -621,6 +621,157 @@
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.5; }
   }
+
+  /* ── TELEMETRY INJECTOR PANEL ────────────────────────────────
+    Follows the project's Apple Design Language (Design.md):
+    — Surfaces: tile-1/tile-2/tile-3 family
+    — Accent: primary-on-dark (Sky Link Blue) on the inject CTA
+    — Warning colour (--warn) used for the release action & override badge
+    — Monospace inputs for numeric telemetry values
+    — Micro-animations: focus glow, button press scale, pulse badge, toast fade
+  ──────────────────────────────────────────────────────── */
+  .injector-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-sm);
+    padding: var(--space-lg);
+  }
+
+  .injector-form label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--ink-muted-48);
+    margin-bottom: 5px;
+  }
+
+  .injector-form select,
+  .injector-form input[type="number"] {
+    width: 100%;
+    background: var(--tile-3);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--rounded-sm);
+    color: var(--on-dark);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    padding: 8px 10px;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .injector-form select:focus,
+  .injector-form input[type="number"]:focus {
+    border-color: var(--primary-on-dark);
+    box-shadow: 0 0 0 3px rgba(41,151,255,0.15);
+  }
+
+  /* Remove native number spinners for a cleaner look */
+  .injector-form input[type="number"]::-webkit-outer-spin-button,
+  .injector-form input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .injector-form input[type="number"] { -moz-appearance: textfield; }
+
+  /* Full-width element: node selector + actions + toast */
+  .injector-form__full { grid-column: 1 / -1; }
+
+  /* Action button row */
+  .injector-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: var(--space-sm);
+    margin-top: var(--space-xs);
+  }
+
+  .btn-inject, .btn-release {
+    flex: 1;
+    padding: 9px 16px;
+    border-radius: var(--rounded-sm);
+    font-family: var(--font-body);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.12px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.1s;
+  }
+
+  /* Primary CTA — Sky Link Blue (same shade as panel__badge links) */
+  .btn-inject {
+    background: var(--primary-on-dark);
+    color: #000;
+    border-color: var(--primary-on-dark);
+  }
+  .btn-inject:hover {
+    background: var(--primary-focus);
+    border-color: var(--primary-focus);
+    box-shadow: 0 2px 10px rgba(41,151,255,0.35);
+  }
+  .btn-inject:active { transform: scale(0.97); }
+
+  /* Release CTA — ghost button, warn-coloured on hover */
+  .btn-release {
+    background: transparent;
+    color: var(--muted);
+    border-color: var(--hairline-strong);
+  }
+  .btn-release:hover {
+    border-color: var(--warn);
+    color: var(--warn);
+    box-shadow: 0 2px 8px rgba(255,214,10,0.15);
+  }
+  .btn-release:active { transform: scale(0.97); }
+
+  /* Override badge — shown on telemetry rows when a node is overridden */
+  .override-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--warn);
+    background: rgba(255,214,10,0.12);
+    border: 1px solid rgba(255,214,10,0.25);
+    border-radius: 3px;
+    padding: 2px 6px;
+    animation: pulse-warn 2s ease-in-out infinite;
+  }
+  @keyframes pulse-warn {
+    0%, 100% { opacity: 1;   }
+    50%       { opacity: 0.55; }
+  }
+
+  /* Panel-level "N ACTIVE" badge colour override */
+  .injector-status-active {
+    color: var(--warn) !important;
+    border-color: rgba(255,214,10,0.3) !important;
+  }
+
+  /* Feedback toast — appears at the bottom of the form grid */
+  .injector-toast {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    padding: 6px 10px;
+    border-radius: var(--rounded-sm);
+    text-align: center;
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+    transition: opacity 0.3s ease, max-height 0.3s ease, margin-top 0.3s ease;
+    margin-top: 0;
+  }
+  .injector-toast.show {
+    opacity: 1;
+    max-height: 40px;
+    margin-top: 4px;
+  }
+  .injector-toast.success { background: rgba(48,209,88,0.12);  color: var(--ok); }
+  .injector-toast.error   { background: rgba(255,69,58,0.12);  color: var(--critical); }
 </style>
 </head>
 <body>
@@ -811,6 +962,80 @@
         </table>
       </div>
     </div><!-- /panel -->
+
+    <!-- ── TELEMETRY INJECTOR — Manual Override Panel ───────────────── -->
+    <!--
+      Allows operators to bypass automated physics for a specific satellite
+      and inject arbitrary Temperature / Battery values directly.
+      Commands flow: JS fetch → POST /api/override → Dashboard → Redis
+                    override/commands → Oracle (daemon thread) → telemetry bus
+      Node Agents receive overridden values transparently — no agent changes needed.
+    -->
+    <div class="panel" role="region"
+         aria-label="Telemetry Injector — Manual Override"
+         style="animation-delay:0.10s;">
+      <div class="panel__header">
+        <span class="panel__title">Telemetry Injector</span>
+        <span class="panel__badge" id="injector-status-badge">Standby</span>
+      </div>
+
+      <form class="injector-form" id="injector-form" autocomplete="off"
+            aria-label="Manual telemetry override form">
+
+        <!-- Target satellite selector (full width) -->
+        <div class="injector-form__full">
+          <label for="inject-node">Target Satellite</label>
+          <select id="inject-node" name="node" required>
+            <option value="" disabled selected>— Select Node —</option>
+            <option value="minikube-m02">minikube-m02  ·  Plane A</option>
+            <option value="minikube-m03">minikube-m03  ·  Plane B</option>
+            <option value="minikube-m04">minikube-m04  ·  Plane C</option>
+          </select>
+        </div>
+
+        <!-- Temperature input -->
+        <div>
+          <label for="inject-temp">Temperature (°C)</label>
+          <input type="number" id="inject-temp" name="temp"
+                 placeholder="e.g. 130" step="0.1" min="-270" max="300"
+                 aria-describedby="inject-temp-hint">
+          <p id="inject-temp-hint"
+             style="font-size:10px;color:var(--ink-muted-48);margin-top:4px;"
+             aria-live="polite">
+            T_FUSE = 120 °C &nbsp;·&nbsp; T_SAFE = 80 °C
+          </p>
+        </div>
+
+        <!-- Battery input -->
+        <div>
+          <label for="inject-battery">Battery (%)</label>
+          <input type="number" id="inject-battery" name="battery"
+                 placeholder="e.g. 3" step="0.1" min="0" max="100"
+                 aria-describedby="inject-battery-hint">
+          <p id="inject-battery-hint"
+             style="font-size:10px;color:var(--ink-muted-48);margin-top:4px;"
+             aria-live="polite">
+            B_FUSE = 5 % &nbsp;·&nbsp; B_SAFE = 15 %
+          </p>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="injector-actions">
+          <button type="submit" class="btn-inject" id="btn-inject"
+                  aria-label="Inject override values to selected satellite">
+            ⚡ Inject Override
+          </button>
+          <button type="button" class="btn-release" id="btn-release"
+                  aria-label="Release override and return satellite to automated physics">
+            ↻ Release to Physics
+          </button>
+        </div>
+
+        <!-- Inline feedback toast -->
+        <div class="injector-toast" id="injector-toast" role="status" aria-live="polite"></div>
+
+      </form>
+    </div><!-- /Telemetry Injector panel -->
 
     <!-- System Terminal / Event Log -->
     <div class="terminal" role="region" aria-label="Migration event log terminal">
@@ -1149,6 +1374,116 @@ evtSource.onmessage = (event) => {
 // Draw an empty globe immediately so the UI doesn't feel broken
 // before the first SSE message arrives
 drawGlobe({});
+
+/* ── TELEMETRY INJECTOR ──────────────────────────────────
+  Manual Override control loop:
+  — activeOverrides (Set)  : client-side mirror of active overrides (for badge + row colouring)
+  — showToast()            : transient feedback (3-second auto-dismiss)
+  — updateInjectorBadge()  : keeps the panel header badge in sync
+  — Form submit            : sends { action:'set', node, temp, battery } to POST /api/override
+  — Release button         : sends { action:'release', node } to POST /api/override
+──────────────────────────────────────────────────────── */
+
+// Client-side set of node names that currently have an active override.
+// Kept in sync with every Inject / Release action so the table renderer
+// can annotate rows without needing extra roundtrips.
+const activeOverrides = new Set();
+
+/** Shows a short transient message inside the injector form. */
+function showToast(msg, type = 'success') {
+  const toast = document.getElementById('injector-toast');
+  toast.textContent = msg;
+  toast.className   = `injector-toast show ${type}`;
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => { toast.className = 'injector-toast'; }, 3000);
+}
+
+/** Keeps the panel header badge in sync with activeOverrides. */
+function updateInjectorBadge() {
+  const badge = document.getElementById('injector-status-badge');
+  if (activeOverrides.size > 0) {
+    badge.textContent = `${activeOverrides.size} Active`;
+    badge.classList.add('injector-status-active');
+  } else {
+    badge.textContent = 'Standby';
+    badge.classList.remove('injector-status-active');
+  }
+}
+
+/**
+ * Sends a command object to the Dashboard backend's /api/override endpoint.
+ * Returns true on HTTP 2xx, false otherwise. Displays a toast either way.
+ */
+async function sendOverrideCommand(cmd) {
+  try {
+    const res = await fetch('/api/override', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(cmd)
+    });
+    if (res.ok) return true;
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    showToast(`⚠️ ${err.error || 'Unknown error'}`, 'error');
+    return false;
+  } catch (netErr) {
+    showToast(`Network error: ${netErr.message}`, 'error');
+    return false;
+  }
+}
+
+/* INJECT: Set override values for the selected node */
+document.getElementById('injector-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const node    = document.getElementById('inject-node').value;
+  const tempRaw = document.getElementById('inject-temp').value.trim();
+  const battRaw = document.getElementById('inject-battery').value.trim();
+
+  if (!node) {
+    showToast('Select a target satellite first.', 'error');
+    return;
+  }
+  if (!tempRaw && !battRaw) {
+    showToast('Enter at least one value to inject.', 'error');
+    return;
+  }
+
+  const cmd = {
+    action:  'set',
+    node:    node,
+    temp:    tempRaw ? parseFloat(tempRaw) : null,
+    battery: battRaw ? parseFloat(battRaw) : null
+  };
+
+  const ok = await sendOverrideCommand(cmd);
+  if (ok) {
+    activeOverrides.add(node);
+    updateInjectorBadge();
+    const parts = [];
+    if (cmd.temp    !== null) parts.push(`${cmd.temp}°C`);
+    if (cmd.battery !== null) parts.push(`${cmd.battery}%`);
+    showToast(`⚡ Override active: ${node.replace('minikube-', '')} → ${parts.join(', ')}`, 'success');
+  }
+});
+
+/* RELEASE: Return the selected node to automated physics */
+document.getElementById('btn-release').addEventListener('click', async () => {
+  const node = document.getElementById('inject-node').value;
+  if (!node) {
+    showToast('Select a node to release.', 'error');
+    return;
+  }
+
+  const ok = await sendOverrideCommand({ action: 'release', node });
+  if (ok) {
+    activeOverrides.delete(node);
+    updateInjectorBadge();
+    showToast(`↻ Released: ${node.replace('minikube-', '')} → physics resumed`, 'success');
+    // Clear the form fields so the state is unambiguous
+    document.getElementById('inject-temp').value    = '';
+    document.getElementById('inject-battery').value = '';
+  }
+});
 </script>
 </body>
 </html>

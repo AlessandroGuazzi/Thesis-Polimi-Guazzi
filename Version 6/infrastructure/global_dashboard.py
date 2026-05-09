@@ -3,7 +3,7 @@ import threading
 import os
 import time
 import redis
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # =============================================================================
 # CONFIGURATION
@@ -91,12 +91,78 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Read the HTML dynamically from the separated file
             self.wfile.write(get_html().encode('utf-8'))
 
+    def do_POST(self):
+        """
+        POST /api/override — Telemetry Injector endpoint.
+
+        Accepts a JSON body and forwards it as a command to the Simulation
+        Oracle via the 'override/commands' Redis Pub/Sub channel.
+
+        Body shape:
+          { "action": "set"|"release",
+            "node":   "minikube-m02" | "minikube-m03" | "minikube-m04",
+            "temp":   <float|null>,
+            "battery": <float|null> }
+
+        The backend is intentionally stateless — it only proxies the command.
+        The Oracle is the single source of truth for override state.
+        """
+        if self.path != "/api/override":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            cmd  = json.loads(body)
+
+            # Validate required fields
+            if "action" not in cmd or "node" not in cmd:
+                self._json_response(400, {"error": "Missing required fields: 'action' and 'node'"})
+                return
+
+            if cmd["action"] not in ("set", "release"):
+                self._json_response(400, {"error": "'action' must be 'set' or 'release'"})
+                return
+
+            # Forward command to the Oracle via Ground Redis Pub/Sub
+            r = redis.Redis(
+                host=GROUND_REDIS_HOST,
+                port=GROUND_REDIS_PORT,
+                decode_responses=True,
+                socket_connect_timeout=3
+            )
+            r.publish("override/commands", json.dumps(cmd))
+
+            print(f"🎮 DASHBOARD: Override command forwarded → {cmd}", flush=True)
+            self._json_response(200, {"status": "ok", "forwarded": cmd})
+
+        except json.JSONDecodeError:
+            self._json_response(400, {"error": "Invalid JSON body"})
+        except Exception as e:
+            self._json_response(500, {"error": str(e)})
+
+    def _json_response(self, status, payload):
+        """Helper: sends a JSON response with CORS header."""
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type",  "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, format, *args): pass
 
 if __name__ == "__main__":
     print(f"🌍 GLOBAL SWARM DASHBOARD starting on http://localhost:{DASHBOARD_PORT}", flush=True)
     listener = threading.Thread(target=redis_listener, daemon=True)
     listener.start()
-    server = HTTPServer(("0.0.0.0", DASHBOARD_PORT), DashboardHandler)
+    # ThreadingHTTPServer: spawns a new thread per connection.
+    # This is critical because the SSE /stream handler blocks indefinitely
+    # (while True: sleep), which would starve POST /api/override on a
+    # single-threaded HTTPServer.
+    server = ThreadingHTTPServer(("0.0.0.0", DASHBOARD_PORT), DashboardHandler)
     print(f"✅ Dashboard ready at http://localhost:{DASHBOARD_PORT}", flush=True)
     server.serve_forever()

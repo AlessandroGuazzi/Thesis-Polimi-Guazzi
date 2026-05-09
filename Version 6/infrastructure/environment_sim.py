@@ -3,6 +3,15 @@ import json
 import redis
 import logging
 import threading
+
+# =============================================================================
+#  MANUAL OVERRIDE STATE
+#  A thread-safe registry mapping node names to operator-injected values.
+#  { "minikube-m02": {"temp": 130.0, "battery": None}, ... }
+#  None = "don't override this parameter, keep physics"
+# =============================================================================
+_overrides = {}
+_overrides_lock = threading.Lock()
 from kubernetes import client, config, watch
 
 # =============================================================================
@@ -165,6 +174,68 @@ def connect_redis():
 
 
 # =============================================================================
+# OVERRIDE COMMAND LISTENER
+# Runs in a daemon thread. Subscribes to 'override/commands' and updates the
+# global override registry. Non-blocking relative to the main simulation loop.
+# =============================================================================
+
+def _override_listener_thread():
+    """
+    Listens for operator override commands published by the Dashboard backend.
+
+    Command shape:
+      { "action": "set"|"release", "node": str,
+        "temp": float|null, "battery": float|null }
+
+    On "set"   → inject values into _overrides; Oracle skips physics for that node.
+    On "release" → remove entry; Oracle resumes physics calculations.
+    """
+    global _overrides
+    while True:
+        try:
+            r = redis.Redis(
+                host='ground-redis',
+                port=6379,
+                decode_responses=True,
+                socket_connect_timeout=3
+            )
+            r.ping()
+            pubsub = r.pubsub()
+            pubsub.subscribe("override/commands")
+            logger.info("Override listener subscribed to override/commands.")
+
+            for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                try:
+                    cmd = json.loads(message["data"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Override listener: malformed command received.")
+                    continue
+
+                node   = cmd.get("node", "")
+                action = cmd.get("action", "")
+
+                with _overrides_lock:
+                    if action == "set" and node:
+                        _overrides[node] = {
+                            "temp":    cmd.get("temp"),     # None = keep physics
+                            "battery": cmd.get("battery"),  # None = keep physics
+                        }
+                        logger.info(
+                            f"OVERRIDE SET: {node} → "
+                            f"temp={cmd.get('temp')}, battery={cmd.get('battery')}"
+                        )
+                    elif action == "release" and node:
+                        _overrides.pop(node, None)
+                        logger.info(f"OVERRIDE RELEASED: {node} → returning to physics")
+
+        except Exception as e:
+            logger.warning(f"Override listener error: {e}. Reconnecting in 3s...")
+            time.sleep(3)
+
+
+# =============================================================================
 # K8s WATCH API (Dual-Workload Tracking)
 # =============================================================================
 
@@ -245,6 +316,12 @@ def main():
     else:
         print("⚠️  WATCH: K8s API unavailable — workload detection disabled.")
 
+    # Start the Manual Override command listener (daemon — never blocks the sim loop)
+    # Runs unconditionally: override control is independent of K8s availability.
+    override_listener = threading.Thread(target=_override_listener_thread, daemon=True)
+    override_listener.start()
+    print("🎮 OVERRIDE: Telemetry override command listener started.")
+
     fleet = [
         Satellite("minikube", "ground"),
         Satellite("minikube-m02", "satellite", start_offset_deg=0, orbit_plane="A"),
@@ -263,8 +340,29 @@ def main():
             has_sml = (sat.name in active_sml)
             has_master = (sat.name == master_node)
 
-            # Apply thermodynamics
-            sat.update(elapsed, has_sml, has_master)
+            # ── MANUAL OVERRIDE CHECK ──────────────────────────────────────────
+            # If an operator has injected values for this node, bypass physics
+            # and broadcast those values directly. Orbital mechanics (angle,
+            # eclipse) still advance so the globe visualization stays dynamic.
+            with _overrides_lock:
+                override = dict(_overrides.get(sat.name, {}))  # snapshot, release lock fast
+
+            if override:
+                # Advance orbital angle only (no thermal/energy physics)
+                raw_angle  = ((elapsed % ORBIT_PERIOD) / ORBIT_PERIOD * 360.0 + sat.offset)
+                sat.angle  = raw_angle % 360.0
+                sat.in_eclipse = (ECLIPSE_START <= sat.angle <= ECLIPSE_END)
+                sat.has_sml    = has_sml
+                sat.has_master = has_master
+                # Inject operator values (only for non-None parameters)
+                if override.get("temp") is not None:
+                    sat.temp = float(override["temp"])
+                if override.get("battery") is not None:
+                    sat.battery = max(0.0, min(100.0, float(override["battery"])))
+            else:
+                # Normal automated physics path (unchanged)
+                sat.update(elapsed, has_sml, has_master)
+
             sat_data = sat.get_telemetry()
 
             # Publish oracle data to the telemetry bus
@@ -275,9 +373,10 @@ def main():
                 except Exception:
                     redis_db = connect_redis()
 
-            # Dynamic icon based on primary workload
+            # Dynamic icon based on primary workload (⚡ marks overridden nodes)
+            override_icon = "⚡" if override else ""
             status_icon = "🔥" if has_sml else ("🧠" if has_master else ("🌑" if sat.in_eclipse else "☀️"))
-            console_log += f"[{sat.name[-3:]} {int(sat.battery)}% {int(sat.temp)}° {status_icon}] "
+            console_log += f"[{sat.name[-3:]} {int(sat.battery)}% {int(sat.temp)}° {status_icon}{override_icon}] "
 
         print(console_log, end="", flush=True)
         time.sleep(1.0)

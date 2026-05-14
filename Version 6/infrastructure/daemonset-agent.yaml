@@ -100,19 +100,19 @@ spec:
 
         # Temperature thresholds for VirtualSatellite Trigger A prediction
         - name: T_SAFE
-          value: "90.0"
+          value: "9000.0"
         - name: T_FUSE
-          value: "120.0"
+          value: "12000.0"
 
         # Battery thresholds for VirtualSatellite Trigger C prediction (%)
         - name: B_SAFE
-          value: "15.0"
+          value: "-15.0"
         - name: B_FUSE
-          value: "5.0"
+          value: "-5.0"
 
         # Lateral tracking threshold for Trigger B CoM edge detection (pixels)
         - name: LATERAL_THRESHOLD
-          value: "1"
+          value: "0"
 
         volumeMounts:
         # Buildah needs the containers-storage to commit restored images

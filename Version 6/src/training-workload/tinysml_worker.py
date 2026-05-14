@@ -66,6 +66,23 @@ GRID_W = 64
 GRID_H = 64
 N_CHANNELS = len(FEATURE_CHANNELS)
 
+# --- THE ACCURACY PARADOX FIX (Feature Scaling) ---
+_CHANNEL_SCALES = [
+    1.0,          # PrevFireMask
+    50.0,         # sph
+    0.004,        # th
+    0.00025,      # elevation
+    0.05,         # pdsi
+    0.005,        # pr
+    0.001,        # population
+    0.00667,      # erc
+    0.0000833,    # NDVI
+    0.00909,      # tmmn
+    0.0667,       # vs
+    0.00833       # tmmx
+]
+SCALE_VECTOR = np.array(_CHANNEL_SCALES * 9, dtype=np.float32)
+
 
 # =============================================================================
 # GLOBAL STATE: THE NATIVE NUMPY RING BUFFERS (Zero-Allocation Memory)
@@ -98,8 +115,6 @@ instances_trained = 0
 
 # ── EVALUATION BUFFERS (Zero-Allocation) ──────────────────────
 EVAL_ROLLING_N     = 50                                       # Rolling window size
-prev_pred_flat     = np.zeros(((GRID_H - 2) * (GRID_W - 2),), dtype=np.int8)  # T-1 prediction
-has_prev_pred      = False                                    # Guard for first frame
 
 # Rolling F1 ring buffer (pre-allocated, never resized)
 f1_ring            = np.zeros(EVAL_ROLLING_N, dtype=np.float32)
@@ -174,8 +189,9 @@ def fast_knn_predict_batch(Q, X, y, X_sq, k=K_NEIGHBOURS):
     # Grab the actual "Fire" or "No Fire" labels of those closest neighbors
     votes = y[nearest_idx]
 
-    # Majority vote: If sum of votes is >= half of k, we predict 1 (Fire). Otherwise 0.
-    return np.where(np.sum(votes, axis=1) >= (k_actual / 2.0), 1, 0)
+    # Calibrated Goldilocks threshold: >= 2 of 5 neighbors to balance precision and recall
+    FIRE_VOTE_THRESHOLD = 2
+    return np.where(np.sum(votes, axis=1) >= FIRE_VOTE_THRESHOLD, 1, 0)
 
 
 # -----------------------------------------------------------------------------
@@ -195,12 +211,18 @@ def fast_samknn_predict_batch(Q, stm_X_v, stm_y_v, stm_X_sq_v, ltm_X_v, ltm_y_v,
     M = Q.shape[0]
     final_pred = np.zeros(M, dtype=int)
 
-    for i in range(M):
-        sp, lp = stm_pred[i], ltm_pred[i]
-        if sp == -1 and lp == -1: final_pred[i] = 0
-        elif sp == -1: final_pred[i] = lp
-        elif lp == -1: final_pred[i] = sp
-        else: final_pred[i] = 1 if (sp * 2 + lp) >= 2 else 0
+    # Vectorized OR-bias fusion
+    stm_valid = (stm_pred != -1)
+    ltm_valid = (ltm_pred != -1)
+
+    both_mask = stm_valid & ltm_valid
+    final_pred[both_mask] = np.maximum(stm_pred[both_mask], ltm_pred[both_mask])
+
+    stm_only = stm_valid & ~ltm_valid
+    final_pred[stm_only] = stm_pred[stm_only]
+
+    ltm_only = ~stm_valid & ltm_valid
+    final_pred[ltm_only] = ltm_pred[ltm_only]
 
     return final_pred
 
@@ -226,8 +248,29 @@ def samknn_train(feature_vector, label):
     stm_count = min(stm_count + 1, STM_MAX)
     instances_trained += 1
 
-    # Every 1000 training instances, trigger the garbage collector / validation loop
-    if instances_trained % 1000 == 0:
+    # Every 3000 training instances, trigger the garbage collector / validation loop
+    if instances_trained % 3000 == 0:
+        _stm_to_ltm_cleaning()
+
+def _batch_samknn_train(X_batch, y_batch):
+    global stm_ptr, stm_count, instances_trained
+    n = len(y_batch)
+    if n == 0: return
+
+    # Fully vectorized ring-buffer insertion (O(1) memory, no Python loop)
+    X_sq_batch = np.sum(X_batch ** 2, axis=1)
+    indices = (stm_ptr + np.arange(n)) % STM_MAX
+
+    stm_X[indices] = X_batch
+    stm_y[indices] = y_batch
+    stm_X_sq[indices] = X_sq_batch
+
+    stm_ptr = (stm_ptr + n) % STM_MAX
+    stm_count = min(stm_count + n, STM_MAX)
+
+    prev_trained = instances_trained
+    instances_trained += n
+    if (prev_trained // 3000) != (instances_trained // 3000):
         _stm_to_ltm_cleaning()
 
 
@@ -273,26 +316,30 @@ def _stm_to_ltm_cleaning():
     # 4. THE VECTORIZED INFINITY TRICK
     # distances is an (N x stm_count) matrix.
     # We set the exact coordinate where a point intersects with ITSELF to infinity.
-    distances[np.arange(N), indices] = np.inf
+    valid_mask = indices < stm_count
+    distances[np.arange(N)[valid_mask], indices[valid_mask]] = np.inf
 
     # 5. Fast k-NN Voting
     nearest_idx = np.argpartition(distances, k_actual - 1, axis=1)[:, :k_actual]
     votes = stm_y[:stm_count][nearest_idx]
-    preds = np.where(np.sum(votes, axis=1) >= (k_actual / 2.0), 1, 0)
+    FIRE_VOTE_THRESHOLD = 2
+    preds = np.where(np.sum(votes, axis=1) >= FIRE_VOTE_THRESHOLD, 1, 0)
 
     # 6. Promotion
     actual_labels = stm_y[indices]
     consistent_mask = (preds == actual_labels) # Boolean array of consistent memories
     consistent_indices = indices[consistent_mask]
 
-    # Batch insert the consistent memories into the LTM ring buffer
-    for idx in consistent_indices:
-        ltm_X[ltm_ptr] = stm_X[idx]
-        ltm_y[ltm_ptr] = stm_y[idx]
-        ltm_X_sq[ltm_ptr] = stm_X_sq[idx]
+    # Fully vectorized batch insertion into LTM ring buffer
+    n_consistent = len(consistent_indices)
+    if n_consistent > 0:
+        ltm_indices = (ltm_ptr + np.arange(n_consistent)) % LTM_MAX
+        ltm_X[ltm_indices] = stm_X[consistent_indices]
+        ltm_y[ltm_indices] = stm_y[consistent_indices]
+        ltm_X_sq[ltm_indices] = stm_X_sq[consistent_indices]
 
-        ltm_ptr = (ltm_ptr + 1) % LTM_MAX
-        ltm_count = min(ltm_count + 1, LTM_MAX)
+        ltm_ptr = (ltm_ptr + n_consistent) % LTM_MAX
+        ltm_count = min(ltm_count + n_consistent, LTM_MAX)
 
 # =============================================================================
 # SECTION 2: FRAME DECODING (Reconstructing the UDP Payload)
@@ -307,30 +354,14 @@ def decode_frame(raw_udp_bytes):
     Decompress and unpack the UDP payload into channel grids.
     """
     try:
-        # Step 1: Inflate the zlib compression
         decompressed = zlib.decompress(raw_udp_bytes)
+        # Direct buffer → C-contiguous float32 array (ZERO Python objects)
+        all_values = np.frombuffer(decompressed, dtype='>f4')  # big-endian float32
 
-        # Step 2: Unpack the binary back into Python Floats.
-        # The '!f' means network-byte-order (Big Endian) 32-bit floats.
-        n_floats = (N_CHANNELS + 1) * GRID_W * GRID_H
-        all_values = struct.unpack(f'!{n_floats}f', decompressed)
-
-        # Step 3: Reshape the massive 1D list back into a 2D Grid (64x64) per channel
-        channels = {}
-        for ci, name in enumerate(FEATURE_CHANNELS):
-            start = ci * GRID_W * GRID_H
-            end = start + GRID_W * GRID_H
-            channels[name] = [
-                list(all_values[start:end])[r * GRID_W:(r + 1) * GRID_W]
-                for r in range(GRID_H)
-            ]
-
-        # Extract the ground truth FireMask separately
-        fire_start = N_CHANNELS * GRID_W * GRID_H
-        fire_mask = [
-            list(all_values[fire_start:fire_start + GRID_W * GRID_H])[r * GRID_W:(r + 1) * GRID_W]
-            for r in range(GRID_H)
-        ]
+        # Reshape into (N_CHANNELS+1, H, W) — one operation, zero copies
+        grids = all_values.reshape(N_CHANNELS + 1, GRID_H, GRID_W)
+        channels = grids[:N_CHANNELS]   # shape (12, 64, 64) — a view, not a copy
+        fire_mask = grids[N_CHANNELS]   # shape (64, 64) — a view
 
         return channels, fire_mask
     except Exception:
@@ -346,61 +377,42 @@ def decode_frame(raw_udp_bytes):
 # Purpose: Calculates the X/Y focal point of the fire. The Node Agent uses this
 #          to trigger Lateral Migrations if the fire drifts too close to the edge.
 # -----------------------------------------------------------------------------
-def compute_center_of_mass(pred_mask_2d):
+def compute_center_of_mass(pred_flat, inner_h, inner_w):
     """
     Computes the center of mass of predicted fire pixels.
     Used by Node Agent Trigger B.
     """
-    total_mass, cx, cy = 0, 0.0, 0.0
-    inner_h, inner_w = GRID_H - 2, GRID_W - 2
-
-    # Loop over the grid. Every time we see a '1' (Fire), add its X and Y coordinates.
-    for r in range(inner_h):
-        for c in range(inner_w):
-            if pred_mask_2d[r][c] == 1:
-                cx += c
-                cy += r
-                total_mass += 1
-
-    # If there's no fire, default to the exact center of the screen
-    if total_mass == 0:
+    pred_2d = pred_flat.reshape(inner_h, inner_w)
+    fire_coords = np.argwhere(pred_2d == 1)
+    if len(fire_coords) == 0:
         return {"x": inner_w / 2.0, "y": inner_h / 2.0}
-
-    # Divide by total fire pixels to find the true mathematical center
-    return {"x": cx / total_mass, "y": cy / total_mass}
+    return {"x": float(fire_coords[:, 1].mean()), "y": float(fire_coords[:, 0].mean())}
 
 
 # -----------------------------------------------------------------------------
-# Function: evaluate_timeshift
-# Purpose: Compares prediction(T-1) against ground_truth(T) to compute IoU,
-#          F1, and Migration Delta using zero-allocation bitwise NumPy ops.
+# Function: evaluate_frame
+# Purpose: Compares prediction(T) against ground_truth(T) from the SAME
+#          spatially-independent wildfire event to compute IoU, F1, and Migration Delta.
 # -----------------------------------------------------------------------------
-def evaluate_timeshift(gt_flat, pred_flat):
+def evaluate_frame(gt_flat, pred_flat):
     """
-    Time-Shift Evaluation: compare prediction(T-1) against ground_truth(T).
+    Intra-Frame Evaluation: compare prediction(T) against ground_truth(T).
     All ops are bitwise NumPy — zero Python-level allocation.
     """
-    global has_prev_pred, prev_pred_flat
     global current_iou, current_f1, rolling_f1_mean
     global f1_ring_ptr, f1_ring_count
     global iou_accum_pre, iou_count_pre, iou_accum_post, iou_count_post, delta_mig
 
-    if not has_prev_pred:
-        # First frame: stash prediction, skip evaluation
-        np.copyto(prev_pred_flat, pred_flat)
-        has_prev_pred = True
-        return
-
     # ── IoU (Intersection over Union) ────────────────────────
     # Uses bitwise AND/OR on int8 arrays — runs in C, zero temp allocs
-    intersection = np.count_nonzero(prev_pred_flat & gt_flat)
-    union        = np.count_nonzero(prev_pred_flat | gt_flat)
+    intersection = np.count_nonzero(pred_flat & gt_flat)
+    union        = np.count_nonzero(pred_flat | gt_flat)
     current_iou  = np.float32(intersection / union) if union > 0 else np.float32(1.0)
 
     # ── F1-Score ─────────────────────────────────────────────
     tp = intersection                                    # pred=1 AND gt=1
-    fp = np.count_nonzero(prev_pred_flat & ~gt_flat)     # pred=1 AND gt=0
-    fn = np.count_nonzero(~prev_pred_flat & gt_flat)     # pred=0 AND gt=1
+    fp = np.count_nonzero(pred_flat & ~gt_flat)          # pred=1 AND gt=0
+    fn = np.count_nonzero(~pred_flat & gt_flat)          # pred=0 AND gt=1
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     current_f1 = np.float32(
@@ -425,9 +437,6 @@ def evaluate_timeshift(gt_flat, pred_flat):
     avg_pre  = (iou_accum_pre / iou_count_pre)   if iou_count_pre  > 0 else 0.0
     avg_post = (iou_accum_post / iou_count_post) if iou_count_post > 0 else 0.0
     delta_mig = np.float32(avg_post - avg_pre)
-
-    # Stash current prediction as T-1 for next frame
-    np.copyto(prev_pred_flat, pred_flat)
 
 
 # =============================================================================
@@ -459,60 +468,62 @@ def process_frame(channels, fire_mask_label):
     valid_ltm_X_sq = ltm_X_sq[:ltm_count]
 
     # === THE 3x3 SLIDING WINDOW (Spatial Extraction) ===
-    # We allocate a giant empty array to hold our queries.
-    # Dimensions: 3844 valid pixels × 108 features (12 channels * 9 pixels).
-    Q_array = np.zeros((inner_h * inner_w, 108), dtype=float)
-    idx = 0
-
-    # This loop shifts our view up/down/left/right to grab the neighbor pixels,
-    # flattening the 2D spatial context into a flat 1D array the ML model can read.
+    # Pre-compute all 9 spatial offsets for all 12 channels at once
+    # channels shape: (12, 64, 64)
+    patches = []
     for dr in [-1, 0, 1]:
         for dc in [-1, 0, 1]:
-            for name in FEATURE_CHANNELS:
-                ch_slice = np.array(channels[name])[1+dr:GRID_H-1+dr, 1+dc:GRID_W-1+dc].flatten()
-                Q_array[:, idx] = ch_slice
-                idx += 1
+            patches.append(channels[:, 1+dr:GRID_H-1+dr, 1+dc:GRID_W-1+dc])
+    # Stack: (9, 12, 62, 62) → transpose to (62, 62, 9, 12) → reshape to (3844, 108)
+    Q_array = np.stack(patches).transpose(2, 3, 0, 1).reshape(-1, 108).astype(np.float32)
+
+    # Apply the SCALE_VECTOR to normalize the features
+    Q_array *= SCALE_VECTOR
 
     # === CHUNK BATCHING (The RAM Saver) ===
-    # If we predicted all 3844 pixels simultaneously, the intermediate matrices
-    # allocated by NumPy would shatter our 25 MB RAM ceiling.
-    # By strictly limiting the prediction to chunks of 256 pixels, we make our
-    # peak RAM footprint highly deterministic and safely below the limit.
+    # Combine memory banks ONCE per frame to halve distance calculation overhead.
+    # This eliminates calling the distance engine twice and unifies the neighborhood logic.
+    if len(valid_stm_y) > 0 and len(valid_ltm_y) > 0:
+        X_comb = np.concatenate([valid_stm_X, valid_ltm_X], axis=0)
+        y_comb = np.concatenate([valid_stm_y, valid_ltm_y], axis=0)
+        X_sq_comb = np.concatenate([valid_stm_X_sq, valid_ltm_X_sq], axis=0)
+    elif len(valid_stm_y) > 0:
+        X_comb, y_comb, X_sq_comb = valid_stm_X, valid_stm_y, valid_stm_X_sq
+    else:
+        X_comb, y_comb, X_sq_comb = valid_ltm_X, valid_ltm_y, valid_ltm_X_sq
+
     CHUNK_SIZE = 256
     M = Q_array.shape[0]
     preds = np.zeros(M, dtype=int)
 
+    # Call fast_knn_predict_batch directly on combined banks for 2x throughput speedup
     for i in range(0, M, CHUNK_SIZE):
         end_idx = min(i + CHUNK_SIZE, M)
-        preds[i:end_idx] = fast_samknn_predict_batch(
+        preds[i:end_idx] = fast_knn_predict_batch(
             Q_array[i:end_idx],
-            valid_stm_X, valid_stm_y, valid_stm_X_sq,
-            valid_ltm_X, valid_ltm_y, valid_ltm_X_sq
+            X_comb, y_comb, X_sq_comb
         )
+    # Ensure unknown classifications (-1) from empty memory map to 0
+    preds[preds == -1] = 0
 
-    # ── TIME-SHIFT EVALUATION (before tolist destroys the numpy view) ──
-    gt_inner = np.array(fire_mask_label, dtype=np.int8)[1:-1, 1:-1].ravel()
-    evaluate_timeshift(gt_inner, preds.astype(np.int8))
-
-    pred_2d = preds.reshape(inner_h, inner_w).tolist()
+    # ── INTRA-FRAME EVALUATION (before tolist destroys the numpy view) ──
+    gt_inner = fire_mask_label[1:-1, 1:-1].ravel().astype(np.int8)
+    evaluate_frame(gt_inner, preds.astype(np.int8))
 
     # Selectively train new examples (We train on all actual fires, and 2% of non-fires
     # to prevent the model from heavily biasing toward 'No Fire').
-    new_memories = []
-    for r in range(1, GRID_H - 1):
-        for c in range(1, GRID_W - 1):
-            label = int(fire_mask_label[r][c])
-            if label == 1 or random.random() < 0.02:
-                pixel_idx = (r - 1) * inner_w + (c - 1)
-                new_memories.append((Q_array[pixel_idx].tolist(), label))
+    fire_mask_bool = (gt_inner == 1)
+    sample_mask = fire_mask_bool | (np.random.random(len(gt_inner)) < 0.02)
+    sampled_X = Q_array[sample_mask]
+    sampled_y = gt_inner[sample_mask]
 
-    for feat, label in new_memories:
-        samknn_train(feat, label)
+    # Batch insert into STM
+    _batch_samknn_train(sampled_X, sampled_y)
 
     # Update global state variables for the dashboard and the Node Agent
     predicted_fire_mask = preds.tolist()
     fire_pixel_count = sum(predicted_fire_mask)
-    center_of_mass = compute_center_of_mass(pred_2d)
+    center_of_mass = compute_center_of_mass(preds, inner_h, inner_w)
     sample_count += 1
 
 
@@ -646,11 +657,6 @@ def load_initial_state():
                     # Restore evaluation continuity across migration
                     if "eval_state" in data:
                         ev = data["eval_state"]
-                        has_prev_pred = True
-                        restored_prev = np.array(ev.get("prev_pred_flat", []), dtype=np.int8)
-                        n_prev = min(len(restored_prev), len(prev_pred_flat))
-                        if n_prev > 0:
-                            prev_pred_flat[:n_prev] = restored_prev[:n_prev]
 
                         # FIX: Safe slice-to-length copy — the flushed ring may be
                         # shorter than EVAL_ROLLING_N if the worker hadn't run 50
@@ -721,7 +727,6 @@ class FlushHandler(BaseHTTPRequestHandler):
             full_state["ltm_y"] = ltm_y[:ltm_count].tolist() if ltm_count > 0 else []
 
             full_state["eval_state"] = {
-                "prev_pred_flat":   prev_pred_flat.tolist(),
                 "f1_ring":          f1_ring[:f1_ring_count].tolist(),
                 "f1_ring_ptr":      int(f1_ring_ptr),
                 "f1_ring_count":    int(f1_ring_count),

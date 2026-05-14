@@ -43,5 +43,6 @@ Desktop.ini
 
 # --- Extractor ---
 Extractor/
+baseline.npz
 wildfire_data/
 sample_fire_data.json

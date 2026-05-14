@@ -22,7 +22,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 3. Copy the SAMKNN wildfire tracker worker
-COPY tinysml_worker.py .
+COPY tinysml_worker.py baseline.npz* ./
 
 # 4. Start the SAMKNN streaming classifier
 CMD ["python", "tinysml_worker.py"]

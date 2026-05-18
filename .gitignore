@@ -46,3 +46,6 @@ Extractor/
 baseline.npz
 wildfire_data/
 sample_fire_data.json
+.agent/
+Version 7/1_earth_training_facility/data/
+Version 7/3_ground_station/evaluation_data/

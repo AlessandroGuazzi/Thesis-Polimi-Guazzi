@@ -1,0 +1,34 @@
+# =============================================================
+# GUARDIAN MODULE (State Sidecar)
+# Base: Debian 12 (Bookworm) - CRITICAL for CRIU Support
+# =============================================================
+FROM node:20-bookworm
+
+# 1. System Survival Kit
+RUN apt-get update && apt-get install -y \
+    criu \
+    iproute2 \
+    iptables \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 2. Node.js Dependencies
+RUN npm install express redis body-parser
+
+# 3. Guardian Brain & Logic
+COPY state_manager.js .
+COPY entrypoint.sh .
+
+# 4. Dashboard UI
+COPY dashboard-ui/ ./dashboard-ui/
+
+# 5. Execution Permissions
+RUN chmod +x entrypoint.sh
+
+# 6. Critical Directory Preparation for CRIU
+RUN mkdir -p /var/lib/kubelet/checkpoints /tmp/restore
+
+# 7. Entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]

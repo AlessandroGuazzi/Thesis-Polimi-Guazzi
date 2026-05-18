@@ -1,0 +1,4 @@
+# tinySML Worker V6 — SAMKNN with NumPy vectorization
+# All other deps (socket, struct, zlib, collections, http.server) are Python stdlib
+requests
+numpy

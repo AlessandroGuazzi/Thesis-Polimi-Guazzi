@@ -1,0 +1,144 @@
+# =============================================================================
+#  SPACE CLOUD V6 - DISTRIBUTED NODE AGENT & RBAC
+#  Description:
+#  DaemonSet for the V6 Node Agent — runs one autonomous MPC instance on
+#  every satellite node. Key changes from V5:
+#    - Two Redis connections: ground-redis (telemetry) + topology-master (Dijkstra)
+#    - gRPC port exposure removed (gRPC is deprecated, relay uses SSH)
+#    - Image path updated to infrastructure/node_agent/
+#    - relay_transfer.sh is baked into the image (see Dockerfile.agent)
+# =============================================================================
+
+# --- 1. RBAC — Security clearance for the Node Agent ---
+# The agent must call kubectl patch, kubectl exec, and the Kubelet checkpoint API.
+# This ClusterRole grants exactly those permissions and nothing more.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: space-agent-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: space-agent-role
+rules:
+- apiGroups: ["", "apps"]
+  # Permits: reading pod/node info, exec-ing into containers,
+  # scaling and patching deployments, and calling the Kubelet checkpoint proxy
+  resources: ["pods", "pods/exec", "deployments", "deployments/scale", "nodes", "nodes/proxy"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: space-agent-binding
+subjects:
+- kind: ServiceAccount
+  name: space-agent-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: space-agent-role
+  apiGroup: rbac.authorization.k8s.io
+
+# --- 2. DAEMONSET — exactly one Agent per satellite node ---
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: space-node-agent
+  labels:
+    app: space-node-agent
+spec:
+  selector:
+    matchLabels:
+      app: space-node-agent
+  template:
+    metadata:
+      labels:
+        app: space-node-agent
+    spec:
+      serviceAccountName: space-agent-sa
+
+      # hostNetwork: true is required so the agent can reach the Minikube SSH tunnel
+      # for relay_transfer.sh and can apply tc throttling on the real host interface
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+
+      # Only deploy on nodes labeled as satellites (not the ground station)
+      nodeSelector:
+        type: satellite
+
+      containers:
+      - name: agent
+        image: localhost/space-node-agent:latest
+        imagePullPolicy: Never
+
+        # privileged: true is required for Buildah image reconstruction
+        # (needs access to overlayfs and newuidmap/newgidmap)
+        securityContext:
+          privileged: true
+
+        env:
+        # Self-awareness: tells the agent which satellite it lives on
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+
+        # Ground Redis — the telemetry pub/sub bus (Digital Twin broadcasts here)
+        # Renamed from 'system-redis' in V5 to 'ground-redis' in V6
+        - name: GROUND_REDIS_HOST
+          value: "ground-redis"
+
+        # Floating Master Redis — the topology store for Lua Dijkstra EVALSHA
+        # Separate from Ground Redis to avoid topology queries blocking telemetry
+        - name: TOPOLOGY_REDIS_HOST
+          value: "topology-master"
+
+        # Temperature thresholds for VirtualSatellite Trigger A prediction
+        - name: T_SAFE
+          value: "9000.0"
+        - name: T_FUSE
+          value: "12000.0"
+
+        # Battery thresholds for VirtualSatellite Trigger C prediction (%)
+        - name: B_SAFE
+          value: "-15.0"
+        - name: B_FUSE
+          value: "-5.0"
+
+        # Lateral tracking threshold for Trigger B CoM edge detection (pixels)
+        - name: LATERAL_THRESHOLD
+          value: "0"
+
+        volumeMounts:
+        # Buildah needs the containers-storage to commit restored images
+        - name: containers-storage
+          mountPath: /var/lib/containers
+        # The Kubelet stores CRIU checkpoint TARs here
+        - name: kubelet-dir
+          mountPath: /var/lib/kubelet
+        # Required for CRI-O container runtime socket access
+        - name: run-dir
+          mountPath: /run
+        # Shared IPC folder
+        - name: ipc-storage
+          mountPath: /tmp
+        # Inject host SSH keys for inter-satellite communication
+        - name: ssh-keys
+          mountPath: /root/.ssh
+
+      volumes:
+      - name: containers-storage
+        hostPath: { path: /var/lib/containers }
+      - name: kubelet-dir
+        hostPath: { path: /var/lib/kubelet }
+      - name: run-dir
+        hostPath: { path: /run }
+      - name: ipc-storage
+        hostPath: { path: /var/lib/space_cloud, type: DirectoryOrCreate }
+      - name: ssh-keys
+        hostPath: { path: /root/.ssh, type: DirectoryOrCreate }

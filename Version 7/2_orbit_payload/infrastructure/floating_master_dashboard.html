@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space Cloud V6 — ISL Topology Dashboard</title>
+
+<!--
+  ════════════════════════════════════════════════════════════
+  SPACE CLOUD V6 — FLOATING MASTER ISL TOPOLOGY DASHBOARD
+  ════════════════════════════════════════════════════════════
+  Design System: Apple Design Language (Design.md)
+  Aesthetic Direction: Aerospace Tactical / Holographic HUD
+
+  DESIGN TOKENS (dark-surface mode from Design.md):
+    Surface hierarchy:
+      --void        #000000   pure black (nav, void bg)
+      --tile-1      #1c1c1e   primary panel surface
+      --tile-2      #2c2c2e   secondary surface
+      --tile-3      #3a3a3c   table rows / terminal
+
+    Accent (dark-surface variants):
+      --primary-on-dark  #2997ff   Sky Link Blue (links/active on dark)
+      --primary          #0066cc   Action Blue (interactive)
+
+    Semantic:
+      --ok        #30d158   nominal / low-weight edges
+      --warn      #ffd60a   threshold / medium-weight edges
+      --critical  #ff453a   hot / infinite / impassable
+
+    Text:
+      --on-dark   #ffffff
+      --muted     rgba(235,235,245,0.8)
+      --dim       #7a7a7a   (ink-muted-48)
+
+    Shape:
+      --r-sm   8px
+      --r-lg   18px
+      --r-pill 9999px
+
+    Single product shadow (Design.md: one drop-shadow in system):
+      rgba(0,0,0,0.22) 3px 5px 30px 0
+
+  TYPOGRAPHY (SF Pro stack):
+    Display: -apple-system, SF Pro Display, system-ui, sans-serif
+    Body:    -apple-system, SF Pro Text, system-ui, sans-serif
+    Mono:    SF Mono, ui-monospace, Courier New, monospace
+
+  AEROSPACE AESTHETIC LAYER (on top of Apple tokens):
+    - Scanline overlay (::before on body) for CRT warmth
+    - Radial grid / targeting reticle on the canvas bg
+    - Glow filters (SVG feDropShadow / CSS box-shadow) on nodes
+    - Corner-cut utility frames (clip-path polygon)
+    - Animated plasma edges (SVG stroke-dashoffset animation)
+    - HEX-ring node layout with depth-sorted rendering
+════════════════════════════════════════════════════════════
+-->
+
+<style>
+/* ── RESET ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── DESIGN TOKENS ─────────────────────────────────────── */
+:root {
+  /* Surfaces */
+  --void   : #000000;
+  --tile-1 : #141416;
+  --tile-2 : #1c1c1e;
+  --tile-3 : #2c2c2e;
+  --tile-4 : #3a3a3c;
+
+  /* Brand / Accent */
+  --primary         : #0066cc;
+  --primary-on-dark : #2997ff;
+
+  /* Semantic */
+  --ok       : #30d158;
+  --warn     : #ffd60a;
+  --critical : #ff453a;
+  --plasma   : #00e5ff;   /* ISL link healthy glow */
+
+  /* Text */
+  --on-dark : #ffffff;
+  --muted   : rgba(235,235,245,0.80);
+  --dim     : #7a7a7a;
+
+  /* Glow intensities (aerospace additions) */
+  --glow-ok      : rgba(48,209,88,0.55);
+  --glow-warn    : rgba(255,214,10,0.55);
+  --glow-crit    : rgba(255,69,58,0.55);
+  --glow-plasma  : rgba(0,229,255,0.45);
+  --glow-primary : rgba(41,151,255,0.40);
+
+  /* Shape */
+  --r-sm   : 8px;
+  --r-lg   : 18px;
+  --r-pill : 9999px;
+
+  /* Typography stacks */
+  --font-display : -apple-system, "SF Pro Display", system-ui, BlinkMacSystemFont, sans-serif;
+  --font-body    : -apple-system, "SF Pro Text",    system-ui, BlinkMacSystemFont, sans-serif;
+  --font-mono    : "SF Mono", ui-monospace, "Courier New", monospace;
+
+  /* Spacing (8px base) */
+  --sp-xs  : 8px;
+  --sp-sm  : 12px;
+  --sp-md  : 17px;
+  --sp-lg  : 24px;
+  --sp-xl  : 32px;
+  --sp-xxl : 48px;
+}
+
+/* ── BASE ───────────────────────────────────────────────── */
+html { -webkit-font-smoothing: antialiased; }
+
+body {
+  background: var(--void);
+  color: var(--on-dark);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.47;
+  letter-spacing: -0.224px;
+  min-height: 100vh;
+  overflow-x: hidden;
+  /* Radial nebula backdrop — pure CSS, no images */
+  background-image:
+    radial-gradient(ellipse 80% 60% at 50% 0%,   rgba(41,151,255,0.04) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 15% 80%,  rgba(0,102,204,0.06)  0%, transparent 50%),
+    radial-gradient(ellipse 60% 50% at 85% 100%, rgba(0,229,255,0.03)  0%, transparent 50%);
+}
+
+/* Scanline overlay — aerospace CRT warmth */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.06) 2px,
+    rgba(0,0,0,0.06) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── GLOBAL NAV (Apple: pure black, 44px) ───────────────── */
+.gnav {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  height: 44px;
+  background: rgba(0,0,0,0.92);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--sp-xl);
+}
+
+.gnav__wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.gnav__product {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.gnav__version {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--primary-on-dark);
+  letter-spacing: 0;
+}
+.gnav__title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.12px;
+  color: var(--on-dark);
+}
+
+.gnav__hud {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-lg);
+}
+
+/* Monospace clock readouts */
+.hud-clock {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.hud-clock strong {
+  color: rgba(235,235,245,0.6);
+  font-weight: 400;
+  margin-right: 4px;
+}
+
+/* Connection pill — Apple rounded-pill shape */
+.conn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.04);
+  font-family: var(--font-body);
+  font-size: 11px;
+  letter-spacing: -0.12px;
+  color: var(--dim);
+  transition: color .3s, border-color .3s, background .3s;
+}
+.conn-pill.live {
+  color: var(--ok);
+  border-color: rgba(48,209,88,0.35);
+  background: rgba(48,209,88,0.08);
+}
+.conn-pill.warn {
+  color: var(--warn);
+  border-color: rgba(255,214,10,0.35);
+}
+.conn-pill__dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.conn-pill.live .conn-pill__dot {
+  animation: pulse-ok 1.8s ease-in-out infinite;
+}
+@keyframes pulse-ok {
+  0%,100% { opacity:1; box-shadow: 0 0 0 0 rgba(48,209,88,0.6); }
+  50%     { opacity:.7; box-shadow: 0 0 0 5px rgba(48,209,88,0); }
+}
+
+/* ── PAGE SCAFFOLD ──────────────────────────────────────── */
+.page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--sp-xl);
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  grid-template-rows: auto 1fr;
+  gap: 2px;        /* Apple: color-change is the divider */
+  min-height: calc(100vh - 44px);
+}
+@media (max-width: 1100px) {
+  .page { grid-template-columns: 1fr; }
+  .page__right { grid-row: auto; }
+}
+@media (max-width: 640px) {
+  .page { padding: var(--sp-sm); }
+}
+
+.page__header {
+  grid-column: 1 / -1;
+  padding-bottom: var(--sp-xl);
+}
+.page__eyebrow {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--primary-on-dark);
+  margin-bottom: 6px;
+}
+.page__title {
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.10;
+  letter-spacing: -0.374px;
+  color: var(--on-dark);
+}
+.page__sub {
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.47;
+  letter-spacing: -0.374px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* ── PANEL (Apple tile-1 / tile-2, no box-shadow) ───────── */
+.panel {
+  background: var(--tile-2);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Corner-cut aerospace frame — clip-path on inner decorative corners */
+.panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-lg);
+  pointer-events: none;
+  border: 1px solid rgba(41,151,255,0.10);
+}
+
+.panel__hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-lg) var(--sp-lg) var(--sp-sm);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.panel__label {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--dim);
+}
+.panel__meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 0;
+}
+
+/* ── GRAPH PANEL ────────────────────────────────────────── */
+.graph-panel {
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+}
+.graph-wrap {
+  flex: 1;
+  position: relative;
+  padding: var(--sp-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 520px;
+}
+#isl-svg {
+  width: 100%;
+  height: 100%;
+  max-width: 560px;
+  max-height: 560px;
+  display: block;
+}
+
+/* ── RIGHT COLUMN ───────────────────────────────────────── */
+.page__right {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ── DATA TABLES ────────────────────────────────────────── */
+.data-panel { }
+.data-panel .panel__body {
+  padding: 0 var(--sp-lg) var(--sp-lg);
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+table + .section-sep {
+  display: block;
+  height: 1px;
+  background: rgba(255,255,255,0.06);
+  margin: var(--sp-sm) 0;
+}
+
+/* Sub-table header inside panel body */
+.tbl-section-title {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.8px;
+  color: var(--dim);
+  padding: var(--sp-md) 0 var(--sp-xs);
+  display: block;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: var(--sp-xs);
+}
+
+thead th {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: rgba(122,122,122,0.8);
+  padding: var(--sp-xs) var(--sp-sm) var(--sp-xs) 0;
+  text-align: left;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  white-space: nowrap;
+}
+tbody tr {
+  transition: background .12s;
+}
+tbody tr:hover { background: rgba(255,255,255,0.03); }
+tbody tr:last-child td { border-bottom: none; }
+tbody td {
+  padding: 7px var(--sp-sm) 7px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 12px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* Node name chip */
+.node-chip {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  background: rgba(41,151,255,0.10);
+  border: 1px solid rgba(41,151,255,0.25);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--primary-on-dark);
+  letter-spacing: 0;
+}
+
+/* Plane label */
+.plane-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--primary-on-dark);
+  letter-spacing: 0;
+}
+
+/* Semantic value states (from Design.md) */
+.val-ok       { color: var(--ok);       font-family: var(--font-mono); }
+.val-warn     { color: var(--warn);     font-family: var(--font-mono); }
+.val-critical { color: var(--critical); font-family: var(--font-mono); font-weight: 600; }
+.val-dim      { color: var(--dim);      font-family: var(--font-mono); }
+.val-inf      {
+  color: var(--critical);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  opacity: 0.7;
+}
+
+/* Same/Diff plane badges */
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+.badge-same { background: rgba(41,151,255,0.12); color: var(--primary-on-dark); border: 1px solid rgba(41,151,255,0.3); }
+.badge-diff { background: rgba(255,255,255,0.05); color: var(--dim);            border: 1px solid rgba(255,255,255,0.10); }
+
+/* ── STATS STRIP ────────────────────────────────────────── */
+.stats-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  grid-column: 1 / -1;
+}
+.stat-tile {
+  background: var(--tile-2);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: var(--r-lg);
+  padding: var(--sp-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stat-tile__label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.8px;
+  color: var(--dim);
+}
+.stat-tile__val {
+  font-family: var(--font-display);
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -0.374px;
+  line-height: 1.1;
+  color: var(--on-dark);
+  transition: color .4s;
+}
+.stat-tile__unit {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* ── SVG GRAPH VISUAL STYLES ────────────────────────────── */
+/*
+  Edges are drawn as SVG <line> elements with glow via filter.
+  Nodes are SVG <circle> groups.
+  Animations are CSS keyframes on SVG stroke-dashoffset.
+*/
+.edge-nominal  { stroke: var(--plasma); }
+.edge-warn     { stroke: var(--warn);   }
+.edge-critical { stroke: var(--critical); stroke-dasharray: 5 4; }
+.edge-inf      { stroke: var(--critical); stroke-dasharray: 3 6; opacity: 0.4; }
+
+/* Plasma flow animation — flows along the edge */
+@keyframes plasma-flow {
+  to { stroke-dashoffset: -40; }
+}
+.edge-flow {
+  animation: plasma-flow 1.8s linear infinite;
+}
+
+/* Node active ring pulse */
+@keyframes ring-pulse {
+  0%  { opacity: 0.7; r: 18px; }
+  50% { opacity: 0.2; r: 24px; }
+  100%{ opacity: 0.7; r: 18px; }
+}
+
+/* ── LEGEND ROW ─────────────────────────────────────────── */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-lg);
+  padding: 0 var(--sp-lg) var(--sp-md);
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: -0.12px;
+}
+.legend-line {
+  width: 22px;
+  height: 2px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.legend-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── FADE-IN STAGGER ────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.panel, .stat-tile {
+  animation: fadeUp .45s ease both;
+}
+.graph-panel      { animation-delay: .05s; }
+.data-panel       { animation-delay: .10s; }
+.stats-strip .stat-tile:nth-child(1) { animation-delay: .14s; }
+.stats-strip .stat-tile:nth-child(2) { animation-delay: .18s; }
+.stats-strip .stat-tile:nth-child(3) { animation-delay: .22s; }
+
+/* ── SCROLLBAR ──────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     GLOBAL NAV — Apple pure-black 44px bar
+     Contains: wordmark, title, HUD clocks, connection pill
+═══════════════════════════════════════════════════════════ -->
+<nav class="gnav" role="banner">
+  <div class="gnav__wordmark">
+    <span class="gnav__product">Space Cloud</span>
+    <span class="gnav__version">V6</span>
+    <span style="color:rgba(255,255,255,0.12); margin: 0 2px;">|</span>
+    <span class="gnav__title">ISL Topology</span>
+  </div>
+  <div class="gnav__hud">
+    <div class="hud-clock" aria-live="polite"><strong>UTC</strong><span id="clk-utc">—</span></div>
+    <div class="hud-clock" aria-live="polite"><strong>MET</strong><span id="clk-met">—</span></div>
+    <div class="conn-pill" id="conn-pill" role="status" aria-live="polite">
+      <span class="conn-pill__dot" aria-hidden="true"></span>
+      <span id="conn-label">Connecting</span>
+    </div>
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════════════════════════
+     PAGE SCAFFOLD
+═══════════════════════════════════════════════════════════ -->
+<div class="page">
+
+  <!-- Page header -->
+  <header class="page__header">
+    <p class="page__eyebrow">Floating Master · Dijkstra Routing</p>
+    <h1 class="page__title">ISL Mesh Topology</h1>
+    <p class="page__sub">Inter-Satellite Link graph, edge weights &amp; node telemetry.</p>
+  </header>
+
+  <!-- ── LEFT: HOLOGRAPHIC ISL GRAPH ──────────────────── -->
+  <section class="panel graph-panel" aria-label="ISL Mesh Graph">
+    <div class="panel__hdr">
+      <span class="panel__label">ISL Mesh Graph</span>
+      <span class="panel__meta" id="graph-meta">—</span>
+    </div>
+
+    <!-- The SVG canvas for the holographic graph -->
+    <div class="graph-wrap">
+      <!--
+        SVG coordinate space: 560 × 560
+        Center: (280, 280)
+        Node ring radius: 190px
+        Nodes placed at equal angular intervals around the ring.
+
+        All drawing is done by JS; the <defs> section below
+        pre-declares the reusable filters & gradients.
+      -->
+      <svg id="isl-svg" viewBox="0 0 560 560" xmlns="http://www.w3.org/2000/svg"
+           aria-label="Holographic ISL network graph" role="img">
+        <defs>
+          <!-- ── GLOW FILTERS ─────────────────────────────── -->
+          <!-- Node glow: ok (green) -->
+          <filter id="glow-ok" x="-80%" y="-80%" width="260%" height="260%">
+            <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#30d158" flood-opacity="0.8"/>
+          </filter>
+          <!-- Node glow: warn (yellow) -->
+          <filter id="glow-warn" x="-80%" y="-80%" width="260%" height="260%">
+            <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#ffd60a" flood-opacity="0.8"/>
+          </filter>
+          <!-- Node glow: critical (red) -->
+          <filter id="glow-crit" x="-80%" y="-80%" width="260%" height="260%">
+            <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#ff453a" flood-opacity="0.8"/>
+          </filter>
+          <!-- Edge glow: plasma -->
+          <filter id="glow-plasma" x="-50%" y="-50%" width="200%" height="200%">
+            <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#00e5ff" flood-opacity="0.6"/>
+          </filter>
+          <!-- Edge glow: warn -->
+          <filter id="glow-edge-warn" x="-50%" y="-50%" width="200%" height="200%">
+            <feDropShadow dx="0" dy="0" stdDeviation="2" flood-color="#ffd60a" flood-opacity="0.5"/>
+          </filter>
+          <!-- Label backdrop blur (faux) -->
+          <filter id="label-bg">
+            <feFlood flood-color="#0d0d0f" flood-opacity="0.7" result="bg"/>
+            <feMerge><feMergeNode in="bg"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+
+          <!-- ── RADIAL GRID PATTERN ─────────────────────── -->
+          <!-- Concentric targeting rings — aerospace HUD flavour -->
+          <!-- Drawn programmatically below, not as a <pattern> -->
+        </defs>
+
+        <!-- ── BACKGROUND GRID ─────────────────────────────
+             Radial targeting reticle + crosshair
+             Rendered once as static SVG markup.
+        ─────────────────────────────────────────────────── -->
+        <g id="bg-grid" opacity="0.08">
+          <!-- Concentric rings -->
+          <circle cx="280" cy="280" r="60"  fill="none" stroke="#2997ff" stroke-width="0.5"/>
+          <circle cx="280" cy="280" r="120" fill="none" stroke="#2997ff" stroke-width="0.5"/>
+          <circle cx="280" cy="280" r="190" fill="none" stroke="#2997ff" stroke-width="0.5"/>
+          <circle cx="280" cy="280" r="240" fill="none" stroke="#2997ff" stroke-width="0.3" stroke-dasharray="4 6"/>
+          <!-- Crosshair -->
+          <line x1="280" y1="0"   x2="280" y2="560" stroke="#2997ff" stroke-width="0.5"/>
+          <line x1="0"   y1="280" x2="560" y2="280" stroke="#2997ff" stroke-width="0.5"/>
+          <!-- Diagonal cross-hairs at 45° -->
+          <line x1="80"  y1="80"  x2="480" y2="480" stroke="#2997ff" stroke-width="0.3" stroke-dasharray="2 8"/>
+          <line x1="480" y1="80"  x2="80"  y2="480" stroke="#2997ff" stroke-width="0.3" stroke-dasharray="2 8"/>
+          <!-- Corner brackets — tactical frame corners -->
+          <path d="M 30 30 L 30 70 M 30 30 L 70 30"   stroke="#2997ff" stroke-width="1.2" fill="none"/>
+          <path d="M 530 30 L 530 70 M 530 30 L 490 30" stroke="#2997ff" stroke-width="1.2" fill="none"/>
+          <path d="M 30 530 L 30 490 M 30 530 L 70 530" stroke="#2997ff" stroke-width="1.2" fill="none"/>
+          <path d="M 530 530 L 530 490 M 530 530 L 490 530" stroke="#2997ff" stroke-width="1.2" fill="none"/>
+        </g>
+
+        <!-- CENTER MARKER — targeting reticle -->
+        <g opacity="0.25">
+          <circle cx="280" cy="280" r="6" fill="none" stroke="#2997ff" stroke-width="1"/>
+          <circle cx="280" cy="280" r="2" fill="#2997ff"/>
+          <line x1="270" y1="280" x2="274" y2="280" stroke="#2997ff" stroke-width="1"/>
+          <line x1="286" y1="280" x2="290" y2="280" stroke="#2997ff" stroke-width="1"/>
+          <line x1="280" y1="270" x2="280" y2="274" stroke="#2997ff" stroke-width="1"/>
+          <line x1="280" y1="286" x2="280" y2="290" stroke="#2997ff" stroke-width="1"/>
+        </g>
+
+        <!-- EDGE LAYER — populated by JS (rendered below nodes) -->
+        <g id="edge-layer"></g>
+
+        <!-- NODE LAYER — populated by JS -->
+        <g id="node-layer"></g>
+      </svg>
+    </div>
+
+    <!-- Legend row -->
+    <div class="legend" role="list" aria-label="Graph legend">
+      <div class="legend-item" role="listitem">
+        <div class="legend-line" style="background:var(--plasma); box-shadow: 0 0 4px var(--plasma);"></div>
+        Low weight
+      </div>
+      <div class="legend-item" role="listitem">
+        <div class="legend-line" style="background:var(--warn); box-shadow: 0 0 4px var(--warn);"></div>
+        High weight
+      </div>
+      <div class="legend-item" role="listitem">
+        <div class="legend-line" style="background:var(--critical); height:2px; border-top: 2px dashed var(--critical); background: none;"></div>
+        Impassable ∞
+      </div>
+      <div class="legend-item" role="listitem">
+        <div class="legend-dot" style="background:var(--ok); box-shadow: 0 0 5px var(--ok);"></div>
+        Nominal (&lt;60°C)
+      </div>
+      <div class="legend-item" role="listitem">
+        <div class="legend-dot" style="background:var(--warn); box-shadow: 0 0 5px var(--warn);"></div>
+        Warm (60–80°C)
+      </div>
+      <div class="legend-item" role="listitem">
+        <div class="legend-dot" style="background:var(--critical); box-shadow: 0 0 5px var(--critical);"></div>
+        Critical (&gt;80°C)
+      </div>
+    </div>
+  </section>
+
+  <!-- ── RIGHT: DATA TABLES ────────────────────────────── -->
+  <aside class="page__right" role="complementary">
+    <div class="panel data-panel">
+      <div class="panel__hdr">
+        <span class="panel__label">Telemetry &amp; Routing</span>
+        <span class="panel__meta" id="telem-ts">—</span>
+      </div>
+      <div class="panel__body">
+
+        <!-- NODE TELEMETRY TABLE -->
+        <span class="tbl-section-title">Node Telemetry</span>
+        <table aria-label="Node telemetry">
+          <thead>
+            <tr>
+              <th>Node</th>
+              <th>Plane</th>
+              <th>Temp</th>
+              <th>Battery</th>
+              <th>Angle</th>
+            </tr>
+          </thead>
+          <tbody id="node-tbody">
+            <!-- JS-populated -->
+          </tbody>
+        </table>
+
+        <!-- EDGE WEIGHT TABLE -->
+        <span class="tbl-section-title" style="margin-top: var(--sp-lg);">Edge Weights</span>
+        <table aria-label="ISL edge weights">
+          <thead>
+            <tr>
+              <th>From</th>
+              <th>To</th>
+              <th>Weight</th>
+              <th>Plane</th>
+            </tr>
+          </thead>
+          <tbody id="edge-tbody">
+            <!-- JS-populated -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── STATS STRIP ────────────────────────────────────── -->
+  <div class="stats-strip" role="region" aria-label="Fleet summary">
+    <div class="stat-tile">
+      <span class="stat-tile__label">Nodes</span>
+      <span class="stat-tile__val" id="stat-nodes">—</span>
+    </div>
+    <div class="stat-tile">
+      <span class="stat-tile__label">Active Links</span>
+      <span class="stat-tile__val" id="stat-links">—</span>
+    </div>
+    <div class="stat-tile">
+      <span class="stat-tile__label">Avg Temp</span>
+      <span class="stat-tile__val" id="stat-temp">—<span class="stat-tile__unit"> °C</span></span>
+    </div>
+  </div>
+
+</div><!-- /page -->
+
+<script>
+/*
+  ════════════════════════════════════════════════════════════
+  SPACE CLOUD V6 — FLOATING MASTER ISL TOPOLOGY DASHBOARD JS
+  ════════════════════════════════════════════════════════════
+
+  Sections:
+  1.  Constants & SVG layout math
+  2.  Clock (UTC + MET)
+  3.  Connection status helpers
+  4.  SVG graph renderer
+      4a. Node position calculation
+      4b. Edge drawing (weight-based styling)
+      4c. Node drawing (glow, active ring, label)
+  5.  Telemetry table renderer (node + edge)
+  6.  Stats strip updater
+  7.  SSE stream (CRITICAL — must remain intact)
+
+  EDGE WEIGHT THRESHOLDS:
+    weight <= 3          → nominal (plasma/cyan)
+    3 < weight <= 5      → moderate (mix — still cyan-ish)
+    5 < weight < Infinity→ high (warn/orange)
+    weight === Infinity  → impassable (critical/red dashed, faded)
+
+  NODE TEMP THRESHOLDS (from Design.md):
+    temp > 80   → critical (#ff453a)
+    temp > 60   → warn     (#ffd60a)
+    otherwise   → ok       (#30d158)
+
+  BATTERY THRESHOLD (from Design.md):
+    battery < 15  → critical
+    battery < 30  → warn
+    otherwise     → ok
+  ════════════════════════════════════════════════════════════
+*/
+
+/* ── 1. CONSTANTS ──────────────────────────────────────── */
+const SVG_W  = 560;
+const SVG_H  = 560;
+const CX     = 280;   // SVG center X
+const CY     = 280;   // SVG center Y
+const RING_R = 190;   // node ring radius
+
+// Design token colors (mirroring CSS vars for canvas/SVG use)
+const C = {
+  ok        : '#30d158',
+  warn      : '#ffd60a',
+  critical  : '#ff453a',
+  plasma    : '#00e5ff',
+  primary   : '#2997ff',
+  dim       : '#7a7a7a',
+  on_dark   : '#ffffff',
+  muted     : 'rgba(235,235,245,0.8)',
+  tile_2    : '#1c1c1e',
+};
+
+// MET start epoch
+const MET_START = Date.now();
+
+/* ── 2. CLOCKS ─────────────────────────────────────────── */
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function tickClocks() {
+  const now = new Date();
+
+  // UTC
+  document.getElementById('clk-utc').textContent =
+    `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())} Z`;
+
+  // MET (d:hh:mm:ss since page load)
+  const sec = Math.floor((Date.now() - MET_START) / 1000);
+  const s = sec % 60, m = Math.floor(sec/60)%60,
+        h = Math.floor(sec/3600)%24, d = Math.floor(sec/86400);
+  document.getElementById('clk-met').textContent =
+    `${pad(d)}:${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+setInterval(tickClocks, 1000);
+tickClocks();
+
+/* ── 3. CONNECTION STATUS ──────────────────────────────── */
+function setConn(state) {
+  const pill  = document.getElementById('conn-pill');
+  const label = document.getElementById('conn-label');
+  pill.className = `conn-pill ${state}`;
+  label.textContent = { live: 'Live', warn: 'Reconnecting', off: 'Offline' }[state] || 'Connecting';
+}
+
+/* ── 4. SVG GRAPH RENDERER ─────────────────────────────── */
+
+/*
+  4a. NODE POSITION CALCULATION
+  ─────────────────────────────
+  Nodes are placed in a circle of radius RING_R around (CX, CY).
+  Angular offset: -π/2 places node[0] at the top (12 o'clock).
+
+    x = CX + RING_R × cos(−π/2 + i × 2π/N)
+    y = CY + RING_R × sin(−π/2 + i × 2π/N)
+*/
+function layoutNodes(names) {
+  const N = names.length;
+  const pos = {};
+  names.forEach((name, i) => {
+    const angle = -Math.PI / 2 + (i / N) * Math.PI * 2;
+    pos[name] = {
+      x: CX + RING_R * Math.cos(angle),
+      y: CY + RING_R * Math.sin(angle),
+    };
+  });
+  return pos;
+}
+
+/*
+  4b. EDGE COLOR & STYLE HELPERS
+  ──────────────────────────────
+  Returns an object describing the SVG line attributes for a given weight.
+*/
+function edgeStyle(weight) {
+  if (!isFinite(weight)) {
+    // Impassable — red dashed, very faded
+    return {
+      stroke      : C.critical,
+      strokeWidth : 0.8,
+      dasharray   : '3 7',
+      opacity     : 0.35,
+      filter      : '',
+      flowClass   : '',
+    };
+  }
+  if (weight > 5) {
+    // Expensive — warn orange, thicker
+    const alpha = Math.min(0.9, 0.4 + weight * 0.04);
+    return {
+      stroke      : C.warn,
+      strokeWidth : Math.min(3.5, 1 + weight * 0.18),
+      dasharray   : '',
+      opacity     : alpha,
+      filter      : 'url(#glow-edge-warn)',
+      flowClass   : 'edge-flow',
+    };
+  }
+  // Nominal / low-cost — plasma cyan, thin, flowing
+  const alpha = Math.min(0.85, 0.35 + weight * 0.1);
+  const lw    = Math.max(0.8, 2.5 - weight * 0.18);
+  return {
+    stroke      : C.plasma,
+    strokeWidth : lw,
+    dasharray   : '6 3',          // flowing dashes for plasma effect
+    opacity     : alpha,
+    filter      : 'url(#glow-plasma)',
+    flowClass   : 'edge-flow',
+  };
+}
+
+/*
+  4c. NODE VISUAL HELPERS
+  ───────────────────────
+  Returns the fill color and filter id based on temp.
+*/
+function nodeStyle(temp) {
+  if (temp > 80) return { color: C.critical, filter: 'url(#glow-crit)' };
+  if (temp > 60) return { color: C.warn,     filter: 'url(#glow-warn)' };
+  return               { color: C.ok,        filter: 'url(#glow-ok)'   };
+}
+
+/*
+  Main graph draw function — clears and redraws both layers.
+*/
+function drawGraph(nodes, edges) {
+  const edgeLayer = document.getElementById('edge-layer');
+  const nodeLayer = document.getElementById('node-layer');
+  edgeLayer.innerHTML = '';
+  nodeLayer.innerHTML = '';
+
+  const names = Object.keys(nodes);
+  if (names.length === 0) return;
+
+  const pos = layoutNodes(names);
+
+  // Update meta badge
+  document.getElementById('graph-meta').textContent =
+    `${names.length} nodes · ${edges.length} links`;
+
+  // ── DRAW EDGES ──────────────────────────────────────────
+  // Drawn first so they render below nodes
+  edges.forEach(edge => {
+    const a = pos[edge.from];
+    const b = pos[edge.to];
+    if (!a || !b) return;
+
+    const sty = edgeStyle(edge.weight);
+    const mx  = (a.x + b.x) / 2;
+    const my  = (a.y + b.y) / 2;
+
+    // The edge line
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+    line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    line.setAttribute('stroke', sty.stroke);
+    line.setAttribute('stroke-width', sty.strokeWidth);
+    line.setAttribute('opacity', sty.opacity);
+    if (sty.dasharray) line.setAttribute('stroke-dasharray', sty.dasharray);
+    if (sty.filter)    line.setAttribute('filter', sty.filter);
+    if (sty.flowClass) line.classList.add(sty.flowClass);
+    edgeLayer.appendChild(line);
+
+    // Edge weight label at midpoint
+    // Backdrop rect for legibility
+    const labelText = isFinite(edge.weight) ? edge.weight.toFixed(2) : '∞';
+    const lw = labelText.length * 5.2 + 6;
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', mx - lw / 2);
+    rect.setAttribute('y', my - 7);
+    rect.setAttribute('width', lw);
+    rect.setAttribute('height', 13);
+    rect.setAttribute('rx', 3);
+    rect.setAttribute('fill', 'rgba(10,10,14,0.82)');
+    edgeLayer.appendChild(rect);
+
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', mx);
+    text.setAttribute('y', my + 3.5);
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('font-family', 'SF Mono, ui-monospace, Courier New, monospace');
+    text.setAttribute('font-size', '8.5');
+    text.setAttribute('fill', isFinite(edge.weight) ? sty.stroke : C.critical);
+    text.setAttribute('opacity', isFinite(edge.weight) ? '1' : '0.6');
+    text.textContent = labelText;
+    edgeLayer.appendChild(text);
+  });
+
+  // ── DRAW NODES ──────────────────────────────────────────
+  names.forEach(name => {
+    const nd     = nodes[name];
+    const p      = pos[name];
+    const sty    = nodeStyle(nd.temp || 0);
+    const short  = name.replace('minikube-', '');
+    const plane  = nd.orbit_plane || '?';
+
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('transform', `translate(${p.x},${p.y})`);
+
+    // Pulsing active-payload ring (is_working === true)
+    if (nd.is_working) {
+      const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      ring.setAttribute('r', 18);
+      ring.setAttribute('fill', 'none');
+      ring.setAttribute('stroke', sty.color);
+      ring.setAttribute('stroke-width', '1.5');
+      ring.setAttribute('opacity', '0.6');
+      // Inline SVG animation for the pulse ring
+      const anim = document.createElementNS('http://www.w3.org/2000/svg', 'animate');
+      anim.setAttribute('attributeName', 'r');
+      anim.setAttribute('values', '14;22;14');
+      anim.setAttribute('dur', '2s');
+      anim.setAttribute('repeatCount', 'indefinite');
+      const animO = document.createElementNS('http://www.w3.org/2000/svg', 'animate');
+      animO.setAttribute('attributeName', 'opacity');
+      animO.setAttribute('values', '0.7;0.1;0.7');
+      animO.setAttribute('dur', '2s');
+      animO.setAttribute('repeatCount', 'indefinite');
+      ring.appendChild(anim);
+      ring.appendChild(animO);
+      g.appendChild(ring);
+    }
+
+    // Main node disc
+    const disc = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    disc.setAttribute('r', 12);
+    disc.setAttribute('fill', sty.color);
+    disc.setAttribute('filter', sty.filter);
+    g.appendChild(disc);
+
+    // Inner dark disc (gives the node a "hollow" HUD look)
+    const inner = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    inner.setAttribute('r', 7.5);
+    inner.setAttribute('fill', '#0d0d10');
+    g.appendChild(inner);
+
+    // Orbit plane label inside node
+    const planeT = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    planeT.setAttribute('text-anchor', 'middle');
+    planeT.setAttribute('dominant-baseline', 'central');
+    planeT.setAttribute('font-family', 'SF Mono, ui-monospace, Courier New, monospace');
+    planeT.setAttribute('font-size', '6.5');
+    planeT.setAttribute('font-weight', '700');
+    planeT.setAttribute('fill', sty.color);
+    planeT.textContent = plane;
+    g.appendChild(planeT);
+
+    // Node name label (below)
+    const nameT = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    nameT.setAttribute('y', 24);
+    nameT.setAttribute('text-anchor', 'middle');
+    nameT.setAttribute('font-family', 'SF Mono, ui-monospace, Courier New, monospace');
+    nameT.setAttribute('font-size', '9');
+    nameT.setAttribute('fill', C.on_dark);
+    nameT.textContent = short;
+    g.appendChild(nameT);
+
+    // Telemetry micro-label (temp + battery below name)
+    const telemT = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    telemT.setAttribute('y', 35);
+    telemT.setAttribute('text-anchor', 'middle');
+    telemT.setAttribute('font-family', 'SF Mono, ui-monospace, Courier New, monospace');
+    telemT.setAttribute('font-size', '8');
+    telemT.setAttribute('fill', C.dim);
+    const tempVal = nd.temp !== undefined ? `${Number(nd.temp).toFixed(0)}°` : '—';
+    const battVal = nd.battery !== undefined ? `${Number(nd.battery).toFixed(0)}%` : '—';
+    telemT.textContent = `${tempVal} ${battVal}`;
+    g.appendChild(telemT);
+
+    nodeLayer.appendChild(g);
+  });
+}
+
+/* ── 5. TELEMETRY TABLE RENDERER ───────────────────────── */
+
+// Semantic class helpers
+function tempClass(t) {
+  if (t > 80) return 'val-critical';
+  if (t > 60) return 'val-warn';
+  return 'val-ok';
+}
+function battClass(b) {
+  if (b < 15) return 'val-critical';
+  if (b < 30) return 'val-warn';
+  return 'val-ok';
+}
+
+function renderTables(nodes, edges) {
+  // ── Node table
+  const nb = document.getElementById('node-tbody');
+  nb.innerHTML = '';
+
+  Object.entries(nodes).forEach(([name, nd]) => {
+    const short = name.replace('minikube-', '');
+    const temp  = nd.temp    !== undefined ? Number(nd.temp).toFixed(1)    : '—';
+    const batt  = nd.battery !== undefined ? Number(nd.battery).toFixed(0) : '—';
+    const angle = nd.angle   !== undefined ? Math.round(nd.angle)          : '—';
+
+    nb.innerHTML += `
+      <tr>
+        <td><span class="node-chip">${short}</span></td>
+        <td><span class="plane-tag">${nd.orbit_plane || '—'}</span></td>
+        <td class="${typeof nd.temp === 'number' ? tempClass(nd.temp) : 'val-dim'}">${temp}°C</td>
+        <td class="${typeof nd.battery === 'number' ? battClass(nd.battery) : 'val-dim'}">${batt}%</td>
+        <td class="val-dim">${angle}°</td>
+      </tr>`;
+  });
+
+  if (!nb.innerHTML) {
+    nb.innerHTML = `<tr><td colspan="5" style="color:var(--dim);padding:var(--sp-md) 0;font-size:12px;">No nodes.</td></tr>`;
+  }
+
+  // ── Edge table
+  const eb = document.getElementById('edge-tbody');
+  eb.innerHTML = '';
+
+  edges.forEach(e => {
+    const from   = e.from.replace('minikube-', '');
+    const to     = e.to.replace('minikube-', '');
+    const wInf   = !isFinite(e.weight);
+    const wVal   = wInf ? '∞' : Number(e.weight).toFixed(3);
+    const wClass = wInf ? 'val-inf' : e.weight > 5 ? 'val-warn' : 'val-ok';
+    const plane  = e.same_plane
+      ? `<span class="badge badge-same">Same</span>`
+      : `<span class="badge badge-diff">Diff</span>`;
+
+    eb.innerHTML += `
+      <tr>
+        <td><span class="node-chip">${from}</span></td>
+        <td><span class="node-chip">${to}</span></td>
+        <td class="${wClass}">${wVal}</td>
+        <td>${plane}</td>
+      </tr>`;
+  });
+
+  if (!eb.innerHTML) {
+    eb.innerHTML = `<tr><td colspan="4" style="color:var(--dim);padding:var(--sp-md) 0;font-size:12px;">No edges.</td></tr>`;
+  }
+
+  // Timestamp badge
+  document.getElementById('telem-ts').textContent =
+    new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
+
+/* ── 6. STATS STRIP ────────────────────────────────────── */
+function updateStats(nodes, edges) {
+  const names = Object.keys(nodes);
+  const activeLinks = edges.filter(e => isFinite(e.weight)).length;
+
+  document.getElementById('stat-nodes').textContent = names.length || '—';
+  document.getElementById('stat-links').textContent = activeLinks  || '—';
+
+  if (names.length > 0) {
+    const temps = names
+      .map(n => nodes[n].temp)
+      .filter(t => typeof t === 'number');
+    if (temps.length) {
+      const avg = temps.reduce((a, b) => a + b, 0) / temps.length;
+      const tEl = document.getElementById('stat-temp');
+      tEl.innerHTML = `${avg.toFixed(1)}<span class="stat-tile__unit"> °C</span>`;
+      tEl.style.color = avg > 80 ? 'var(--critical)' : avg > 60 ? 'var(--warn)' : 'var(--on-dark)';
+    }
+  }
+}
+
+/* ── 7. SSE STREAM ─────────────────────────────────────────
+   CRITICAL: EventSource('/stream') must remain intact.
+   Payload shape:
+   {
+     nodes: { [nodeName]: { temp, battery, orbit_plane, angle, is_working } },
+     edges: [{ from, to, weight, same_plane }]
+   }
+──────────────────────────────────────────────────────────── */
+const src = new EventSource('/stream');
+
+src.onopen = () => setConn('live');
+src.onerror = () => setConn('warn');
+
+src.onmessage = (event) => {
+  let data;
+  try { data = JSON.parse(event.data); }
+  catch (err) { console.error('[SC6] SSE parse error:', err); return; }
+
+  const nodes = data.nodes || {};
+  const edges = data.edges || [];
+
+  drawGraph(nodes, edges);
+  renderTables(nodes, edges);
+  updateStats(nodes, edges);
+};
+
+// Initial empty render so UI doesn't look broken before first message
+drawGraph({}, []);
+</script>
+</body>
+</html>

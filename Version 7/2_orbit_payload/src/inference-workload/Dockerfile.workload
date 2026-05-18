@@ -1,0 +1,30 @@
+# =============================================================
+# SPACE CLOUD V7 — Stateless Phoenix Worker
+# Base: Python 3.9 Slim — minimal footprint
+# =============================================================
+FROM python:3.9-slim
+
+# Show Python logs immediately in 'kubectl logs' without buffering
+ENV PYTHONUNBUFFERED=1
+
+# Guardian HTTP endpoint — injected by the K8s Pod spec at runtime
+ENV STATE_ENDPOINT=http://localhost:80
+
+WORKDIR /app
+
+# 1. Minimal OS dependencies (curl for health-check scripts only)
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Strict allowed dependencies (NO PyTorch)
+# We ensure we stay well under the 256Mi limit by installing only what we need.
+RUN pip install --no-cache-dir onnxruntime numpy requests
+
+# 3. Copy the stateless ONNX worker and the static compiled model
+COPY tinysml_worker.py ./
+# Note: The ONNX model should be placed in this directory during image build
+COPY wsts_model.onnx* ./
+
+# 4. Start the UDP telemetry receiver and ONNX worker
+CMD ["python", "tinysml_worker.py"]

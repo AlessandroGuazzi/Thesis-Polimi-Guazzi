@@ -48,7 +48,7 @@ DATASET_DIR = os.getenv(
 WORKER_UDP_PORT = 5005
 
 # How fast we send frames (1 frame every 2 seconds gives the CPU time to breathe)
-STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "3.0"))
+STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "1.0"))
 
 # CRITICAL FIX: Force TensorFlow to be "quiet".
 # By default, TF tries to use all available CPU cores. Since we are only reading files,

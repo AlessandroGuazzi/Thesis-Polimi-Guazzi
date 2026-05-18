@@ -1,580 +1,776 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Space Cloud V6 — Guardian SML Sidecar</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Space Cloud V6 — Guardian SML Sidecar</title>
 
-<style>
-  /* ── DESIGN TOKENS (Apple Dark Mode) ────────────────────────── */
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  <style>
+    /* ── DESIGN TOKENS (Apple Dark Mode) ────────────────────────── */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
-  :root {
-    --surface-black   : #000000;
-    --tile-1          : #1c1c1e;
-    --tile-2          : #2c2c2e;
-    --tile-3          : #3a3a3c;
-    --tile-deep       : #141416;
+    :root {
+      --surface-black: #000000;
+      --tile-1: #1c1c1e;
+      --tile-2: #2c2c2e;
+      --tile-3: #3a3a3c;
+      --tile-deep: #141416;
 
-    --primary         : #0066cc;
-    --primary-on-dark : #2997ff;
+      --primary: #0066cc;
+      --primary-on-dark: #2997ff;
 
-    --on-dark         : #ffffff;
-    --muted           : #ebebf5cc;
-    --ink-muted-48    : #7a7a7a;
+      --on-dark: #ffffff;
+      --muted: #ebebf5cc;
+      --ink-muted-48: #7a7a7a;
 
-    --ok              : #30d158;
-    --warn            : #ffd60a;
-    --critical        : #ff453a;
+      --ok: #30d158;
+      --warn: #ffd60a;
+      --critical: #ff453a;
 
-    --hairline        : rgba(255,255,255,0.08);
-    --hairline-strong : rgba(255,255,255,0.14);
+      --hairline: rgba(255, 255, 255, 0.08);
+      --hairline-strong: rgba(255, 255, 255, 0.14);
 
-    --rounded-sm      : 8px;
-    --rounded-md      : 11px;
-    --rounded-lg      : 18px;
-    --rounded-pill    : 9999px;
+      --rounded-sm: 8px;
+      --rounded-md: 11px;
+      --rounded-lg: 18px;
+      --rounded-pill: 9999px;
 
-    --space-xs        : 8px;
-    --space-sm        : 12px;
-    --space-md        : 17px;
-    --space-lg        : 24px;
-    --space-xl        : 32px;
+      --space-xs: 8px;
+      --space-sm: 12px;
+      --space-md: 17px;
+      --space-lg: 24px;
+      --space-xl: 32px;
 
-    --font-display    : -apple-system, "SF Pro Display", system-ui, BlinkMacSystemFont, sans-serif;
-    --font-body       : -apple-system, "SF Pro Text", system-ui, BlinkMacSystemFont, sans-serif;
-    --font-mono       : "SF Mono", "Courier New", monospace;
-  }
+      --font-display: -apple-system, "SF Pro Display", system-ui, BlinkMacSystemFont, sans-serif;
+      --font-body: -apple-system, "SF Pro Text", system-ui, BlinkMacSystemFont, sans-serif;
+      --font-mono: "SF Mono", "Courier New", monospace;
+    }
 
-  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    html {
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
 
-  body {
-    background: var(--tile-deep);
-    color: var(--on-dark);
-    font-family: var(--font-body);
-    font-size: 17px;
-    line-height: 1.47;
-    letter-spacing: -0.374px;
-    min-height: 100vh;
-    padding-bottom: var(--space-xl);
-  }
+    body {
+      background: var(--tile-deep);
+      color: var(--on-dark);
+      font-family: var(--font-body);
+      font-size: 17px;
+      line-height: 1.47;
+      letter-spacing: -0.374px;
+      min-height: 100vh;
+      padding-bottom: var(--space-xl);
+    }
 
-  /* ── GLOBAL NAV ─────────────────────────────────────────────── */
-  .global-nav {
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    background: var(--surface-black);
-    height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 var(--space-xl);
-    border-bottom: 1px solid var(--hairline-strong);
-  }
-  .global-nav__brand {
-    font-family: var(--font-display);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 1.5px;
-    color: var(--on-dark);
-    text-transform: uppercase;
-  }
-  .global-nav__brand span { color: var(--primary-on-dark); font-weight: 400; }
+    /* ── GLOBAL NAV ─────────────────────────────────────────────── */
+    .global-nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--surface-black);
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-xl);
+      border-bottom: 1px solid var(--hairline-strong);
+    }
 
-  .global-nav__cluster { display: flex; align-items: center; gap: var(--space-lg); }
-  .global-nav__clock {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--ink-muted-48);
-    letter-spacing: 0.5px;
-  }
-  .global-nav__clock strong { color: var(--muted); font-weight: 400; }
+    .global-nav__brand {
+      font-family: var(--font-display);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      color: var(--on-dark);
+      text-transform: uppercase;
+    }
 
-  /* Status Pill */
-  .status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(255,255,255,0.06);
-    border: 1px solid var(--hairline-strong);
-    border-radius: var(--rounded-pill);
-    padding: 4px 12px;
-    font-family: var(--font-body);
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: -0.12px;
-    color: var(--ink-muted-48);
-    transition: all 0.3s ease;
-  }
-  .status-pill.nominal {
-    color: var(--ok);
-    border-color: rgba(48,209,88,0.3);
-    background: rgba(48,209,88,0.08);
-  }
-  .status-pill.migrating {
-    color: var(--critical);
-    border-color: rgba(255,69,58,0.3);
-    background: rgba(255,69,58,0.08);
-  }
-  .status-pill__dot {
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-    flex-shrink: 0;
-  }
-  .status-pill.migrating .status-pill__dot {
-    animation: pulse-critical 1.2s ease-in-out infinite;
-  }
-  @keyframes pulse-critical {
-    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,69,58,0.6); }
-    50%      { opacity: 0.5; box-shadow: 0 0 0 4px rgba(255,69,58,0); }
-  }
+    .global-nav__brand span {
+      color: var(--primary-on-dark);
+      font-weight: 400;
+    }
 
-  /* ── PAGE LAYOUT ────────────────────────────────────────────── */
-  .page-header {
-    padding: var(--space-xl) var(--space-xl) var(--space-lg);
-    max-width: 1440px;
-    margin: 0 auto;
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-  }
-  .page-header__title {
-    font-family: var(--font-display);
-    font-size: 40px;
-    font-weight: 600;
-    line-height: 1.10;
-    letter-spacing: -0.374px;
-    color: var(--on-dark);
-  }
-  .node-badge {
-    font-family: var(--font-mono);
-    font-size: 13px;
-    color: var(--primary-on-dark);
-    background: rgba(41,151,255,0.12);
-    border: 1px solid rgba(41,151,255,0.25);
-    padding: 6px 14px;
-    border-radius: var(--rounded-pill);
-  }
+    .global-nav__cluster {
+      display: flex;
+      align-items: center;
+      gap: var(--space-lg);
+    }
 
-  .dashboard {
-    max-width: 1440px;
-    margin: 0 auto;
-    padding: 0 var(--space-xl);
-    display: grid;
-    grid-template-columns: 1fr 420px;
-    gap: 24px;
-  }
+    .global-nav__clock {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink-muted-48);
+      letter-spacing: 0.5px;
+    }
 
-  /* ── PANELS ─────────────────────────────────────────────────── */
-  .panel {
-    background: var(--tile-1);
-    border: 1px solid var(--hairline);
-    border-radius: var(--rounded-lg);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-  .panel__header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--space-md) var(--space-lg);
-    border-bottom: 1px solid var(--hairline);
-  }
-  .panel__title {
-    font-family: var(--font-body);
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-  }
-  .panel__body { padding: var(--space-lg); flex-grow: 1; }
+    .global-nav__clock strong {
+      color: var(--muted);
+      font-weight: 400;
+    }
 
-  /* ── TACTICAL GRIDS (CANVAS) ────────────────────────────────── */
-  .tactical-grid-container {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-lg);
-  }
-  .canvas-wrapper {
-    position: relative;
-    width: 100%;
-    aspect-ratio: 1 / 1;
-    background: var(--surface-black);
-    border: 1px solid var(--hairline-strong);
-    border-radius: var(--rounded-md);
-    overflow: hidden;
-  }
-  canvas {
-    display: block; width: 100%; height: 100%;
-    image-rendering: pixelated;
-  }
+    /* Status Pill */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--hairline-strong);
+      border-radius: var(--rounded-pill);
+      padding: 4px 12px;
+      font-family: var(--font-body);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: -0.12px;
+      color: var(--ink-muted-48);
+      transition: all 0.3s ease;
+    }
 
-  /* Reticle SVG */
-  #com-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  .reticle-line { stroke: var(--primary-on-dark); stroke-width: 0.3; stroke-dasharray: 4 2; opacity: 0.5; }
-  .reticle-center { fill: none; stroke: var(--primary-on-dark); stroke-width: 0.8; }
-  .reticle-text { font-family: var(--font-mono); font-size: 2px; fill: var(--on-dark); }
+    .status-pill.nominal {
+      color: var(--ok);
+      border-color: rgba(48, 209, 88, 0.3);
+      background: rgba(48, 209, 88, 0.08);
+    }
 
-  .reticle-alert .reticle-line, .reticle-alert .reticle-center { stroke: var(--critical); opacity: 1; }
-  .reticle-alert .reticle-text { fill: var(--critical); font-weight: bold; }
+    .status-pill.migrating {
+      color: var(--critical);
+      border-color: rgba(255, 69, 58, 0.3);
+      background: rgba(255, 69, 58, 0.08);
+    }
 
-  /* ── DIAGNOSTICS & MEMORY BANKS ─────────────────────────────── */
-  .metrics-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-md);
-    margin-bottom: var(--space-lg);
-  }
-  .metric-box {
-    background: var(--tile-2);
-    border: 1px solid var(--hairline);
-    border-radius: var(--rounded-md);
-    padding: var(--space-md);
-  }
-  .metric-box__label { font-size: 11px; font-weight: 600; color: var(--ink-muted-48); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
-  .metric-box__val { font-family: var(--font-display); font-size: 28px; font-weight: 600; color: var(--on-dark); letter-spacing: -0.374px; }
+    .status-pill__dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
 
-  .progress-wrap { margin-bottom: var(--space-md); }
-  .progress-header { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 8px; }
-  .progress-header span:first-child { color: var(--muted); }
-  .progress-header span:last-child { font-family: var(--font-mono); color: var(--ink-muted-48); }
-  .progress-track { height: 6px; background: rgba(0,0,0,0.4); border-radius: var(--rounded-pill); overflow: hidden; border: 1px solid var(--hairline); }
-  .progress-fill { height: 100%; border-radius: var(--rounded-pill); transition: width 0.3s ease; }
-  .fill-stm { background: var(--primary-on-dark); }
-  .fill-ltm { background: var(--ink-muted-48); }
+    .status-pill.migrating .status-pill__dot {
+      animation: pulse-critical 1.2s ease-in-out infinite;
+    }
 
-  /* ── SWARM MATRIX ───────────────────────────────────────────── */
-  .telemetry-table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: var(--font-mono); margin-bottom: var(--space-lg); }
-  .telemetry-table th { font-family: var(--font-body); font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--ink-muted-48); padding: 8px; text-align: left; border-bottom: 1px solid var(--hairline-strong); }
-  .telemetry-table td { padding: 10px 8px; border-bottom: 1px solid var(--hairline); color: var(--on-dark); }
-  .val-warn { color: var(--warn); }
-  .val-danger { color: var(--critical); font-weight: bold; }
+    @keyframes pulse-critical {
 
-  /* ── SYSTEM CONSOLE ─────────────────────────────────────────── */
-  .terminal {
-    background: var(--tile-3);
-    border-radius: var(--rounded-sm);
-    border: 1px solid var(--hairline);
-    height: 160px;
-    overflow-y: auto;
-    padding: var(--space-sm) var(--space-md);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    line-height: 1.6;
-    color: var(--muted);
-    scrollbar-width: thin;
-    scrollbar-color: var(--hairline-strong) transparent;
-  }
-  .log-time { color: var(--ink-muted-48); margin-right: 8px; }
-  .log-info { color: var(--muted); }
-  .log-warn { color: var(--warn); }
-  .log-action { color: var(--primary-on-dark); }
-</style>
+      0%,
+      100% {
+        opacity: 1;
+        box-shadow: 0 0 0 0 rgba(255, 69, 58, 0.6);
+      }
+
+      50% {
+        opacity: 0.5;
+        box-shadow: 0 0 0 4px rgba(255, 69, 58, 0);
+      }
+    }
+
+    /* ── PAGE LAYOUT ────────────────────────────────────────────── */
+    .page-header {
+      padding: var(--space-xl) var(--space-xl) var(--space-lg);
+      max-width: 1440px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+
+    .page-header__title {
+      font-family: var(--font-display);
+      font-size: 40px;
+      font-weight: 600;
+      line-height: 1.10;
+      letter-spacing: -0.374px;
+      color: var(--on-dark);
+    }
+
+    .node-badge {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--primary-on-dark);
+      background: rgba(41, 151, 255, 0.12);
+      border: 1px solid rgba(41, 151, 255, 0.25);
+      padding: 6px 14px;
+      border-radius: var(--rounded-pill);
+    }
+
+    .dashboard {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 var(--space-xl);
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      gap: 24px;
+    }
+
+    /* ── PANELS ─────────────────────────────────────────────────── */
+    .panel {
+      background: var(--tile-1);
+      border: 1px solid var(--hairline);
+      border-radius: var(--rounded-lg);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel__header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-md) var(--space-lg);
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .panel__title {
+      font-family: var(--font-body);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+    }
+
+    .panel__body {
+      padding: var(--space-lg);
+      flex-grow: 1;
+    }
+
+    /* ── TACTICAL GRIDS (CANVAS) ────────────────────────────────── */
+    .tactical-grid-container {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: var(--space-lg);
+    }
+
+    .canvas-wrapper {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      background: var(--surface-black);
+      border: 1px solid var(--hairline-strong);
+      border-radius: var(--rounded-md);
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+
+    /* Reticle SVG */
+    #com-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .reticle-line {
+      stroke: var(--primary-on-dark);
+      stroke-width: 0.3;
+      stroke-dasharray: 4 2;
+      opacity: 0.5;
+    }
+
+    .reticle-center {
+      fill: none;
+      stroke: var(--primary-on-dark);
+      stroke-width: 0.8;
+    }
+
+    .reticle-text {
+      font-family: var(--font-mono);
+      font-size: 2px;
+      fill: var(--on-dark);
+    }
+
+    .reticle-alert .reticle-line,
+    .reticle-alert .reticle-center {
+      stroke: var(--critical);
+      opacity: 1;
+    }
+
+    .reticle-alert .reticle-text {
+      fill: var(--critical);
+      font-weight: bold;
+    }
+
+    /* ── DIAGNOSTICS & MEMORY BANKS ─────────────────────────────── */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-md);
+      margin-bottom: var(--space-lg);
+    }
+
+    .metric-box {
+      background: var(--tile-2);
+      border: 1px solid var(--hairline);
+      border-radius: var(--rounded-md);
+      padding: var(--space-md);
+    }
+
+    .metric-box__label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink-muted-48);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+
+    .metric-box__val {
+      font-family: var(--font-display);
+      font-size: 28px;
+      font-weight: 600;
+      color: var(--on-dark);
+      letter-spacing: -0.374px;
+    }
+
+    .progress-wrap {
+      margin-bottom: var(--space-md);
+    }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .progress-header span:first-child {
+      color: var(--muted);
+    }
+
+    .progress-header span:last-child {
+      font-family: var(--font-mono);
+      color: var(--ink-muted-48);
+    }
+
+    .progress-track {
+      height: 6px;
+      background: rgba(0, 0, 0, 0.4);
+      border-radius: var(--rounded-pill);
+      overflow: hidden;
+      border: 1px solid var(--hairline);
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: var(--rounded-pill);
+      transition: width 0.3s ease;
+    }
+
+    .fill-stm {
+      background: var(--primary-on-dark);
+    }
+
+    .fill-ltm {
+      background: var(--ink-muted-48);
+    }
+
+    /* ── SWARM MATRIX ───────────────────────────────────────────── */
+    .telemetry-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      font-family: var(--font-mono);
+      margin-bottom: var(--space-lg);
+    }
+
+    .telemetry-table th {
+      font-family: var(--font-body);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--ink-muted-48);
+      padding: 8px;
+      text-align: left;
+      border-bottom: 1px solid var(--hairline-strong);
+    }
+
+    .telemetry-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--hairline);
+      color: var(--on-dark);
+    }
+
+    .val-warn {
+      color: var(--warn);
+    }
+
+    .val-danger {
+      color: var(--critical);
+      font-weight: bold;
+    }
+
+    /* ── SYSTEM CONSOLE ─────────────────────────────────────────── */
+    .terminal {
+      background: var(--tile-3);
+      border-radius: var(--rounded-sm);
+      border: 1px solid var(--hairline);
+      height: 160px;
+      overflow-y: auto;
+      padding: var(--space-sm) var(--space-md);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.6;
+      color: var(--muted);
+      scrollbar-width: thin;
+      scrollbar-color: var(--hairline-strong) transparent;
+    }
+
+    .log-time {
+      color: var(--ink-muted-48);
+      margin-right: 8px;
+    }
+
+    .log-info {
+      color: var(--muted);
+    }
+
+    .log-warn {
+      color: var(--warn);
+    }
+
+    .log-action {
+      color: var(--primary-on-dark);
+    }
+  </style>
 </head>
+
 <body>
 
-<nav class="global-nav">
-  <div class="global-nav__brand">Space Cloud <span>V6</span></div>
-  <div class="global-nav__cluster">
-    <div class="global-nav__clock"><strong>UTC</strong> <span id="clock-utc">00:00:00Z</span></div>
-    <div class="global-nav__clock"><strong>MET</strong> <span id="clock-met">T+00:00:00</span></div>
-    <div class="status-pill nominal" id="status-lamp">
-      <span class="status-pill__dot"></span>
-      <span id="status-text">System Nominal</span>
-    </div>
-  </div>
-</nav>
-
-<header class="page-header">
-  <h1 class="page-header__title">Guardian Sidecar</h1>
-  <div class="node-badge" id="guardian-id">AWAITING_UPLINK</div>
-</header>
-
-<main class="dashboard">
-  <!-- TACTICAL GRIDS -->
-  <div class="panel">
-    <div class="panel__header">
-      <span class="panel__title">Tactical Optical Grids</span>
-    </div>
-    <div class="panel__body tactical-grid-container">
-
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
-          <span>Raw OP-IR Feed</span> <span style="font-family:var(--font-mono)">64x64</span>
-        </div>
-        <div class="canvas-wrapper">
-          <canvas id="canvas-current" width="64" height="64"></canvas>
-        </div>
+  <nav class="global-nav">
+    <div class="global-nav__brand">Space Cloud <span>V6</span></div>
+    <div class="global-nav__cluster">
+      <div class="global-nav__clock"><strong>UTC</strong> <span id="clock-utc">00:00:00Z</span></div>
+      <div class="global-nav__clock"><strong>MET</strong> <span id="clock-met">T+00:00:00</span></div>
+      <div class="status-pill nominal" id="status-lamp">
+        <span class="status-pill__dot"></span>
+        <span id="status-text">System Nominal</span>
       </div>
+    </div>
+  </nav>
 
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
-          <span>SAMKNN Prediction</span> <span style="font-family:var(--font-mono)">62x62</span>
+  <header class="page-header">
+    <h1 class="page-header__title">Guardian Sidecar</h1>
+    <div class="node-badge" id="guardian-id">AWAITING_UPLINK</div>
+  </header>
+
+  <main class="dashboard">
+    <!-- TACTICAL GRIDS -->
+    <div class="panel">
+      <div class="panel__header">
+        <span class="panel__title">Tactical Optical Grids</span>
+      </div>
+      <div class="panel__body tactical-grid-container">
+
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
+            <span>Input Hotspots (T-1)</span> <span style="font-family:var(--font-mono)">64x64</span>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="canvas-current" width="64" height="64"></canvas>
+          </div>
         </div>
-        <div class="canvas-wrapper">
-          <canvas id="canvas-predicted" width="62" height="62"></canvas>
-          <svg id="com-overlay" viewBox="0 0 62 62" xmlns="http://www.w3.org/2000/svg">
-            <g id="reticle-group">
+
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
+            <span>Ground Truth (T)</span> <span style="font-family:var(--font-mono)">62x62</span>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="canvas-gt" width="62" height="62"></canvas>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
+            <span>SAMKNN Prediction</span> <span style="font-family:var(--font-mono)">62x62</span>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="canvas-predicted" width="62" height="62"></canvas>
+            <svg id="com-overlay" viewBox="0 0 62 62" xmlns="http://www.w3.org/2000/svg">
+              <g id="reticle-group">
                 <line id="com-h" class="reticle-line" x1="0" y1="31" x2="62" y2="31" />
                 <line id="com-v" class="reticle-line" x1="31" y1="0" x2="31" y2="62" />
                 <circle id="com-dot" class="reticle-center" cx="31" cy="31" r="1.5" />
-                <rect id="com-bg" x="32.5" y="27.5" width="18" height="3" fill="var(--surface-black)" rx="0.5"/>
+                <rect id="com-bg" x="32.5" y="27.5" width="18" height="3" fill="var(--surface-black)" rx="0.5" />
                 <text id="com-text" class="reticle-text" x="33" y="30">X:-- Y:--</text>
-            </g>
-          </svg>
+              </g>
+            </svg>
+          </div>
         </div>
-      </div>
 
+      </div>
     </div>
-  </div>
 
-  <!-- DIAGNOSTICS & SYSTEM CONSOLE -->
-  <div style="display: flex; flex-direction: column; gap: 24px;">
+    <!-- DIAGNOSTICS & SYSTEM CONSOLE -->
+    <div style="display: flex; flex-direction: column; gap: 24px;">
 
-    <!-- EVALUATION METRICS -->
-    <div class="panel">
-      <div class="panel__header">
-        <span class="panel__title">Model Accuracy (Time-Shift)</span>
-        <span id="delta-mig-badge" class="node-badge" style="font-size:11px;">ΔMig: --</span>
-      </div>
-      <div class="panel__body">
-        <div class="metrics-grid">
-          <div class="metric-box">
-            <div class="metric-box__label">IoU (T-1 → T)</div>
-            <div class="metric-box__val" id="iou-val">—</div>
-          </div>
-          <div class="metric-box">
-            <div class="metric-box__label">Rolling F1 (N=50)</div>
-            <div class="metric-box__val" id="f1-val">—</div>
-          </div>
+      <!-- EVALUATION METRICS -->
+      <div class="panel">
+        <div class="panel__header">
+          <span class="panel__title">Model Accuracy (Time-Shift)</span>
+          <span id="delta-mig-badge" class="node-badge" style="font-size:11px;">ΔMig: --</span>
         </div>
-        <div style="margin-bottom:12px;">
-          <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">IoU OVER TIME</div>
-          <canvas id="spark-iou" height="80"
-                  style="width:100%; background:var(--surface-black);
+        <div class="panel__body">
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <div class="metric-box__label">IoU (T-1 → T)</div>
+              <div class="metric-box__val" id="iou-val">—</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-box__label">Rolling F1 (N=50)</div>
+              <div class="metric-box__val" id="f1-val">—</div>
+            </div>
+          </div>
+          <div style="margin-bottom:12px;">
+            <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">IoU OVER TIME</div>
+            <canvas id="spark-iou" height="80" style="width:100%; background:var(--surface-black);
                          border:1px solid var(--hairline-strong);
                          border-radius:var(--rounded-sm);"></canvas>
-        </div>
-        <div>
-          <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">F1 OVER TIME</div>
-          <canvas id="spark-f1" height="80"
-                  style="width:100%; background:var(--surface-black);
+          </div>
+          <div>
+            <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">F1 OVER TIME</div>
+            <canvas id="spark-f1" height="80" style="width:100%; background:var(--surface-black);
                          border:1px solid var(--hairline-strong);
                          border-radius:var(--rounded-sm);"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel__header">
-        <span class="panel__title">Payload Diagnostics</span>
-      </div>
-      <div class="panel__body">
-
-        <div class="metrics-grid">
-          <div class="metric-box">
-            <div class="metric-box__label">Frames Evaluated</div>
-            <div class="metric-box__val" id="sample-count">0</div>
-          </div>
-          <div class="metric-box">
-            <div class="metric-box__label">Fire Pixels Detected</div>
-            <div class="metric-box__val" id="fire-count" style="color: var(--critical)">0</div>
           </div>
         </div>
-
-        <div class="progress-wrap">
-          <div class="progress-header"><span>STM Saturation</span><span id="stm-label">0 / 5000</span></div>
-          <div class="progress-track"><div class="progress-fill fill-stm" id="stm-bar" style="width:0%"></div></div>
-        </div>
-        <div class="progress-wrap" style="margin-bottom: 0;">
-          <div class="progress-header"><span>LTM Saturation</span><span id="ltm-label">0 / 15000</span></div>
-          <div class="progress-track"><div class="progress-fill fill-ltm" id="ltm-bar" style="width:0%"></div></div>
-        </div>
-
       </div>
+
+      <div class="panel">
+        <div class="panel__header">
+          <span class="panel__title">Payload Diagnostics</span>
+        </div>
+        <div class="panel__body">
+
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <div class="metric-box__label">Frames Evaluated</div>
+              <div class="metric-box__val" id="sample-count">0</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-box__label">Fire Pixels Detected</div>
+              <div class="metric-box__val" id="fire-count" style="color: var(--critical)">0</div>
+            </div>
+          </div>
+
+          <div class="progress-wrap">
+            <div class="progress-header"><span>STM Saturation</span><span id="stm-label">0 / 5000</span></div>
+            <div class="progress-track">
+              <div class="progress-fill fill-stm" id="stm-bar" style="width:0%"></div>
+            </div>
+          </div>
+          <div class="progress-wrap" style="margin-bottom: 0;">
+            <div class="progress-header"><span>LTM Saturation</span><span id="ltm-label">0 / 15000</span></div>
+            <div class="progress-track">
+              <div class="progress-fill fill-ltm" id="ltm-bar" style="width:0%"></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__header">
+          <span class="panel__title">Swarm & Console</span>
+        </div>
+        <div class="panel__body" style="padding-top: 12px;">
+
+          <table class="telemetry-table">
+            <thead>
+              <tr>
+                <th>Node</th>
+                <th>Temp</th>
+                <th>Battery</th>
+                <th>Eclipse</th>
+              </tr>
+            </thead>
+            <tbody id="fleet-tbody"></tbody>
+          </table>
+
+          <div class="panel__title" style="margin-bottom: 8px;">System Terminal</div>
+          <div class="terminal" id="system-console">
+            <div><span class="log-time">[Init]</span> <span class="log-info">Awaiting orbital telemetry...</span></div>
+          </div>
+
+        </div>
+      </div>
+
     </div>
+  </main>
 
-    <div class="panel">
-      <div class="panel__header">
-        <span class="panel__title">Swarm & Console</span>
-      </div>
-      <div class="panel__body" style="padding-top: 12px;">
+  <script>
+    // ============================================================================
+    // CLOCKS (UTC & MET)
+    // ============================================================================
+    const startTime = Date.now();
+    setInterval(() => {
+      document.getElementById('clock-utc').innerText = new Date().toISOString().substring(11, 19) + 'Z';
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+      const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+      const s = String(elapsed % 60).padStart(2, '0');
+      document.getElementById('clock-met').innerText = `T+${h}:${m}:${s}`;
+    }, 1000);
 
-        <table class="telemetry-table">
-          <thead><tr><th>Node</th><th>Temp</th><th>Battery</th><th>Eclipse</th></tr></thead>
-          <tbody id="fleet-tbody"></tbody>
-        </table>
+    // ============================================================================
+    // CANVAS MATHEMATICS & RENDERING
+    // ============================================================================
+    const ctxCurrent = document.getElementById('canvas-current').getContext('2d');
+    const ctxGt = document.getElementById('canvas-gt').getContext('2d');
+    const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
 
-        <div class="panel__title" style="margin-bottom: 8px;">System Terminal</div>
-        <div class="terminal" id="system-console">
-          <div><span class="log-time">[Init]</span> <span class="log-info">Awaiting orbital telemetry...</span></div>
-        </div>
-
-      </div>
-    </div>
-
-  </div>
-</main>
-
-<script>
-// ============================================================================
-// CLOCKS (UTC & MET)
-// ============================================================================
-const startTime = Date.now();
-setInterval(() => {
-    document.getElementById('clock-utc').innerText = new Date().toISOString().substring(11, 19) + 'Z';
-    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
-    const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
-    const s = String(elapsed % 60).padStart(2, '0');
-    document.getElementById('clock-met').innerText = `T+${h}:${m}:${s}`;
-}, 1000);
-
-// ============================================================================
-// CANVAS MATHEMATICS & RENDERING
-// ============================================================================
-const ctxCurrent   = document.getElementById('canvas-current').getContext('2d');
-const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
-
-function drawFireMask(flatMask, ctx, width, colorFn) {
-    if (!flatMask || flatMask.length === 0) return;
-    const height = Math.floor(flatMask.length / width);
-    ctx.clearRect(0, 0, width, height);
-    for (let i = 0; i < height; i++) {
+    function drawFireMask(flatMask, ctx, width, colorFn) {
+      if (!flatMask || flatMask.length === 0) return;
+      const height = Math.floor(flatMask.length / width);
+      ctx.clearRect(0, 0, width, height);
+      for (let i = 0; i < height; i++) {
         for (let j = 0; j < width; j++) {
-            const val = flatMask[i * width + j];
-            if (val > 0) {
-                ctx.fillStyle = colorFn(val);
-                ctx.fillRect(j, i, 1, 1);
-            }
+          const val = flatMask[i * width + j];
+          if (val > 0) {
+            ctx.fillStyle = colorFn(val);
+            ctx.fillRect(j, i, 1, 1);
+          }
         }
+      }
     }
-}
 
-// Deep red/orange mapping for raw feed
-function currentFireColor(val) {
-    const intensity = Math.min(1, val);
-    const r = 255;
-    const g = Math.round(110 * (1 - intensity));
-    return `rgb(${r}, ${g}, 0)`;
-}
+    // Deep red/orange mapping for raw feed
+    function currentFireColor(val) {
+      const intensity = Math.min(1, val);
+      const r = 255;
+      const g = Math.round(110 * (1 - intensity));
+      return `rgb(${r}, ${g}, 0)`;
+    }
 
-// Solid Sky Link Blue for prediction map
-function predictedFireColor(val) {
-    return '#2997ff'; // var(--primary-on-dark)
-}
+    // Solid Sky Link Blue for prediction map
+    function predictedFireColor(val) {
+      return '#2997ff'; // var(--primary-on-dark)
+    }
 
-// ============================================================================
-// SPARKLINE ENGINE (Zero-Dependency Canvas Charts)
-// ============================================================================
-const SPARK_MAX_POINTS = 200;
-const sparkIoU = { vals: [], migrations: [] };
-const sparkF1  = { vals: [], migrations: [] };
-let lastEpoch = 0;
+    // Emerald Green for objective ground-truth reality
+    function gtFireColor(val) {
+      return '#00e676';
+    }
 
-function drawSparkline(canvasId, data) {
-    const canvas = document.getElementById(canvasId);
-    const ctx = canvas.getContext('2d');
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.width = canvas.clientWidth * dpr;
-    const H = canvas.height = 80 * dpr;
-    ctx.clearRect(0, 0, W, H);
+    // ============================================================================
+    // SPARKLINE ENGINE (Zero-Dependency Canvas Charts)
+    // ============================================================================
+    const SPARK_MAX_POINTS = 200;
+    const sparkIoU = { vals: [], migrations: [] };
+    const sparkF1 = { vals: [], migrations: [] };
+    let lastEpoch = 0;
 
-    if (data.vals.length < 2) return;
-    const n = data.vals.length;
-    const xStep = W / (SPARK_MAX_POINTS - 1);
+    function drawSparkline(canvasId, data) {
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const W = canvas.width = canvas.clientWidth * dpr;
+      const H = canvas.height = 80 * dpr;
+      ctx.clearRect(0, 0, W, H);
 
-    // ── Migration markers (vertical red dashed lines) ─────
-    ctx.strokeStyle = 'rgba(255, 69, 58, 0.7)';
-    ctx.lineWidth = 2 * dpr;
-    ctx.setLineDash([4 * dpr, 3 * dpr]);
-    for (const mi of data.migrations) {
+      if (data.vals.length < 2) return;
+      const n = data.vals.length;
+      const xStep = W / (SPARK_MAX_POINTS - 1);
+
+      // ── Migration markers (vertical red dashed lines) ─────
+      ctx.strokeStyle = 'rgba(255, 69, 58, 0.7)';
+      ctx.lineWidth = 2 * dpr;
+      ctx.setLineDash([4 * dpr, 3 * dpr]);
+      for (const mi of data.migrations) {
         const x = mi * xStep;
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    }
-    ctx.setLineDash([]);
+      }
+      ctx.setLineDash([]);
 
-    // ── Data line ─────────────────────────────────────────
-    ctx.strokeStyle = '#2997ff';
-    ctx.lineWidth = 1.5 * dpr;
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
+      // ── Data line ─────────────────────────────────────────
+      ctx.strokeStyle = '#2997ff';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
         const x = i * xStep;
         const y = H - (data.vals[i] * H);
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // ── Gradient fill under line ───────────────────────────
+      ctx.lineTo((n - 1) * xStep, H);
+      ctx.lineTo(0, H);
+      ctx.closePath();
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, 'rgba(41, 151, 255, 0.15)');
+      grad.addColorStop(1, 'rgba(41, 151, 255, 0.0)');
+      ctx.fillStyle = grad;
+      ctx.fill();
     }
-    ctx.stroke();
 
-    // ── Gradient fill under line ───────────────────────────
-    ctx.lineTo((n - 1) * xStep, H);
-    ctx.lineTo(0, H);
-    ctx.closePath();
-    const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, 'rgba(41, 151, 255, 0.15)');
-    grad.addColorStop(1, 'rgba(41, 151, 255, 0.0)');
-    ctx.fillStyle = grad;
-    ctx.fill();
-}
+    // ============================================================================
+    // COG RETICLE LOGIC
+    // ============================================================================
+    function updateReticle(comX, comY) {
+      const INNER = 62;
+      const THRESH = 8;
 
-// ============================================================================
-// COG RETICLE LOGIC
-// ============================================================================
-function updateReticle(comX, comY) {
-    const INNER = 62;
-    const THRESH = 8;
+      const x = Math.max(0, Math.min(INNER - 1, comX || INNER / 2));
+      const y = Math.max(0, Math.min(INNER - 1, comY || INNER / 2));
 
-    const x = Math.max(0, Math.min(INNER - 1, comX || INNER / 2));
-    const y = Math.max(0, Math.min(INNER - 1, comY || INNER / 2));
+      document.getElementById('com-h').setAttribute('y1', y);
+      document.getElementById('com-h').setAttribute('y2', y);
+      document.getElementById('com-v').setAttribute('x1', x);
+      document.getElementById('com-v').setAttribute('x2', x);
+      document.getElementById('com-dot').setAttribute('cx', x);
+      document.getElementById('com-dot').setAttribute('cy', y);
 
-    document.getElementById('com-h').setAttribute('y1', y);
-    document.getElementById('com-h').setAttribute('y2', y);
-    document.getElementById('com-v').setAttribute('x1', x);
-    document.getElementById('com-v').setAttribute('x2', x);
-    document.getElementById('com-dot').setAttribute('cx', x);
-    document.getElementById('com-dot').setAttribute('cy', y);
+      const textStr = `X:${x.toFixed(1)} Y:${y.toFixed(1)}`;
+      const textEl = document.getElementById('com-text');
+      const bgEl = document.getElementById('com-bg');
 
-    const textStr = `X:${x.toFixed(1)} Y:${y.toFixed(1)}`;
-    const textEl = document.getElementById('com-text');
-    const bgEl = document.getElementById('com-bg');
+      textEl.setAttribute('x', x + 1.5);
+      textEl.setAttribute('y', y - 1.5);
+      bgEl.setAttribute('x', x + 1);
+      bgEl.setAttribute('y', y - 3.5);
 
-    textEl.setAttribute('x', x + 1.5);
-    textEl.setAttribute('y', y - 1.5);
-    bgEl.setAttribute('x', x + 1);
-    bgEl.setAttribute('y', y - 3.5);
-
-    const group = document.getElementById('reticle-group');
-    if (x < THRESH || x > (INNER - THRESH) || y < THRESH || y > (INNER - THRESH)) {
+      const group = document.getElementById('reticle-group');
+      if (x < THRESH || x > (INNER - THRESH) || y < THRESH || y > (INNER - THRESH)) {
         group.classList.add('reticle-alert');
         textEl.textContent = textStr + " [EDGE_WARN]";
         bgEl.setAttribute('width', '28');
-    } else {
+      } else {
         group.classList.remove('reticle-alert');
         textEl.textContent = textStr;
         bgEl.setAttribute('width', '18');
+      }
     }
-}
 
-// ============================================================================
-// DOM INJECTION HELPERS
-// ============================================================================
-function updateBuffers(stm, ltm) {
-    const STM_MAX = 5000, LTM_MAX = 15000;
-    document.getElementById('stm-bar').style.width = Math.min(100, (stm/STM_MAX)*100) + '%';
-    document.getElementById('stm-label').textContent = `${stm} / ${STM_MAX}`;
-    document.getElementById('ltm-bar').style.width = Math.min(100, (ltm/LTM_MAX)*100) + '%';
-    document.getElementById('ltm-label').textContent = `${ltm} / ${LTM_MAX}`;
-}
+    // ============================================================================
+    // DOM INJECTION HELPERS
+    // ============================================================================
+    function updateBuffers(stm, ltm) {
+      const STM_MAX = 5000, LTM_MAX = 15000;
+      document.getElementById('stm-bar').style.width = Math.min(100, (stm / STM_MAX) * 100) + '%';
+      document.getElementById('stm-label').textContent = `${stm} / ${STM_MAX}`;
+      document.getElementById('ltm-bar').style.width = Math.min(100, (ltm / LTM_MAX) * 100) + '%';
+      document.getElementById('ltm-label').textContent = `${ltm} / ${LTM_MAX}`;
+    }
 
-function renderTelemetryMatrix(envData) {
-    const tbody = document.getElementById('fleet-tbody');
-    tbody.innerHTML = '';
+    function renderTelemetryMatrix(envData) {
+      const tbody = document.getElementById('fleet-tbody');
+      tbody.innerHTML = '';
 
-    Object.entries(envData).forEach(([node, data]) => {
-        if(data.type === 'ground') return; // Hide ground stations from view
+      Object.entries(envData).forEach(([node, data]) => {
+        if (data.type === 'ground') return; // Hide ground stations from view
 
         const temp = data.temp || 0;
         const bat = data.battery || 0;
@@ -584,7 +780,7 @@ function renderTelemetryMatrix(envData) {
         const eclipseTxt = data.eclipse ? '🌑 ECL' : '☀️ VIS';
 
         // Indicate payload location visually
-        const nodeLabel = data.is_working ? `[ ${node.replace('minikube-','')} ]` : node.replace('minikube-','');
+        const nodeLabel = data.is_working ? `[ ${node.replace('minikube-', '')} ]` : node.replace('minikube-', '');
 
         tbody.innerHTML += `
             <tr>
@@ -594,106 +790,116 @@ function renderTelemetryMatrix(envData) {
                 <td>${eclipseTxt}</td>
             </tr>
         `;
-    });
-}
+      });
+    }
 
-function sysLog(msg, typeClass = 'log-info') {
-    const consoleEl = document.getElementById('system-console');
-    const ts = new Date().toISOString().substring(11, 19);
-    const entry = document.createElement('div');
-    entry.innerHTML = `<span class="log-time">[${ts}]</span> <span class="${typeClass}">${msg}</span>`;
-    consoleEl.appendChild(entry);
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-}
+    function sysLog(msg, typeClass = 'log-info') {
+      const consoleEl = document.getElementById('system-console');
+      const ts = new Date().toISOString().substring(11, 19);
+      const entry = document.createElement('div');
+      entry.innerHTML = `<span class="log-time">[${ts}]</span> <span class="${typeClass}">${msg}</span>`;
+      consoleEl.appendChild(entry);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
 
-// ============================================================================
-// SSE STREAM INGESTION (BACKEND BINDING)
-// ============================================================================
-let lastFlightState = false;
-const evtSource = new EventSource('/api/stream');
+    // ============================================================================
+    // SSE STREAM INGESTION (BACKEND BINDING)
+    // ============================================================================
+    let lastFlightState = false;
+    const evtSource = new EventSource('/api/stream');
 
-evtSource.onmessage = (event) => {
-    let data;
-    try { data = JSON.parse(event.data); } catch(e) { return; }
+    evtSource.onmessage = (event) => {
+      let data;
+      try { data = JSON.parse(event.data); } catch (e) { return; }
 
-    const state = data.internal_state || {};
-    const env = data.environment || {};
-    const flightMode = data.flight_mode;
+      const state = data.internal_state || {};
+      const env = data.environment || {};
+      const flightMode = data.flight_mode;
 
-    document.getElementById('guardian-id').textContent = data.guardian_id || 'UNKNOWN';
+      document.getElementById('guardian-id').textContent = data.guardian_id || 'UNKNOWN';
 
-    // Contextual Status Toggling
-    const lamp = document.getElementById('status-lamp');
-    const statusText = document.getElementById('status-text');
+      // Contextual Status Toggling
+      const lamp = document.getElementById('status-lamp');
+      const statusText = document.getElementById('status-text');
 
-    if (flightMode) {
+      if (flightMode) {
         lamp.className = 'status-pill migrating';
         statusText.textContent = 'ISL Migration Active';
         if (!lastFlightState) sysLog(`Initiating CRIU checkpoint sequence. Lock acquired.`, 'log-warn');
-    } else {
+      } else {
         lamp.className = 'status-pill nominal';
         statusText.textContent = 'System Nominal';
         if (lastFlightState) sysLog(`Payload restored on ${data.guardian_id}. UDP socket open.`, 'log-action');
-    }
-    lastFlightState = flightMode;
+      }
+      lastFlightState = flightMode;
 
-    // Mathematics Rendering
-    drawFireMask(state.prev_fire_mask || state.predicted_fire_mask || [], ctxCurrent, 64, currentFireColor);
-    drawFireMask(state.predicted_fire_mask || [], ctxPredicted, 62, predictedFireColor);
+      // Mathematics Rendering
+      drawFireMask(state.prev_fire_mask || [], ctxCurrent, 64, currentFireColor);
+      drawFireMask(state.gt_fire_mask || [], ctxGt, 62, gtFireColor);
+      drawFireMask(state.predicted_fire_mask || [], ctxPredicted, 62, predictedFireColor);
 
-    if (state.center_of_mass) updateReticle(state.center_of_mass.x, state.center_of_mass.y);
+      if (state.center_of_mass) updateReticle(state.center_of_mass.x, state.center_of_mass.y);
 
-    // Diagnostics Assignment
-    document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();
-    document.getElementById('fire-count').textContent = (state.fire_pixel_count || 0).toLocaleString();
-    updateBuffers(state.stm_size || 0, state.ltm_size || 0);
+      // Diagnostics Assignment
+      document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();
+      document.getElementById('fire-count').textContent = (state.fire_pixel_count || 0).toLocaleString();
+      updateBuffers(state.stm_size || 0, state.ltm_size || 0);
 
-    // ── Evaluation Metrics ──────────────────────────────────
-    const evalM = state.eval_metrics || {};
-    const iou = evalM.iou ?? 0;
-    const f1  = evalM.rolling_f1 ?? 0;
+      // ── Evaluation Metrics ──────────────────────────────────
+      const evalM = state.eval_metrics || {};
+      const iou = evalM.iou ?? 0;
+      const rollingF1 = evalM.rolling_f1 ?? 0;
 
-    document.getElementById('iou-val').textContent  = (iou * 100).toFixed(1) + '%';
-    document.getElementById('f1-val').textContent    = (f1 * 100).toFixed(1) + '%';
-    document.getElementById('delta-mig-badge').textContent =
+      document.getElementById('iou-val').textContent = (iou * 100).toFixed(1) + '%';
+
+      // Sleek Apple Dark Mode styling: dim the value when model is IDLE
+      const f1ValEl = document.getElementById('f1-val');
+      f1ValEl.textContent = (rollingF1 * 100).toFixed(1) + '%';
+      f1ValEl.style.color = evalM.f1 === null ? 'var(--ink-muted-48)' : 'var(--on-dark)';
+
+      document.getElementById('delta-mig-badge').textContent =
         `ΔMig: ${(evalM.delta_mig ?? 0) > 0 ? '+' : ''}${((evalM.delta_mig ?? 0) * 100).toFixed(1)}%`;
 
-    // Push to sparkline buffers
-    sparkIoU.vals.push(iou);
-    sparkF1.vals.push(evalM.f1 ?? 0);
+      // Push to sparkline buffers
+      sparkIoU.vals.push(iou);
 
-    // Migration marker detection
-    const epoch = data.migration_epoch || 0;
-    if (epoch > lastEpoch) {
+      // Fix "Plunge to 0" bug: during Idle periods, push the active rolling score to create a plateau
+      const sparkF1Val = (evalM.f1 !== null && evalM.f1 !== undefined) ? evalM.f1 : rollingF1;
+      sparkF1.vals.push(sparkF1Val);
+
+      // Migration marker detection
+      const epoch = data.migration_epoch || 0;
+      if (epoch > lastEpoch) {
         sparkIoU.migrations.push(sparkIoU.vals.length - 1);
         sparkF1.migrations.push(sparkF1.vals.length - 1);
         lastEpoch = epoch;
         sysLog(`Migration #${epoch} detected — ΔMig marker placed.`, 'log-action');
-    }
+      }
 
-    // Ring-buffer trim
-    if (sparkIoU.vals.length > SPARK_MAX_POINTS) {
+      // Ring-buffer trim
+      if (sparkIoU.vals.length > SPARK_MAX_POINTS) {
         const excess = sparkIoU.vals.length - SPARK_MAX_POINTS;
         sparkIoU.vals.splice(0, excess);
         sparkIoU.migrations = sparkIoU.migrations.map(m => m - excess).filter(m => m >= 0);
         sparkF1.vals.splice(0, excess);
         sparkF1.migrations = sparkF1.migrations.map(m => m - excess).filter(m => m >= 0);
-    }
+      }
 
-    drawSparkline('spark-iou', sparkIoU);
-    drawSparkline('spark-f1', sparkF1);
+      drawSparkline('spark-iou', sparkIoU);
+      drawSparkline('spark-f1', sparkF1);
 
-    if (Object.keys(env).length > 0) renderTelemetryMatrix(env);
-};
+      if (Object.keys(env).length > 0) renderTelemetryMatrix(env);
+    };
 
-evtSource.onerror = () => {
-    const lamp = document.getElementById('status-lamp');
-    lamp.className = 'status-pill';
-    lamp.style.color = 'var(--ink-muted-48)';
-    lamp.style.borderColor = 'var(--hairline-strong)';
-    lamp.style.background = 'transparent';
-    document.getElementById('status-text').textContent = 'Uplink Lost';
-};
-</script>
+    evtSource.onerror = () => {
+      const lamp = document.getElementById('status-lamp');
+      lamp.className = 'status-pill';
+      lamp.style.color = 'var(--ink-muted-48)';
+      lamp.style.borderColor = 'var(--hairline-strong)';
+      lamp.style.background = 'transparent';
+      document.getElementById('status-text').textContent = 'Uplink Lost';
+    };
+  </script>
 </body>
+
 </html>

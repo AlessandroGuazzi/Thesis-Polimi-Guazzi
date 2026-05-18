@@ -52,12 +52,13 @@ if [[ "$choice" =~ ^([yY])$ ]]; then
 fi
 
 # =============================================================================
-# BLOCK 2: SIGNAL HANDLER
+# BLOCK 2: SIGNAL HANDLER & PRE-FLIGHT CLEANUP
 # Kills all background processes (simulator, streamer, dashboards) on Ctrl+C.
 # =============================================================================
 cleanup() {
     echo -e "\n${RED}🛑 ABORT: Shutting down local subsystems...${NC}"
     kill $(jobs -p) 2>/dev/null
+    pkill -f -9 "global_dashboard.py|data_streamer.py|environment_sim.py" 2>/dev/null || true
     kubectl delete deployment space-mission topology-master ground-redis --ignore-not-found=true
     kubectl delete daemonset  space-node-agent --ignore-not-found=true
     kubectl delete service    ground-redis topology-master topology-dashboard \
@@ -65,6 +66,9 @@ cleanup() {
     exit
 }
 trap cleanup SIGINT SIGTERM EXIT
+
+# Pre-flight cleanup: Terminate any orphan ground-station python processes from previous runs
+pkill -f -9 "global_dashboard.py|data_streamer.py|environment_sim.py" 2>/dev/null || true
 
 # =============================================================================
 # BLOCK 3: KUBERNETES DEPLOYMENT

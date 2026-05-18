@@ -42,15 +42,15 @@ spec:
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
-              - weight: 100
-                podAffinityTerm:
-                  labelSelector:
-                    matchExpressions:
-                      - key: app
-                        operator: In
-                        values:
-                          - topology-master
-                  topologyKey: kubernetes.io/hostname
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - topology-master
+                topologyKey: kubernetes.io/hostname
 
       # === CRIU PERSISTENCE LAYER ===
       # Maps the physical directory where CRI-O stores checkpoint TARs.
@@ -66,71 +66,70 @@ spec:
             type: DirectoryOrCreate
 
       containers:
-      # -----------------------------------------------------------
-      # 1. THE GUARDIAN (Stateful Sidecar)
-      # This container is CRIU-frozen and migrated between satellites.
-      # It holds the SAMKNN state (fire mask, CoM, STM/LTM) in RAM.
-      # -----------------------------------------------------------
-      - name: sidecar-guardian
-        image: localhost/space-sidecar:latest
-        imagePullPolicy: Never
+        # -----------------------------------------------------------
+        # 1. THE GUARDIAN (Stateful Sidecar)
+        # This container is CRIU-frozen and migrated between satellites.
+        # It holds the SAMKNN state (fire mask, CoM, STM/LTM) in RAM.
+        # -----------------------------------------------------------
+        - name: sidecar-guardian
+          image: localhost/space-sidecar:latest
+          imagePullPolicy: Never
 
-        ports:
-        # Port 80: Mission Control Dashboard (SSE + /state HTTP API)
-        - containerPort: 80
-          name: dashboard
+          ports:
+            # Port 80: Mission Control Dashboard (SSE + /state HTTP API)
+            - containerPort: 80
+              name: dashboard
 
-        env:
-        # Guardian knows which satellite it is currently running on
-        - name: NODE_NAME
-          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+          env:
+            # Guardian knows which satellite it is currently running on
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
 
-        # === CRITICAL: ELEVATED PRIVILEGES FOR CRIU ===
-        # CRIU requires ptrace capability and an Unconfined AppArmor profile
-        # to freeze and restore the process tree across nodes.
-        securityContext:
-          privileged: true
-          appArmorProfile:
-            type: Unconfined
+          # === CRITICAL: ELEVATED PRIVILEGES FOR CRIU ===
+          # CRIU requires ptrace capability and an Unconfined AppArmor profile
+          # to freeze and restore the process tree across nodes.
+          securityContext:
+            privileged: true
+            appArmorProfile:
+              type: Unconfined
 
-        # Mount the checkpoint storage so the Node Agent can find the TAR files
-        volumeMounts:
-          - name: checkpoint-storage
-            mountPath: /var/lib/kubelet/checkpoints
-          - name: ipc-storage
-            mountPath: /tmp
+          # Mount the checkpoint storage so the Node Agent can find the TAR files
+          volumeMounts:
+            - name: checkpoint-storage
+              mountPath: /var/lib/kubelet/checkpoints
+            - name: ipc-storage
+              mountPath: /tmp
 
-      # -----------------------------------------------------------
-      # 2. PHOENIX (tinySML SAMKNN Wildfire Worker)
-      # This container receives UDP frames and runs the SAMKNN classifier.
-      # It is intentionally NOT migrated via CRIU — it restores its state
-      # from the Guardian's RAM on every Warm Boot after migration.
-      # -----------------------------------------------------------
-      - name: payload-phoenix
-        image: localhost/space-workload:latest
-        imagePullPolicy: Never
+        # -----------------------------------------------------------
+        # 2. PHOENIX (tinySML SAMKNN Wildfire Worker)
+        # This container receives UDP frames and runs the SAMKNN classifier.
+        # It is intentionally NOT migrated via CRIU — it restores its state
+        # from the Guardian's RAM on every Warm Boot after migration.
+        # -----------------------------------------------------------
+        - name: payload-phoenix
+          image: localhost/space-workload:latest
+          imagePullPolicy: Never
 
-        ports:
-        # Port 9000: Pre-freeze /flush endpoint (intra-Pod localhost only)
-        # Called by the Guardian to trigger SAMKNN state serialization
-        # before CRIU freezes the pod. MUST be non-externally reachable.
-        - containerPort: 9000
-          name: flush
+          ports:
+            # Port 9000: Pre-freeze /flush endpoint (intra-Pod localhost only)
+            # Called by the Guardian to trigger SAMKNN state serialization
+            # before CRIU freezes the pod. MUST be non-externally reachable.
+            - containerPort: 9000
+              name: flush
 
-        env:
-        # Phoenix talks to the Guardian via loopback — same network namespace
-        - name: STATE_ENDPOINT
-          value: "http://localhost:80"
+          env:
+            # Phoenix talks to the Guardian via loopback — same network namespace
+            - name: STATE_ENDPOINT
+              value: "http://localhost:80"
 
-        # === RESOURCE QUOTAS ===
-        # Represents the limited compute of a CubeSat/small satellite.
-        # CPU throttling makes the thermal simulation realistic.
-        # Memory limit raised to 256Mi to accommodate the SAMKNN STM + LTM
-        # (max 20,000 instances × ~865 bytes + frame buffers ≈ 25 MB total).
-        resources:
-          requests:
-            cpu:    "100m"    # Reserved compute capacity
-            memory: "128Mi"
-          limits:
-            cpu:    "500m"    # Max burst (prevents instant thermal saturation)
-            memory: "256Mi"   # Raised from V5's 128Mi — SAMKNN needs headroom
+          # === RESOURCE QUOTAS ===
+          # Represents the compute resources of a modern orbital edge-computing satellite.
+          # CPU limits allow NumPy to leverage multi-threaded vectorization.
+          # Memory limit raised to 1Gi to provide full safety headroom for massive dot products.
+          resources:
+            requests:
+              cpu: "500m" # Guaranteed compute baseline
+              memory: "256Mi" # Baseline RAM boot allocation
+            limits:
+              cpu: "2000m" # Allows rapid parallel vectorized matrix calculations
+              memory: "1Gi" # Bulletproof headroom preventing OOMKilled events

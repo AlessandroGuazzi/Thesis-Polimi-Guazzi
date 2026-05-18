@@ -54,7 +54,10 @@ STATE_SYNC_INTERVAL = 2.0  # Periodic lightweight state push to Guardian
 MAX_INSTANCES = 20000
 STM_MAX = 5000     # Short-Term Memory: highly adaptable to sudden concept drift.
 LTM_MAX = 15000    # Long-Term Memory: stable historical truths about the terrain.
-K_NEIGHBOURS = 5   # The algorithm checks the 5 closest historical pixels to vote on fire presence.
+K_NEIGHBOURS = 15  # The algorithm checks the 15 closest historical pixels to vote on fire presence.
+STD_FLOOR = 0.1    # Minimum standard deviation to prevent noise amplification
+WELFORD_MAX_N = 50000  # Cap on Welford sample count to prevent statistics freezing
+MAX_TRAIN_PER_FRAME = 500  # Maximum number of samples to learn from a single frame
 
 # These 12 channels form the feature space (Temperature, Humidity, Wind, etc.)
 FEATURE_CHANNELS = [
@@ -91,27 +94,27 @@ SCALE_VECTOR = np.array(_CHANNEL_SCALES * 9, dtype=np.float32)
 # This guarantees our memory footprint is deterministic and safely under 25 MB.
 
 # Short-Term Memory (STM)
-stm_X    = np.zeros((STM_MAX, 108), dtype=np.float32)
+stm_X    = np.zeros((STM_MAX, 13), dtype=np.float32)
 stm_y    = np.zeros(STM_MAX, dtype=np.int8)
-stm_X_sq = np.zeros(STM_MAX, dtype=np.float32) # Pre-computed magnitudes
 stm_ptr  = 0
 stm_count = 0
 
 # Long-Term Memory (LTM)
-ltm_X    = np.zeros((LTM_MAX, 108), dtype=np.float32)
+ltm_X    = np.zeros((LTM_MAX, 13), dtype=np.float32)
 ltm_y    = np.zeros(LTM_MAX, dtype=np.int8)
-ltm_X_sq = np.zeros(LTM_MAX, dtype=np.float32)
 ltm_ptr  = 0
 ltm_count = 0
 
 # Prediction results used by Node Agent (Trigger B - Lateral Tracking)
-predicted_fire_mask = [0] * (GRID_W - 2) * (GRID_H - 2)
+predicted_fire_mask = [0] * (GRID_W) * (GRID_H)
 center_of_mass = {"x": 0.0, "y": 0.0}
 
 # Metrics for the dashboard
 sample_count = 0
 fire_pixel_count = 0
 instances_trained = 0
+current_prev_mask = None
+current_gt_inner = None
 
 # ── EVALUATION BUFFERS (Zero-Allocation) ──────────────────────
 EVAL_ROLLING_N     = 50                                       # Rolling window size
@@ -134,6 +137,11 @@ current_iou        = np.float32(0.0)
 current_f1         = np.float32(0.0)
 rolling_f1_mean    = np.float32(0.0)
 delta_mig          = np.float32(0.0)
+
+# Welford's online algorithm state for Z-Score Normalization
+welford_count = 0
+welford_mean  = np.zeros(13, dtype=np.float64)
+welford_M2    = np.zeros(13, dtype=np.float64)
 
 # Synchronization flags used during the pre-freeze flush handshake with the Guardian
 flush_requested = threading.Event()
@@ -189,8 +197,8 @@ def fast_knn_predict_batch(Q, X, y, X_sq, k=K_NEIGHBOURS):
     # Grab the actual "Fire" or "No Fire" labels of those closest neighbors
     votes = y[nearest_idx]
 
-    # Calibrated Goldilocks threshold: >= 2 of 5 neighbors to balance precision and recall
-    FIRE_VOTE_THRESHOLD = 2
+    # Calibrated strict consensus threshold: >= 8 of 15 neighbors, scaled proportionally for smaller memories
+    FIRE_VOTE_THRESHOLD = max(1, k_actual * 8 // 15)
     return np.where(np.sum(votes, axis=1) >= FIRE_VOTE_THRESHOLD, 1, 0)
 
 
@@ -211,15 +219,11 @@ def fast_samknn_predict_batch(Q, stm_X_v, stm_y_v, stm_X_sq_v, ltm_X_v, ltm_y_v,
     M = Q.shape[0]
     final_pred = np.zeros(M, dtype=int)
 
-    # Vectorized OR-bias fusion
     stm_valid = (stm_pred != -1)
     ltm_valid = (ltm_pred != -1)
 
-    both_mask = stm_valid & ltm_valid
-    final_pred[both_mask] = np.maximum(stm_pred[both_mask], ltm_pred[both_mask])
-
-    stm_only = stm_valid & ~ltm_valid
-    final_pred[stm_only] = stm_pred[stm_only]
+    # STM Priority: Use STM if it has a valid prediction. Otherwise use LTM.
+    final_pred[stm_valid] = stm_pred[stm_valid]
 
     ltm_only = ~stm_valid & ltm_valid
     final_pred[ltm_only] = ltm_pred[ltm_only]
@@ -241,7 +245,6 @@ def samknn_train(feature_vector, label):
     # Overwrite the ring buffer slot
     stm_X[stm_ptr] = feature_vector
     stm_y[stm_ptr] = label
-    stm_X_sq[stm_ptr] = np.dot(feature_vector, feature_vector) # Fast magnitude
 
     # Advance pointer circularly
     stm_ptr = (stm_ptr + 1) % STM_MAX
@@ -258,12 +261,10 @@ def _batch_samknn_train(X_batch, y_batch):
     if n == 0: return
 
     # Fully vectorized ring-buffer insertion (O(1) memory, no Python loop)
-    X_sq_batch = np.sum(X_batch ** 2, axis=1)
     indices = (stm_ptr + np.arange(n)) % STM_MAX
 
     stm_X[indices] = X_batch
     stm_y[indices] = y_batch
-    stm_X_sq[indices] = X_sq_batch
 
     stm_ptr = (stm_ptr + n) % STM_MAX
     stm_count = min(stm_count + n, STM_MAX)
@@ -289,6 +290,12 @@ def _stm_to_ltm_cleaning():
     if stm_count == 0:
         return
 
+    # Normalization parameters
+    variance = welford_M2 / max(1, welford_count)
+    std = np.sqrt(variance).astype(np.float32)
+    std = np.maximum(std, STD_FLOOR)
+    w_mean = welford_mean.astype(np.float32)
+
     # We validate the 1,000 most recently added items.
     N = min(1000, stm_count)
     k_actual = min(K_NEIGHBOURS, stm_count - 1)
@@ -301,13 +308,14 @@ def _stm_to_ltm_cleaning():
         # It wrapped around the buffer
         indices = np.concatenate((np.arange(STM_MAX - (N - stm_ptr), STM_MAX), np.arange(0, stm_ptr)))
 
-    # 2. Extract Queries (Q) and Total Memory (X)
-    Q = stm_X[indices]
-    Q_sq = stm_X_sq[indices][:, np.newaxis] # Reshape for broadcasting
+    # 2. Extract Queries (Q) and Total Memory (X), and Normalize
+    Q_raw = stm_X[indices]
+    Q = (Q_raw - w_mean) / std
+    Q_sq = np.sum(Q ** 2, axis=1, keepdims=True)
 
-    # We only test against valid memory, ignoring empty zeros in the buffer
-    X = stm_X[:stm_count]
-    X_sq = stm_X_sq[:stm_count]
+    X_raw = stm_X[:stm_count]
+    X = (X_raw - w_mean) / std
+    X_sq = np.sum(X ** 2, axis=1)
 
     # 3. Vectorized Math (1,000 queries x up to 5,000 memories instantly)
     Xq = np.dot(Q, X.T)
@@ -319,16 +327,46 @@ def _stm_to_ltm_cleaning():
     valid_mask = indices < stm_count
     distances[np.arange(N)[valid_mask], indices[valid_mask]] = np.inf
 
-    # 5. Fast k-NN Voting
+    # 5. Fast k-NN Voting (STM)
     nearest_idx = np.argpartition(distances, k_actual - 1, axis=1)[:, :k_actual]
     votes = stm_y[:stm_count][nearest_idx]
-    FIRE_VOTE_THRESHOLD = 2
-    preds = np.where(np.sum(votes, axis=1) >= FIRE_VOTE_THRESHOLD, 1, 0)
+    FIRE_VOTE_THRESHOLD_STM = max(1, k_actual * 8 // 15)
+    stm_preds = np.where(np.sum(votes, axis=1) >= FIRE_VOTE_THRESHOLD_STM, 1, 0)
+
+    actual_labels = stm_y[indices]
+    stm_consistent = (stm_preds == actual_labels)
+
+    # 5b. Cross-validation against LTM
+    k_ltm = min(K_NEIGHBOURS, ltm_count)
+    if k_ltm > 0:
+        ltm_X_raw = ltm_X[:ltm_count]
+        ltm_X_norm = (ltm_X_raw - w_mean) / std
+        ltm_X_sq = np.sum(ltm_X_norm ** 2, axis=1)
+        
+        Q_sq_ltm = np.sum(Q ** 2, axis=1, keepdims=True)
+        Xq_ltm = np.dot(Q, ltm_X_norm.T)
+        distances_ltm = ltm_X_sq - (2 * Xq_ltm) + Q_sq_ltm
+        
+        nearest_idx_ltm = np.argpartition(distances_ltm, k_ltm - 1, axis=1)[:, :k_ltm]
+        votes_ltm = ltm_y[:ltm_count][nearest_idx_ltm]
+        FIRE_VOTE_THRESHOLD_LTM = max(1, k_ltm * 8 // 15)
+        ltm_preds = np.where(np.sum(votes_ltm, axis=1) >= FIRE_VOTE_THRESHOLD_LTM, 1, 0)
+        
+        ltm_consistent = (ltm_preds == actual_labels)
+        consistent_mask = stm_consistent & ltm_consistent
+    else:
+        consistent_mask = stm_consistent
 
     # 6. Promotion
-    actual_labels = stm_y[indices]
-    consistent_mask = (preds == actual_labels) # Boolean array of consistent memories
     consistent_indices = indices[consistent_mask]
+
+    # FIX 4: Class-Balanced LTM Promotion
+    if ltm_count > 1000:
+        ltm_fire_ratio = np.sum(ltm_y[:ltm_count] == 1) / max(1, ltm_count)
+        if ltm_fire_ratio < 0.35:
+            fire_mask = stm_y[consistent_indices] == 1
+            if fire_mask.any():
+                consistent_indices = consistent_indices[fire_mask]
 
     # Fully vectorized batch insertion into LTM ring buffer
     n_consistent = len(consistent_indices)
@@ -336,7 +374,6 @@ def _stm_to_ltm_cleaning():
         ltm_indices = (ltm_ptr + np.arange(n_consistent)) % LTM_MAX
         ltm_X[ltm_indices] = stm_X[consistent_indices]
         ltm_y[ltm_indices] = stm_y[consistent_indices]
-        ltm_X_sq[ltm_indices] = stm_X_sq[consistent_indices]
 
         ltm_ptr = (ltm_ptr + n_consistent) % LTM_MAX
         ltm_count = min(ltm_count + n_consistent, LTM_MAX)
@@ -409,22 +446,28 @@ def evaluate_frame(gt_flat, pred_flat):
     union        = np.count_nonzero(pred_flat | gt_flat)
     current_iou  = np.float32(intersection / union) if union > 0 else np.float32(1.0)
 
-    # ── F1-Score ─────────────────────────────────────────────
-    tp = intersection                                    # pred=1 AND gt=1
-    fp = np.count_nonzero(pred_flat & ~gt_flat)          # pred=1 AND gt=0
-    fn = np.count_nonzero(~pred_flat & gt_flat)          # pred=0 AND gt=1
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    current_f1 = np.float32(
-        2 * precision * recall / (precision + recall)
-        if (precision + recall) > 0 else 0.0
-    )
+    # ── F1-Score (Condition-Activated) ───────────────────────
+    if union > 0:
+        tp = intersection                                    # pred=1 AND gt=1
+        fp = np.count_nonzero(pred_flat & ~gt_flat)          # pred=1 AND gt=0
+        fn = np.count_nonzero(~pred_flat & gt_flat)          # pred=0 AND gt=1
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        current_f1 = np.float32(
+            2 * precision * recall / (precision + recall)
+            if (precision + recall) > 0 else 0.0
+        )
 
-    # ── Rolling F1 Ring Buffer ───────────────────────────────
-    f1_ring[f1_ring_ptr] = current_f1
-    f1_ring_ptr   = (f1_ring_ptr + 1) % EVAL_ROLLING_N
-    f1_ring_count = min(f1_ring_count + 1, EVAL_ROLLING_N)
-    rolling_f1_mean = np.float32(np.mean(f1_ring[:f1_ring_count]))
+        # ── Rolling F1 Ring Buffer Update ─────────────────────
+        f1_ring[f1_ring_ptr] = current_f1
+        f1_ring_ptr   = (f1_ring_ptr + 1) % EVAL_ROLLING_N
+        f1_ring_count = min(f1_ring_count + 1, EVAL_ROLLING_N)
+        rolling_f1_mean = np.float32(np.mean(f1_ring[:f1_ring_count]))
+    else:
+        # Active Threat = 0 AND False Alarm = 0. The engine is Idle.
+        # Set current_f1 to None (JSON null) to signal idle to Dashboard.
+        # Ring buffer is frozen to prevent metric inflation/spikes.
+        current_f1 = None
 
     # ── Migration Delta (ΔMig) ───────────────────────────────
     if sample_count <= last_migration_sample:
@@ -451,9 +494,10 @@ def process_frame(channels, fire_mask_label):
     """
     Core pipeline executed for every received frame.
     """
-    global predicted_fire_mask, center_of_mass, fire_pixel_count, sample_count
+    global predicted_fire_mask, center_of_mass, fire_pixel_count, sample_count, current_prev_mask, current_gt_inner
+    global welford_count, welford_mean, welford_M2
 
-    inner_h, inner_w = GRID_H - 2, GRID_W - 2
+    inner_h, inner_w = GRID_H, GRID_W
 
     # --- THE ALLOCATION FIX ---
     # We no longer force Python to build matrices from lists.
@@ -461,59 +505,112 @@ def process_frame(channels, fire_mask_label):
     # This takes 0.0000ms. Order doesn't matter for distance checks.
     valid_stm_X = stm_X[:stm_count]
     valid_stm_y = stm_y[:stm_count]
-    valid_stm_X_sq = stm_X_sq[:stm_count]
 
     valid_ltm_X = ltm_X[:ltm_count]
     valid_ltm_y = ltm_y[:ltm_count]
-    valid_ltm_X_sq = ltm_X_sq[:ltm_count]
 
     # === THE 3x3 SLIDING WINDOW (Spatial Extraction) ===
-    # Pre-compute all 9 spatial offsets for all 12 channels at once
-    # channels shape: (12, 64, 64)
-    patches = []
-    for dr in [-1, 0, 1]:
-        for dc in [-1, 0, 1]:
-            patches.append(channels[:, 1+dr:GRID_H-1+dr, 1+dc:GRID_W-1+dc])
-    # Stack: (9, 12, 62, 62) → transpose to (62, 62, 9, 12) → reshape to (3844, 108)
-    Q_array = np.stack(patches).transpose(2, 3, 0, 1).reshape(-1, 108).astype(np.float32)
+    # Extract Center Pixel for all 12 channels without slicing off the borders
+    center_pixels = channels.transpose(1, 2, 0).reshape(-1, 12)
 
-    # Apply the SCALE_VECTOR to normalize the features
-    Q_array *= SCALE_VECTOR
+    # Extract Neighborhood Aggregation using zero-padding on PrevFireMask
+    padded_mask = np.pad(channels[0], pad_width=1, mode='constant', constant_values=0)
+    neighbor_sum = np.zeros((GRID_H, GRID_W), dtype=np.float32)
+    for dr in [0, 1, 2]:
+        for dc in [0, 1, 2]:
+            neighbor_sum += padded_mask[dr:GRID_H+dr, dc:GRID_W+dc]
+
+    neighbor_sum_flat = neighbor_sum.reshape(-1, 1)
+
+    Q_array = np.concatenate([center_pixels, neighbor_sum_flat], axis=1).astype(np.float32)
+
+    # Batch Welford Update for Z-Score Normalization
+    m = Q_array.shape[0]
+    batch_mean = np.mean(Q_array, axis=0, dtype=np.float64)
+    batch_M2 = np.sum((Q_array - batch_mean) ** 2, axis=0, dtype=np.float64)
+    
+    n = welford_count
+    n_new = n + m
+    
+    if n == 0:
+        welford_mean = batch_mean
+        welford_M2 = batch_M2
+        welford_count = n_new
+    else:
+        # FIX 3: Capped Effective Window
+        if n_new > WELFORD_MAX_N:
+            scale = WELFORD_MAX_N / n_new
+            welford_M2 = welford_M2 * scale
+            n_new = WELFORD_MAX_N
+
+        delta = batch_mean - welford_mean
+        welford_mean = welford_mean + delta * (m / n_new)
+        welford_M2 = welford_M2 + batch_M2 + (delta ** 2) * (n * m / n_new)
+        welford_count = n_new
+
+    # Z-score normalization
+    variance = welford_M2 / welford_count
+    std = np.sqrt(variance).astype(np.float32)
+    # FIX 1: Robust Standard Deviation Floor
+    std = np.maximum(std, STD_FLOOR)
+    Q_array_norm = (Q_array - welford_mean.astype(np.float32)) / std
+
+    # Normalize memory banks with current parameters
+    if stm_count > 0:
+        valid_stm_X_norm = (valid_stm_X - welford_mean.astype(np.float32)) / std
+        valid_stm_X_sq_norm = np.sum(valid_stm_X_norm ** 2, axis=1)
+    else:
+        valid_stm_X_norm = np.empty((0, 13), dtype=np.float32)
+        valid_stm_X_sq_norm = np.empty(0, dtype=np.float32)
+
+    if ltm_count > 0:
+        valid_ltm_X_norm = (valid_ltm_X - welford_mean.astype(np.float32)) / std
+        valid_ltm_X_sq_norm = np.sum(valid_ltm_X_norm ** 2, axis=1)
+    else:
+        valid_ltm_X_norm = np.empty((0, 13), dtype=np.float32)
+        valid_ltm_X_sq_norm = np.empty(0, dtype=np.float32)
 
     # === CHUNK BATCHING (The RAM Saver) ===
-    # Combine memory banks ONCE per frame to halve distance calculation overhead.
-    # This eliminates calling the distance engine twice and unifies the neighborhood logic.
-    if len(valid_stm_y) > 0 and len(valid_ltm_y) > 0:
-        X_comb = np.concatenate([valid_stm_X, valid_ltm_X], axis=0)
-        y_comb = np.concatenate([valid_stm_y, valid_ltm_y], axis=0)
-        X_sq_comb = np.concatenate([valid_stm_X_sq, valid_ltm_X_sq], axis=0)
-    elif len(valid_stm_y) > 0:
-        X_comb, y_comb, X_sq_comb = valid_stm_X, valid_stm_y, valid_stm_X_sq
-    else:
-        X_comb, y_comb, X_sq_comb = valid_ltm_X, valid_ltm_y, valid_ltm_X_sq
-
     CHUNK_SIZE = 256
-    M = Q_array.shape[0]
+    M = Q_array_norm.shape[0]
     preds = np.zeros(M, dtype=int)
 
-    # Call fast_knn_predict_batch directly on combined banks for 2x throughput speedup
     for i in range(0, M, CHUNK_SIZE):
         end_idx = min(i + CHUNK_SIZE, M)
-        preds[i:end_idx] = fast_knn_predict_batch(
-            Q_array[i:end_idx],
-            X_comb, y_comb, X_sq_comb
+        preds[i:end_idx] = fast_samknn_predict_batch(
+            Q_array_norm[i:end_idx],
+            valid_stm_X_norm, valid_stm_y, valid_stm_X_sq_norm,
+            valid_ltm_X_norm, valid_ltm_y, valid_ltm_X_sq_norm
         )
     # Ensure unknown classifications (-1) from empty memory map to 0
     preds[preds == -1] = 0
 
     # ── INTRA-FRAME EVALUATION (before tolist destroys the numpy view) ──
-    gt_inner = fire_mask_label[1:-1, 1:-1].ravel().astype(np.int8)
+    gt_inner = fire_mask_label.ravel().astype(np.int8)
     evaluate_frame(gt_inner, preds.astype(np.int8))
 
-    # Selectively train new examples (We train on all actual fires, and 2% of non-fires
-    # to prevent the model from heavily biasing toward 'No Fire').
+    # Selectively train new examples (Balanced sampling)
     fire_mask_bool = (gt_inner == 1)
-    sample_mask = fire_mask_bool | (np.random.random(len(gt_inner)) < 0.02)
+    n_fire = fire_mask_bool.sum()
+
+    if n_fire > 0:
+        fire_indices = np.where(fire_mask_bool)[0]
+        # Cap fire samples to half the max training budget
+        if len(fire_indices) > MAX_TRAIN_PER_FRAME // 2:
+            fire_indices = np.random.choice(fire_indices, size=MAX_TRAIN_PER_FRAME // 2, replace=False)
+
+        nofire_indices = np.where(~fire_mask_bool)[0]
+        n_sample_nofire = min(len(fire_indices), len(nofire_indices))
+        if n_sample_nofire > 0:
+            sampled_nofire = np.random.choice(nofire_indices, size=n_sample_nofire, replace=False)
+            sample_mask = np.concatenate([fire_indices, sampled_nofire])
+        else:
+            sample_mask = fire_indices
+    else:
+        # Idle background sampling decimated
+        sample_mask = np.where(np.random.random(len(gt_inner)) < 0.002)[0]
+
+    # Insert raw features
     sampled_X = Q_array[sample_mask]
     sampled_y = gt_inner[sample_mask]
 
@@ -522,6 +619,8 @@ def process_frame(channels, fire_mask_label):
 
     # Update global state variables for the dashboard and the Node Agent
     predicted_fire_mask = preds.tolist()
+    current_prev_mask = channels[0].ravel().astype(np.int8).tolist()
+    current_gt_inner = gt_inner.tolist()
     fire_pixel_count = sum(predicted_fire_mask)
     center_of_mass = compute_center_of_mass(preds, inner_h, inner_w)
     sample_count += 1
@@ -542,6 +641,8 @@ def build_state_payload():
     """
     return {
         "predicted_fire_mask": predicted_fire_mask,
+        "prev_fire_mask": current_prev_mask,
+        "gt_fire_mask": current_gt_inner,
         "center_of_mass": center_of_mass,
         "fire_pixel_count": fire_pixel_count,
         "sample_count": sample_count,
@@ -551,7 +652,7 @@ def build_state_payload():
         "status": "TRACKING",
         "eval_metrics": {
             "iou":             float(current_iou),
-            "f1":              float(current_f1),
+            "f1":              float(current_f1) if current_f1 is not None else None,
             "rolling_f1":      float(rolling_f1_mean),
             "delta_mig":       float(delta_mig),
             "migration_epoch": int(migration_epoch),
@@ -626,6 +727,7 @@ def load_initial_state():
     global stm_ptr, stm_count, ltm_ptr, ltm_count
     global f1_ring_ptr, f1_ring_count, migration_epoch, last_migration_sample
     global iou_accum_pre, iou_count_pre, iou_accum_post, iou_count_post
+    global welford_count, welford_mean, welford_M2
 
     while True:
         try:
@@ -646,16 +748,20 @@ def load_initial_state():
                     if "stm_X" in data and "stm_y" in data:
                         stm_ptr = stm_count = 0
                         for f, l in zip(data["stm_X"], data["stm_y"]):
-                            samknn_train(np.array(f, dtype=np.float32), l)
+                            arr = np.array(f, dtype=np.float32)
+                            if len(arr) == 108:
+                                arr = np.concatenate([arr[48:60], [np.sum(arr[0::12])]])
+                            samknn_train(arr, l)
                         print(f"✅ WORKER: Restored {stm_count} STM memories from Network.", flush=True)
 
                     if "ltm_X" in data and "ltm_y" in data:
                         ltm_ptr = ltm_count = 0
                         for f, l in zip(data["ltm_X"], data["ltm_y"]):
                             arr = np.array(f, dtype=np.float32)
+                            if len(arr) == 108:
+                                arr = np.concatenate([arr[48:60], [np.sum(arr[0::12])]])
                             ltm_X[ltm_ptr] = arr
                             ltm_y[ltm_ptr] = l
-                            ltm_X_sq[ltm_ptr] = np.dot(arr, arr)
                             ltm_ptr = (ltm_ptr + 1) % LTM_MAX
                             ltm_count = min(ltm_count + 1, LTM_MAX)
                         print(f"✅ WORKER: Restored {ltm_count} LTM memories from Network.", flush=True)
@@ -678,6 +784,18 @@ def load_initial_state():
                         iou_count_post = np.int32(0)
                         print(f"✅ WORKER: Restored eval state (epoch {migration_epoch}) from Network.", flush=True)
 
+                    if "welford_count" in data:
+                        welford_count = data["welford_count"]
+                        w_mean = np.array(data["welford_mean"], dtype=np.float64)
+                        w_M2 = np.array(data["welford_M2"], dtype=np.float64)
+                        if len(w_mean) == 108:
+                            welford_mean = np.concatenate([w_mean[48:60], [np.sum(w_mean[0::12])]])
+                            welford_M2 = np.concatenate([w_M2[48:60], [np.sum(w_M2[0::12])]])
+                        else:
+                            welford_mean = w_mean
+                            welford_M2 = w_M2
+                        print(f"✅ WORKER: Restored Z-score normalization state from Network.", flush=True)
+
                     return
                 
                 # CASE B & C: No valid network payload
@@ -691,16 +809,26 @@ def load_initial_state():
                                 lc = int(npz_data['ltm_count'])
                                 
                                 if sc > 0:
-                                    stm_X[:sc] = npz_data['stm_X']
+                                    loaded_stm_X = npz_data['stm_X']
+                                    if loaded_stm_X.shape[1] == 108:
+                                        new_stm_X = np.zeros((loaded_stm_X.shape[0], 13), dtype=np.float32)
+                                        new_stm_X[:, :12] = loaded_stm_X[:, 48:60]
+                                        new_stm_X[:, 12] = np.sum(loaded_stm_X[:, 0::12], axis=1)
+                                        loaded_stm_X = new_stm_X
+                                    stm_X[:sc] = loaded_stm_X
                                     stm_y[:sc] = npz_data['stm_y']
-                                    stm_X_sq[:sc] = np.sum(stm_X[:sc] ** 2, axis=1)
                                     stm_count = sc
                                     stm_ptr = sc % STM_MAX
                                 
                                 if lc > 0:
-                                    ltm_X[:lc] = npz_data['ltm_X']
+                                    loaded_ltm_X = npz_data['ltm_X']
+                                    if loaded_ltm_X.shape[1] == 108:
+                                        new_ltm_X = np.zeros((loaded_ltm_X.shape[0], 13), dtype=np.float32)
+                                        new_ltm_X[:, :12] = loaded_ltm_X[:, 48:60]
+                                        new_ltm_X[:, 12] = np.sum(loaded_ltm_X[:, 0::12], axis=1)
+                                        loaded_ltm_X = new_ltm_X
+                                    ltm_X[:lc] = loaded_ltm_X
                                     ltm_y[:lc] = npz_data['ltm_y']
-                                    ltm_X_sq[:lc] = np.sum(ltm_X[:lc] ** 2, axis=1)
                                     ltm_count = lc
                                     ltm_ptr = lc % LTM_MAX
                                 
@@ -718,6 +846,17 @@ def load_initial_state():
                                     iou_count_pre = int(npz_data['iou_count_pre'])
                                     iou_accum_post = float(npz_data['iou_accum_post'])
                                     iou_count_post = int(npz_data['iou_count_post'])
+
+                                if 'welford_count' in npz_data:
+                                    welford_count = int(npz_data['welford_count'])
+                                    w_mean = npz_data['welford_mean']
+                                    w_M2 = npz_data['welford_M2']
+                                    if len(w_mean) == 108:
+                                        welford_mean = np.concatenate([w_mean[48:60], [np.sum(w_mean[0::12])]])
+                                        welford_M2 = np.concatenate([w_M2[48:60], [np.sum(w_M2[0::12])]])
+                                    else:
+                                        welford_mean = w_mean
+                                        welford_M2 = w_M2
 
                             print(f"✅ WORKER: Warm Boot successful. Loaded {stm_count} STM and {ltm_count} LTM vectors.", flush=True)
                             
@@ -776,7 +915,10 @@ class FlushHandler(BaseHTTPRequestHandler):
                     iou_accum_pre=np.array(iou_accum_pre),
                     iou_count_pre=np.array(iou_count_pre),
                     iou_accum_post=np.array(iou_accum_post),
-                    iou_count_post=np.array(iou_count_post)
+                    iou_count_post=np.array(iou_count_post),
+                    welford_count=np.array(welford_count),
+                    welford_mean=welford_mean,
+                    welford_M2=welford_M2
                 )
                 print("✅ WORKER: Baseline successfully saved to /app/baseline.npz", flush=True)
                 self.send_response(200)
@@ -814,6 +956,10 @@ class FlushHandler(BaseHTTPRequestHandler):
                 "iou_accum_post":   float(iou_accum_post),
                 "iou_count_post":   int(iou_count_post)
             }
+
+            full_state["welford_count"] = int(welford_count)
+            full_state["welford_mean"] = welford_mean.tolist()
+            full_state["welford_M2"] = welford_M2.tolist()
 
             try:
                 print("🚨 WORKER: Beginning massive POST /state to Guardian...", flush=True)

@@ -1,56 +1,62 @@
 # =============================================================================
-#  SPACE CLOUD V5.2 - NETWORKING & EXPOSURE LAYER
+#  SPACE CLOUD V7 - NETWORKING & EXPOSURE LAYER
 #  Description:
 #  This manifest handles the "Ground-to-Space" communication link.
-#  It defines two critical components:
-#  1. A 'Service' (L4): Acts as an internal load balancer that tracks
-#     the Guardian Pod as it migrates between satellites.
-#  2. An 'Ingress' (L7): Acts as the gateway, routing external HTTP traffic
-#     from the user's browser to the internal Service.
+#  It defines three critical components:
+#  1. A 'Service' (L4): Internal load balancer for the Guardian Dashboard.
+#  2. An 'Ingress' (L7): HTTP gateway for the operator's browser.
+#  3. A 'NodePort' (L4 UDP): The High-Bandwidth Telemetry Uplink.
 # =============================================================================
 
 # --- 1. INTERNAL SERVICE (The Virtual Anchor) ---
-# This component provides a stable DNS name and IP address. Even when the
-# Pod jumps from node m02 to m04, this Service automatically updates its
-# endpoints to point to the new location.
 apiVersion: v1
 kind: Service
 metadata:
   name: space-dashboard-svc
 spec:
   selector:
-    # Crucial: This must match the labels defined in the Deployment
     app: space-mission
   ports:
     - protocol: TCP
-      port: 80        # The port exposed by the Service internally
-      targetPort: 80  # The port where the sidecar-guardian is listening
-
-  # ClusterIP: Only accessible from within the cluster or via Ingress/Proxy.
-  # This is the standard for secure internal microservices.
+      port: 80
+      targetPort: 80
   type: ClusterIP
 
 ---
 # --- 2. INGRESS (The Space Gateway) ---
-# This acts as the Entry Point for the Ground Station operator.
-# It manages the routing rules to direct the 'space-mission.local'
-# traffic into our virtual constellation.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: space-ingress
   annotations:
-    # Disable SSL redirect for local simulation/Minikube environments
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   rules:
-  - http:
-      paths:
-      - path: /
-        pathType: Prefix # Catches all requests starting with / (UI, API, and SSE)
-        backend:
-          service:
-            # Connects the Ingress to the Service defined above
-            name: space-dashboard-svc
-            port:
-              number: 80
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: space-dashboard-svc
+                port:
+                  number: 80
+
+---
+# --- 3. UDP TELEMETRY NODEPORT (The Data Link) ---
+# Exposes the Phoenix payload's UDP listener to the outside world
+# so data_streamer.py can beam the 120-channel tensor directly to it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: space-telemetry-udp
+spec:
+  type: NodePort
+  selector:
+    app: space-mission
+  ports:
+    - name: udp-telemetry
+      protocol: UDP
+      port: 5005
+      targetPort: 5005
+      nodePort: 32005

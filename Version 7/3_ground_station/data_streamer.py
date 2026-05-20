@@ -3,20 +3,18 @@ SPACE CLOUD V7 - WSTS DATA STREAMER (Ground Station)
 =====================================================
 
 ROLE:
-This script acts as the Ground Station Transmitter. It reads the WSTS HDF5
-dataset (23-channel, 64x64, T=5 time-series) using lazy loading, compresses
-each frame via zlib, and streams it to the active satellite worker in orbit
-via UDP.
+This script acts as the Ground Station Transmitter. It reads the raw WSTS HDF5
+Test dataset (Year 2021), applies Earth-side preprocessing (Normalization, 
+One-Hot Encoding, 120-Channel Early Fusion deduplication), and streams the 
+flight-ready float32 tensor to the satellite worker via UDP.
 
 ARCHITECTURAL CONSTRAINTS:
-1. Lazy Loading (h5py Generator): The WSTS HDF5 file can exceed 50GB. The
-   generator reads exactly one sample at a time and never buffers the file in RAM.
-2. UDP (Fire-and-Forget): UDP sends are used to ensure the satellite worker
-   can resume from any frame after a CRIU migration without TCP reconnection logic.
-3. zlib Deflate: Compression is applied via native zlib to the raw float32 blob
-   before chunking, minimising the number of UDP datagrams per frame.
-4. Monotonic Frame IDs: A counter-based frame ID prevents chunk-ID collisions
-   when the streamer restarts within the same second.
+1. Earth-Side Preprocessing: To save orbital compute and RAM, all complex 
+   math (Sine angle conversion, means/stds) is baked here. The satellite 
+   receives pure, ready-to-compute ONNX tensors.
+2. UDP (Fire-and-Forget): Ensures the satellite worker can seamlessly resume 
+   after a CRIU migration without TCP reconnection logic.
+3. zlib Deflate: Drastically reduces the 120-channel tensor size to save bandwidth.
 """
 
 import socket
@@ -24,21 +22,39 @@ import struct
 import zlib
 import time
 import os
+import sys
 import subprocess
-
-import h5py
 import numpy as np
+import torch
 
-from kubernetes import client, config
+# =============================================================================
+# 0. PATH INJECTION MAGIC (Link to Earth Training Facility)
+# =============================================================================
+# We dynamically resolve the absolute path to isolate 'Version 7' safely,
+# handling spaces in directory names and preventing path truncation.
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__)) # .../Version 7/3_ground_station
+VERSION_7_ROOT = os.path.dirname(CURRENT_DIR)            # .../Version 7
+
+TRAINING_FACILITY_SRC = os.path.join(VERSION_7_ROOT, "1_earth_training_facility", "src")
+sys.path.append(TRAINING_FACILITY_SRC)
+
+try:
+    from dataloader.FireSpreadDataset import FireSpreadDataset
+    print("✅ STREAMER: Successfully linked with official FireSpreadDataset dataloader.")
+except ImportError as e:
+    print("❌ STREAMER ERROR: Could not import FireSpreadDataset.")
+    print(f"Debug - Looked into injected path: {TRAINING_FACILITY_SRC}")
+    print(f"Original Error: {e}")
+    sys.exit(1)
 
 
 # =============================================================================
 # 1. CONFIGURATION
 # =============================================================================
 
-WSTS_HDF5_PATH = os.getenv("WSTS_DATA_PATH", "wsts.hdf5")
+WSTS_EVAL_DIR = os.getenv("WSTS_EVAL_DIR", "evaluation_data")
 
-# The NodePort the satellite worker is actively listening to (matches K8s Service)
+# The NodePort the satellite worker is actively listening to
 WORKER_UDP_NODEPORT = 32005
 
 # How long to pause between frames (gives the orbital CPU time to process)
@@ -47,14 +63,13 @@ STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "1.0"))
 # Chunk size tuned well below the 64KB UDP MTU to safely survive fragmentation
 CHUNK_SIZE = 60_000
 
-# Grid and channel constants — must match tinysml_worker.py exactly
+# Constants reflecting the new Data-Level Fusion architecture
 GRID_H       = 64
 GRID_W       = 64
-N_CHANNELS   = 23
+N_CHANNELS   = 120  # The deduplicated 5-day history tensor
 
-# If True, stream a small test slice of the dataset instead of the full file
 TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
-TEST_SLICE_SIZE = int(os.getenv("TEST_SLICE_SIZE", "20"))  # number of samples to stream
+TEST_SLICE_SIZE = int(os.getenv("TEST_SLICE_SIZE", "20"))
 
 
 # =============================================================================
@@ -62,102 +77,42 @@ TEST_SLICE_SIZE = int(os.getenv("TEST_SLICE_SIZE", "20"))  # number of samples t
 # =============================================================================
 
 def get_minikube_ip() -> str:
-    """Returns the external IP of the Minikube node."""
     try:
         return subprocess.check_output(
             ["minikube", "ip", "-p", "minikube"], stderr=subprocess.DEVNULL
         ).decode("utf-8").strip()
     except Exception:
-        return "192.168.49.2"  # Hardcoded Minikube default as fallback
-
+        return "192.168.49.2"
 
 def resolve_target_ip() -> str:
-    """
-    Tries to resolve the satellite NodePort IP via the Kubernetes API.
-    Falls back to direct minikube IP if the cluster is unavailable.
-    """
-    try:
-        config.load_kube_config()
-        print("✅ STREAMER: Authenticated with Minikube Ground Control.")
-    except Exception as e:
-        print(f"⚠️ STREAMER: Kubernetes auth failed ({e}). Falling back to minikube IP.")
-    return get_minikube_ip()
+    print("🔍 STREAMER: Resolving Minikube cluster IP...")
+    ip = get_minikube_ip()
+    print(f"✅ STREAMER: Cluster IP located at {ip}")
+    return ip
 
 
 # =============================================================================
-# 3. LAZY HDF5 GENERATOR
-# =============================================================================
-
-def wsts_frame_generator(h5_path: str, test_slice: int = 0):
-    """
-    Lazy-loading generator that yields one (23, 64, 64) float32 frame at a time.
-    Reads a single index from disk on each iteration — never loads the full file.
-
-    Each frame is a single day's 23-channel snapshot.
-    The Guardian sidecar accumulates these into the T=5 history buffer.
-
-    Args:
-        h5_path:    Path to the WSTS HDF5 file.
-        test_slice: If > 0, limit the generator to the first N samples.
-    """
-    if not os.path.exists(h5_path):
-        print(f"❌ STREAMER: HDF5 file not found at '{h5_path}'. Cannot stream.")
-        return
-
-    with h5py.File(h5_path, 'r') as f:
-        if 'features' not in f:
-            print("❌ STREAMER: 'features' key not found in HDF5 file.")
-            return
-
-        # Shape: (N, T, C, H, W) — we stream individual channel snapshots (T=0 slice)
-        total_samples = f['features'].shape[0]
-        print(f"📂 STREAMER: HDF5 open. {total_samples} samples found. {'TEST MODE: ' + str(test_slice) + ' samples' if test_slice else 'Streaming all.'}")
-
-        limit = test_slice if test_slice > 0 else total_samples
-
-        for idx in range(min(limit, total_samples)):
-            # Lazy: reads exactly one sample (one HDF5 row) from disk.
-            # Shape: (T, C, H, W) — take the most recent day (T-1 index) as the new frame.
-            sample = f['features'][idx]          # (5, 23, 64, 64)
-            frame  = sample[-1].astype(np.float32)  # (23, 64, 64) — latest day snapshot
-
-            yield frame, idx
-
-
-# =============================================================================
-# 4. ENCODING & CHUNKED UDP TRANSMISSION
+# 3. ENCODING & CHUNKED UDP TRANSMISSION
 # =============================================================================
 
 def encode_frame(frame: np.ndarray) -> bytes:
     """
-    Serialises a (23, 64, 64) float32 numpy array into a zlib-compressed binary blob.
-
-    SKILL — BIG-ENDIAN C-CASTING:
-    We pack as big-endian ('>f4') to match the worker's np.frombuffer(dtype='>f4') parse.
-    Native deflate is applied directly on the memory view in one operation.
+    Serialises the (120, 64, 64) float32 numpy array into a zlib-compressed blob.
+    We pack as big-endian ('>f4') to match the worker's native parse logic.
     """
-    # Cast to big-endian float32 and view as raw bytes (zero-copy)
     raw_bytes = frame.astype('>f4').tobytes()
-    # SKILL — NATIVE DEFLATE via zlib
     return zlib.compress(raw_bytes)
-
 
 def send_frame(sock: socket.socket, blob: bytes, target_ip: str,
                target_port: int, frame_id: int) -> int:
     """
-    Splits the compressed blob into CHUNK_SIZE datagrams and sends each one
-    with a structured header: [frame_id (uint32), total_chunks (uint8), chunk_idx (uint8)].
-
-    The header format matches exactly the parser in tinysml_worker.py:
-        struct.unpack("!IBB", data[:6])
-
-    Returns the number of chunks sent.
+    Splits the compressed blob into datagrams with structured headers.
+    Header: [frame_id (uint32), total_chunks (uint8), chunk_idx (uint8)].
     """
-    total_chunks = (len(blob) + CHUNK_SIZE - 1) // CHUNK_SIZE  # ceiling division
+    total_chunks = (len(blob) + CHUNK_SIZE - 1) // CHUNK_SIZE
 
     for chunk_idx in range(total_chunks):
         chunk_data = blob[chunk_idx * CHUNK_SIZE : (chunk_idx + 1) * CHUNK_SIZE]
-        # Pack the sticky note: uint32 frame_id | uint8 total_chunks | uint8 chunk_idx
         header = struct.pack("!IBB", frame_id, total_chunks, chunk_idx)
         sock.sendto(header + chunk_data, (target_ip, target_port))
 
@@ -165,39 +120,59 @@ def send_frame(sock: socket.socket, blob: bytes, target_ip: str,
 
 
 # =============================================================================
-# 5. MAIN EXECUTION LOOP
+# 4. MAIN EXECUTION LOOP
 # =============================================================================
 
 def main():
-    print("🚀 STREAMER: Booting WSTS Uplink (NodePort Mode)...", flush=True)
+    print("🚀 STREAMER: Booting WSTS Uplink (Early Fusion Mode)...", flush=True)
+
+    if not os.path.exists(WSTS_EVAL_DIR):
+        print(f"❌ STREAMER ERROR: Evaluation directory '{WSTS_EVAL_DIR}' not found.")
+        print("Please copy the 2021 test data into evaluation_data/2021/ first.")
+        sys.exit(1)
+
+    # 1. Initialize the Official Dataset with strict Earth-side constraints
+    print("🌍 STREAMER: Initializing Earth-side Geospatial Preprocessing...")
+    dataset = FireSpreadDataset(
+        data_dir=WSTS_EVAL_DIR,
+        included_fire_years=[2021],       # Test Year ONLY (No Data Leakage)
+        n_leading_observations=5,         # T=5 days history
+        crop_side_length=64,
+        load_from_hdf5=True,
+        is_train=False,                   # Disable random geometric augmentations
+        remove_duplicate_features=True,   # ENABLE 120-channel deduplication!
+        stats_years=[2018, 2019]          # Apply identical normalization from training
+    )
+
+    dataset_size = len(dataset)
+    print(f"📂 STREAMER: Loaded {dataset_size} evaluation frames from 2021.")
 
     target_ip   = resolve_target_ip()
     target_port = WORKER_UDP_NODEPORT
-    print(f"🎯 STREAMER: Target → {target_ip}:{target_port}", flush=True)
+    print(f"🎯 STREAMER: Target locked → {target_ip}:{target_port}", flush=True)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    # Monotonic counter — prevents frame ID collisions on streamer restarts
     frame_id_counter = 0
+    limit = min(TEST_SLICE_SIZE, dataset_size) if TEST_MODE else dataset_size
 
     while True:
-        generator = wsts_frame_generator(
-            WSTS_HDF5_PATH,
-            test_slice=TEST_SLICE_SIZE if TEST_MODE else 0
-        )
+        for idx in range(limit):
+            # The dataset outputs a tuple: (input_tensor_120ch, target_mask)
+            # We only send the input tensor to the satellite.
+            x_tensor, _ = dataset[idx]
+            
+            # Convert PyTorch tensor to pure Numpy float32
+            frame_array = x_tensor.numpy().astype(np.float32)
 
-        for frame, sample_idx in generator:
-            # Advance and wrap monotonic counter within uint32 field
             frame_id_counter = (frame_id_counter + 1) & 0xFFFF_FFFF
-
-            blob = encode_frame(frame)
+            blob = encode_frame(frame_array)
 
             try:
                 n_chunks = send_frame(sock, blob, target_ip, target_port, frame_id_counter)
+                compressed_kb = len(blob) // 1024
                 print(
-                    f"📤 STREAMER: Sample {sample_idx} (Frame #{frame_id_counter}) "
-                    f"→ {target_ip}:{target_port} "
-                    f"({len(blob) // 1024}KB compressed, {n_chunks} chunk(s))",
+                    f"📤 STREAMER: Frame #{frame_id_counter} [Index {idx}] "
+                    f"→ {compressed_kb}KB, {n_chunks} chunk(s)",
                     flush=True
                 )
             except Exception as e:
@@ -205,8 +180,7 @@ def main():
 
             time.sleep(STREAM_INTERVAL)
 
-        print("🔁 STREAMER: Dataset pass complete. Looping...", flush=True)
-
+        print("🔁 STREAMER: Test pass complete. Looping telemetry...", flush=True)
 
 if __name__ == "__main__":
     main()

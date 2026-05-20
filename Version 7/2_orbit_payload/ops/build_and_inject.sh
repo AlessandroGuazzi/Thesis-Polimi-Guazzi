@@ -1,18 +1,13 @@
 #!/bin/bash
 
 # ==============================================================================
-# SPACE CLOUD V6 - QUAD VECTOR INJECTOR
+# SPACE CLOUD V7 - QUAD VECTOR INJECTOR
 # Builds and injects all four container images into the satellite nodes:
 #   1. space-sidecar:latest       — Guardian stateful sidecar
-#   2. space-workload:latest      — tinySML SAMKNN wildfire worker (was train_loop)
-#   3. space-node-agent:latest    — Edge-autonomous MPC Node Agent (was gRPC agent)
+#   2. space-workload:latest      — tinySML ResNet-18 Worker (Data-Level Fusion)
+#   3. space-node-agent:latest    — Edge-autonomous MPC Node Agent
 #   4. space-topology-dashboard   — Floating Master ISL topology dashboard sidecar
 #
-# Changes from V5:
-#   - PATH_AGENT updated to infrastructure/node_agent/ (gRPC agent directory removed)
-#   - Added PATH_TOPO_DASH + image build for the Floating Master sidecar (§1.8)
-#   - Added Dockerfile for topology dashboard
-#   - ADDED: export DOCKER_BUILDKIT=0 to force legacy builder compatibility
 # ==============================================================================
 
 # Force Docker to use the legacy builder (bypasses missing buildx plugin errors)
@@ -49,7 +44,7 @@ if [ ! -d "$PATH_GUARDIAN" ]; then
     exit 1
 fi
 
-echo -e "${BLUE}>>> 🚀 SPACE CLOUD V6 — QUAD VECTOR INJECTOR <<<${NC}"
+echo -e "${BLUE}>>> 🚀 SPACE CLOUD V7 — QUAD VECTOR INJECTOR <<<${NC}"
 
 # =============================================================================
 # BLOCK 1: BUILD & PACKAGE

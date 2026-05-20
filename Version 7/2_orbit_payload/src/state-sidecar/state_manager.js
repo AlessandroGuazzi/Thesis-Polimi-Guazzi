@@ -46,7 +46,7 @@ async function initRedisSub() {
     if (redisSubscriber) return;
 
     redisSubscriber = redis.createClient({ url: 'redis://ground-redis:6379' });
-    redisSubscriber.on('error', () => {});
+    redisSubscriber.on('error', () => { });
 
     try {
         await redisSubscriber.connect();
@@ -73,20 +73,12 @@ app.post('/state', (req, res) => {
     }
 
     const body = req.body;
-    
-    // Manage FIFO Buffer: Append new frame, drop oldest if exceeding T=5
-    if (body.new_frame) {
-        guardianMemory.history_frames.push(body.new_frame);
-        if (guardianMemory.history_frames.length > 5) {
-            guardianMemory.history_frames.shift();
-        }
-    }
-    
-    // Update authoritative metrics
+
+    // Aggiorniamo direttamente le metriche e le maschere (molto più leggero per la RAM)
     if (body.metrics) {
         Object.assign(guardianMemory, body.metrics);
     }
-    
+
     guardianMemory.last_contact = Date.now();
     guardianMemory.status = "TRACKING";
 
@@ -158,12 +150,12 @@ function setupWatcher() {
     const FILES_TO_CLEAN = ['/tmp/flush_complete', '/tmp/prepare_jump'];
     FILES_TO_CLEAN.forEach(f => {
         if (fs.existsSync(f)) {
-            try { fs.unlinkSync(f); } catch(e){}
+            try { fs.unlinkSync(f); } catch (e) { }
         }
     });
 
     if (fs.existsSync('/tmp/flush_state')) {
-        try { fs.unlinkSync('/tmp/flush_state'); } catch(e){}
+        try { fs.unlinkSync('/tmp/flush_state'); } catch (e) { }
     }
 
     try {
@@ -189,7 +181,7 @@ function setupWatcher() {
                     if (serverInstance) serverInstance.close(() => serverInstance = null);
 
                     if (redisSubscriber) {
-                        try { await redisSubscriber.quit(); } catch (e) {}
+                        try { await redisSubscriber.quit(); } catch (e) { }
                         redisSubscriber = null;
                     }
 
@@ -206,7 +198,7 @@ function setupWatcher() {
 setInterval(() => {
     if (flightMode && fs.existsSync('/tmp/landed')) {
         console.log("✅ LANDING CONFIRMED! Reanimating Guardian...");
-        try { fs.unlinkSync('/tmp/landed'); } catch (e) {}
+        try { fs.unlinkSync('/tmp/landed'); } catch (e) { }
 
         flightMode = false;
         payloadLastLandedTime = Date.now() / 1000;
@@ -242,8 +234,8 @@ setInterval(() => {
         // Autocomplete flush request (stateless worker requires zero flushing)
         if (fs.existsSync('/tmp/flush_state')) {
             console.log("🚨 GUARDIAN: Node Agent requested pre-freeze flush. Auto-acknowledging instantly.");
-            try { fs.writeFileSync('/tmp/flush_complete', ''); } catch (e) {}
-            try { fs.unlinkSync('/tmp/flush_state'); } catch(e) {}
+            try { fs.writeFileSync('/tmp/flush_complete', ''); } catch (e) { }
+            try { fs.unlinkSync('/tmp/flush_state'); } catch (e) { }
         }
     }
 }, 500);

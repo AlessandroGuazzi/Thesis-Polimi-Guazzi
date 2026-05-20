@@ -1,14 +1,14 @@
 # =============================================================================
-#  SPACE CLOUD V6 - KUBERNETES MISSION DEPLOYMENT (Dual-Container Pod)
+#  SPACE CLOUD V7 - KUBERNETES MISSION DEPLOYMENT (Dual-Container Pod)
 #  Description:
 #  Orchestrates the 'sidecar-guardian' (stateful, CRIU-migratable) and the
-#  'payload-phoenix' (tinySML SAMKNN wildfire tracker) in the same pod.
+#  'payload-phoenix' (ResNet-18 Data-Level Fusion Worker) in the same pod.
 #
-#  Key changes from V5:
-#   - payload-phoenix image now runs tinysml_worker.py (was train_loop.py)
-#   - Port 9000 added to payload-phoenix (the pre-freeze /flush endpoint)
-#   - Memory limit raised to 256Mi for phoenix to accommodate SAMKNN STM/LTM
-#   - STATE_ENDPOINT env var points phoenix to guardian port 80
+#  Key changes from V6:
+#   - Payload is strictly STATELESS (Zero memory retention).
+#   - Port 5005/UDP added for 120-channel telemetry ingestion.
+#   - Heavy historical buffers shifted to Earth Ground Station.
+#   - Added strict Resource Quotas for Guardian to prevent Noisy Neighbor.
 # =============================================================================
 
 apiVersion: apps/v1
@@ -18,8 +18,6 @@ metadata:
   labels:
     app: space-mission
 spec:
-  # Single replica: the pod "jumps" between satellite nodes via CRIU migration.
-  # High availability is achieved through rapid migration, not multiple replicas.
   replicas: 1
   selector:
     matchLabels:
@@ -30,15 +28,10 @@ spec:
         app: space-mission
     spec:
       # === ORBITAL CONSTRAINT ===
-      # Only schedule on nodes labeled 'type=satellite'.
-      # The Node Agent patches 'kubernetes.io/hostname' during migration
-      # to force-reschedule onto the new destination satellite.
       nodeSelector:
         type: satellite
 
       # === PHASE 1: QoS PREVENTION (SOFT ANTI-AFFINITY) ===
-      # Instructs K8s to avoid placing the heavy SML payload on the same
-      # physical node as the Floating Master, IF other nodes are available.
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -53,8 +46,6 @@ spec:
                 topologyKey: kubernetes.io/hostname
 
       # === CRIU PERSISTENCE LAYER ===
-      # Maps the physical directory where CRI-O stores checkpoint TARs.
-      # The Node Agent reads the checkpoint path from the Kubelet API response.
       volumes:
         - name: checkpoint-storage
           hostPath:
@@ -69,63 +60,66 @@ spec:
         # -----------------------------------------------------------
         # 1. THE GUARDIAN (Stateful Sidecar)
         # This container is CRIU-frozen and migrated between satellites.
-        # It holds the SAMKNN state (fire mask, CoM, STM/LTM) in RAM.
+        # It holds the lightweight metrics (fire mask, CoM) in RAM.
         # -----------------------------------------------------------
         - name: sidecar-guardian
           image: localhost/space-sidecar:latest
           imagePullPolicy: Never
 
           ports:
-            # Port 80: Mission Control Dashboard (SSE + /state HTTP API)
             - containerPort: 80
               name: dashboard
 
           env:
-            # Guardian knows which satellite it is currently running on
             - name: NODE_NAME
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
 
           # === CRITICAL: ELEVATED PRIVILEGES FOR CRIU ===
-          # CRIU requires ptrace capability and an Unconfined AppArmor profile
-          # to freeze and restore the process tree across nodes.
           securityContext:
             privileged: true
             appArmorProfile:
               type: Unconfined
 
-          # Mount the checkpoint storage so the Node Agent can find the TAR files
           volumeMounts:
             - name: checkpoint-storage
               mountPath: /var/lib/kubelet/checkpoints
             - name: ipc-storage
               mountPath: /tmp
 
+          # === RESOURCE QUOTAS (ADDED FOR V7) ===
+          # Prevents Node.js from becoming a Noisy Neighbor on the Edge node.
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+
         # -----------------------------------------------------------
         # 2. PHOENIX (Stateless Phoenix Worker — ResNet-18 CNN)
         # This container receives UDP frames and runs the ONNX model.
-        # It is intentionally NOT migrated via CRIU — it restores its T=5 state
-        # from the Guardian's RAM on every warm boot after migration.
+        # It is intentionally NOT migrated via CRIU.
         # -----------------------------------------------------------
         - name: payload-phoenix
           image: localhost/space-workload:latest
           imagePullPolicy: Never
 
           ports:
-            # Port 9000 is retained for backwards compatibility, though V7 is stateless
-            - containerPort: 9000
-              name: flush
+            # UDP 5005 is the entry point for the 120-channel tensor from Earth
+            - containerPort: 5005
+              protocol: UDP
+              name: telemetry
 
           env:
-            # Phoenix talks to the Guardian via loopback — same network namespace
             - name: STATE_ENDPOINT
               value: "http://localhost:80"
 
           # === RESOURCE QUOTAS ===
-          # Strict 256Mi memory limit enforced to prevent OOMKill events on edge nodes.
           resources:
             requests:
-              cpu: "500m" # Guaranteed compute baseline
-              memory: "256Mi" # Baseline RAM boot allocation
+              cpu: "500m"
+              memory: "256Mi"
             limits:
-              cpu: "2000m" # Allows rapid parallel vectorized matrix calculations
-              memory: "256Mi" # Strict 256Mi edge ML RAM ceiling
+              cpu: "2000m"
+              memory: "256Mi"

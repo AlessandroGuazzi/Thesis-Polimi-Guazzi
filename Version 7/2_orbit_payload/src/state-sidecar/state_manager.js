@@ -1,9 +1,9 @@
 // =============================================================================
-//  SPACE GUARDIAN V7 (Stateful Sidecar — Time-Series CNN Wildfire Tracker)
+//  SPACE GUARDIAN V7.1 (Stateful Sidecar — Time-Series CNN Wildfire Tracker)
 //  Role: Survives satellite migrations via CRIU. Stores the FIFO T=5 history
 //        buffer and the latest prediction mask.
 //        Provides the pre-freeze flush handshake, Ground Redis subscriber,
-//        and the SSE dashboard stream.
+//        and the SSE dashboard stream with AI Confidence metrics.
 // =============================================================================
 
 const express = require('express');
@@ -20,14 +20,21 @@ app.use(bodyParser.json({ limit: '50mb' }));
 // INTERNAL STATE (The Single Source of Truth)
 // ---------------------------------------------------------------------------
 let guardianMemory = {
-    history_frames: [], // FIFO rolling buffer for the last T=5 days (base64 encoded)
+    history_frames: [], // FIFO rolling buffer for the last T=5 days
     predicted_fire_mask: [],
+    prev_fire_mask: [],
     center_of_mass: { x: 32, y: 32 },
     fire_pixel_count: 0,
     sample_count: 0,
     migration_epoch: 0,
     status: "WAITING_PAYLOAD",
-    last_contact: null
+    last_contact: null,
+
+    // --- NUOVE METRICHE AI (Mission Tracking) ---
+    fire_id: 0,
+    day_id: 0,
+    input_fire_px: 0,
+    ai_confidence: 0
 };
 
 let flightMode = false;
@@ -40,166 +47,120 @@ let redisSubscriber = null;
 let payloadLastLandedTime = Date.now() / 1000;
 
 // ---------------------------------------------------------------------------
-// REDIS — subscribes to ground-redis for fleet hardware telemetry
+// GROUND TELEMETRY (REDIS BUS)
 // ---------------------------------------------------------------------------
-async function initRedisSub() {
-    if (redisSubscriber) return;
-
-    redisSubscriber = redis.createClient({ url: 'redis://ground-redis:6379' });
-    redisSubscriber.on('error', () => { });
-
-    try {
-        await redisSubscriber.connect();
-        await redisSubscriber.pSubscribe('telemetry/*', (message, channel) => {
-            const nodeName = channel.split('/')[1];
-            fleetState[nodeName] = JSON.parse(message);
-        });
-        console.log("📡 Guardian subscribed to Ground Redis telemetry bus.");
-    } catch (e) {
-        console.log("⚠️  Redis connection error:", e.message);
-        redisSubscriber = null;
+function initRedisSub() {
+    if (redisSubscriber) {
+        redisSubscriber.quit();
     }
+    redisSubscriber = redis.createClient({ url: 'redis://ground-redis.default.svc.cluster.local:6379' });
+    redisSubscriber.on('error', (err) => console.log('Redis Client Error', err));
+    redisSubscriber.connect().then(() => {
+        redisSubscriber.pSubscribe('telemetry/*', (message, channel) => {
+            try {
+                const nodeName = channel.split('/')[1];
+                fleetState[nodeName] = JSON.parse(message);
+            } catch (e) { }
+        });
+    });
 }
 
 // ---------------------------------------------------------------------------
-// HTTP ENDPOINTS
-// ---------------------------------------------------------------------------
-
-// Il worker stateless invia qui il frame da registrare e le metriche calcolate
-app.post('/state', (req, res) => {
-    if (flightMode) {
-        console.log("⚠️ GUARDIAN: Rifiutato POST /state — flightMode ATTIVO per CRIU.");
-        return res.status(503).json({ error: "MIGRATION_IN_PROGRESS" });
-    }
-
-    const body = req.body;
-
-    // GESTIONE CODA FIFO STATO PREZIOSO: Registra il frame a 23 canali in RAM
-    if (body.new_frame) {
-        guardianMemory.history_frames.push(body.new_frame);
-        // Manteniamo esattamente la finestra temporale storica T=5 giorni
-        if (guardianMemory.history_frames.length > 5) {
-            guardianMemory.history_frames.shift();
-        }
-    }
-
-    // Aggiorna le metriche autoritative per la Dashboard UI
-    if (body.metrics) {
-        Object.assign(guardianMemory, body.metrics);
-    }
-
-    guardianMemory.last_contact = Date.now();
-    guardianMemory.status = "TRACKING";
-
-    res.json({ status: "SAVED" });
-});
-
-// The stateless Python worker GETs this to assemble the T=5 input tensor
-app.get('/state', (req, res) => res.json(guardianMemory));
-
-// Serves the static HTML + JS files for the 2D fire mask dashboard
-app.use(express.static('dashboard-ui'));
-
-// ---------------------------------------------------------------------------
-// SSE BROADCAST — pushes state to all connected dashboard browsers
+// SERVER / SSE
 // ---------------------------------------------------------------------------
 function broadcastToClients() {
-    const payload = JSON.stringify({
-        guardian_id: process.env.HOSTNAME,
-        internal_state: {
-            ...guardianMemory,
-            // Map state to what index.html expects for the progress bars
-            // We use history_frames.length as stm_size (0-5 range) and 5 as maximum
-            stm_size: guardianMemory.history_frames.length,
-            ltm_size: 5
-        },
+    const payload = {
+        internal_state: guardianMemory,
         environment: fleetState,
         flight_mode: flightMode,
-        migration_epoch: guardianMemory.migration_epoch
+        guardian_id: process.env.HOSTNAME || "GUARDIAN-UNKNOWN"
+    };
+
+    const dataStr = `data: ${JSON.stringify(payload)}\n\n`;
+    sseClients.forEach(client => {
+        client.res.write(dataStr);
     });
-    sseClients.forEach(client => client.write(`data: ${payload}\n\n`));
 }
 
-// SSE Endpoint: Browsers connect here to receive a live event stream
 app.get('/api/stream', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-
-    sseClients.push(res);
-    broadcastToClients();
-
-    req.on('close', () => {
-        sseClients = sseClients.filter(c => c !== res);
-    });
+    sseClients.push({ req, res });
+    req.on('close', () => { sseClients = sseClients.filter(c => c.res !== res); });
 });
 
-// ---------------------------------------------------------------------------
-// SERVER LIFECYCLE
-// ---------------------------------------------------------------------------
+app.get('/state', (req, res) => {
+    res.json(guardianMemory);
+});
+
+// IL WORKER PYTHON INVIA I DATI QUI
+app.post('/state', (req, res) => {
+    const { new_frame, metrics } = req.body;
+    if (new_frame && metrics) {
+        guardianMemory.history_frames.push(new_frame);
+        if (guardianMemory.history_frames.length > 5) {
+            guardianMemory.history_frames.shift(); // FIFO T=5
+        }
+
+        guardianMemory.prev_fire_mask = metrics.prev_fire_mask || [];
+        guardianMemory.predicted_fire_mask = metrics.predicted_fire_mask || [];
+        guardianMemory.center_of_mass = metrics.center_of_mass || { x: 32, y: 32 };
+        guardianMemory.fire_pixel_count = metrics.fire_pixel_count || 0;
+        guardianMemory.sample_count = metrics.sample_count || 0;
+
+        // ESTRAZIONE NUOVI DATI MISSIONE
+        guardianMemory.fire_id = metrics.fire_id || 0;
+        guardianMemory.day_id = metrics.day_id || 0;
+        guardianMemory.input_fire_px = metrics.input_fire_px || 0;
+        guardianMemory.ai_confidence = metrics.ai_confidence || 0;
+
+        guardianMemory.status = "TRACKING_ACTIVE";
+        guardianMemory.last_contact = Date.now();
+
+        res.sendStatus(200);
+    } else {
+        res.sendStatus(400);
+    }
+});
+
+app.on('connection', (socket) => {
+    activeSockets.add(socket);
+    socket.on('close', () => activeSockets.delete(socket));
+});
+
 function startServer() {
-    if (serverInstance) return;
-
-    serverInstance = app.listen(PORT, () =>
-        console.log(`🛡️  GUARDIAN ONLINE (PORT ${PORT})`)
-    );
-
-    serverInstance.on('connection', (socket) => {
-        if (flightMode) { socket.destroy(); return; }
-        activeSockets.add(socket);
-        socket.on('close', () => activeSockets.delete(socket));
+    if (serverInstance) serverInstance.close();
+    serverInstance = app.listen(PORT, () => {
+        console.log(`🚀 Guardian V7.1 Sidecar listening on port ${PORT}`);
     });
 }
 
 // ---------------------------------------------------------------------------
-// FILE-BASED IPC WATCHER & LANDING RECOVERY WATCHER
+// CRIU MIGRATION WATCHERS
 // ---------------------------------------------------------------------------
 function setupWatcher() {
-    const FILES_TO_CLEAN = ['/tmp/flush_complete', '/tmp/prepare_jump'];
-    FILES_TO_CLEAN.forEach(f => {
-        if (fs.existsSync(f)) {
-            try { fs.unlinkSync(f); } catch (e) { }
-        }
-    });
-
-    if (fs.existsSync('/tmp/flush_state')) {
-        try { fs.unlinkSync('/tmp/flush_state'); } catch (e) { }
-    }
-
     try {
-        dirWatcher = fs.watch('/tmp', async (eventType, filename) => {
-            if (filename === 'prepare_jump' && !flightMode) {
-                console.log("🚨 GUARDIAN: prepare_jump detected — entering flight mode...");
+        if (dirWatcher) dirWatcher.close();
+        dirWatcher = fs.watch('/tmp', (eventType, filename) => {
+            if (filename === 'freeze_signal' && !flightMode) {
+                console.log("❄️ GUARDIAN: FREEZE SIGNAL DETECTED. PREPARING FOR MIGRATION...");
                 flightMode = true;
-                if (dirWatcher) dirWatcher.close();
-
-                // Tell the dashboard UI to show the "Migrating..." overlay immediately
-                sseClients.forEach(c => c.write(
-                    `data: ${JSON.stringify({ flight_mode: true })}\n\n`
-                ));
-
-                setTimeout(async () => {
-                    console.log("💤 GUARDIAN: Disconnecting all systems for CRIU...");
-                    sseClients.forEach(c => c.end());
-                    sseClients = [];
-
-                    for (const socket of activeSockets) socket.destroy();
-                    activeSockets.clear();
-
-                    if (serverInstance) serverInstance.close(() => serverInstance = null);
-
-                    if (redisSubscriber) {
-                        try { await redisSubscriber.quit(); } catch (e) { }
-                        redisSubscriber = null;
-                    }
-
-                    console.log("❄️ GUARDIAN: Ready for CRIU checkpoint freeze.");
-                }, 200);
+                if (serverInstance) {
+                    serverInstance.close(() => console.log("Guardian HTTP Server closed."));
+                }
+                for (const socket of activeSockets) socket.destroy();
+                activeSockets.clear();
+                if (redisSubscriber) {
+                    redisSubscriber.quit();
+                    redisSubscriber = null;
+                }
+                fs.writeFileSync('/tmp/freeze_ack', 'ACK');
+                console.log("❄️ GUARDIAN: ACK sent. Ready to be frozen by CRIU.");
             }
         });
     } catch (e) {
-        console.log("⚠️  GUARDIAN: fs.watch error:", e.message);
+        console.log("⚠️ GUARDIAN: fs.watch error:", e.message);
     }
 }
 
@@ -229,22 +190,20 @@ setInterval(() => {
     if (!flightMode) {
         broadcastToClients();
 
-        // Write IPC state for the Node Agent
         const agentState = {
             center_of_mass: guardianMemory.center_of_mass || { x: 32, y: 32 },
             fire_pixel_count: guardianMemory.fire_pixel_count || 0,
             last_migration_time: payloadLastLandedTime
         };
 
-        fs.writeFile('/tmp/payload_state.json', JSON.stringify(agentState), (err) => {
-            // ignore errors
-        });
+        fs.writeFile('/tmp/payload_state.json', JSON.stringify(agentState), (err) => { });
 
-        // Autocomplete flush request (stateless worker requires zero flushing)
         if (fs.existsSync('/tmp/flush_state')) {
             console.log("🚨 GUARDIAN: Node Agent requested pre-freeze flush. Auto-acknowledging instantly.");
-            try { fs.writeFileSync('/tmp/flush_complete', ''); } catch (e) { }
-            try { fs.unlinkSync('/tmp/flush_state'); } catch (e) { }
+            try {
+                fs.unlinkSync('/tmp/flush_state');
+                fs.writeFileSync('/tmp/flush_ack', 'ACK');
+            } catch (e) { }
         }
     }
 }, 500);

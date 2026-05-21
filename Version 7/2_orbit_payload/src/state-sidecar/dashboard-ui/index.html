@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Space Cloud V6 — Guardian SML Sidecar</title>
+  <title>Space Cloud V7.1 — Guardian SML Sidecar</title>
 
   <style>
     /* ── DESIGN TOKENS (Apple Dark Mode) ────────────────────────── */
@@ -115,7 +115,6 @@
       font-weight: 400;
     }
 
-    /* Status Pill */
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -197,6 +196,40 @@
       border: 1px solid rgba(41, 151, 255, 0.25);
       padding: 6px 14px;
       border-radius: var(--rounded-pill);
+    }
+
+    /* ── TELEMETRY BAR (AI METRICS) ──────────────────────────────── */
+    .telemetry-bar-wrapper {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 var(--space-xl) var(--space-lg);
+    }
+
+    .telemetry-bar {
+      background: var(--tile-1);
+      padding: 15px 20px;
+      border-radius: var(--rounded-md);
+      display: flex;
+      gap: 30px;
+      border: 1px solid var(--hairline);
+      align-items: center;
+    }
+
+    .t-stat {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--ink-muted-48);
+    }
+
+    .t-stat span {
+      color: var(--on-dark);
+      font-weight: 600;
+      font-size: 15px;
+      margin-left: 6px;
+    }
+
+    .t-stat .highlight {
+      color: var(--warn);
     }
 
     .dashboard {
@@ -365,16 +398,9 @@
 
     .progress-fill {
       height: 100%;
+      background: var(--primary-on-dark);
       border-radius: var(--rounded-pill);
       transition: width 0.3s ease;
-    }
-
-    .fill-stm {
-      background: var(--primary-on-dark);
-    }
-
-    .fill-ltm {
-      background: var(--ink-muted-48);
     }
 
     /* ── SWARM MATRIX ───────────────────────────────────────────── */
@@ -450,7 +476,7 @@
 <body>
 
   <nav class="global-nav">
-    <div class="global-nav__brand">Space Cloud <span>V7</span></div>
+    <div class="global-nav__brand">Space Cloud <span>V7.1</span></div>
     <div class="global-nav__cluster">
       <div class="global-nav__clock"><strong>UTC</strong> <span id="clock-utc">00:00:00Z</span></div>
       <div class="global-nav__clock"><strong>MET</strong> <span id="clock-met">T+00:00:00</span></div>
@@ -466,8 +492,18 @@
     <div class="node-badge" id="guardian-id">AWAITING_UPLINK</div>
   </header>
 
+  <div class="telemetry-bar-wrapper">
+    <div class="telemetry-bar">
+      <div class="t-stat">🔥 MISSION ID: <span id="mission-id" style="color: var(--primary-on-dark);">AWAITING</span>
+      </div>
+      <div class="t-stat">📅 DAY ID: <span id="day-id">--</span></div>
+      <div class="t-stat">📡 INPUT PX (T-1): <span id="input-px" class="highlight">0</span> <span
+          style="font-size:10px; font-weight:400; color:var(--ink-muted-48)">px</span></div>
+      <div class="t-stat">🧠 AI CONFIDENCE: <span id="ai-conf">0.00</span></div>
+    </div>
+  </div>
+
   <main class="dashboard">
-    <!-- TACTICAL GRIDS -->
     <div class="panel">
       <div class="panel__header">
         <span class="panel__title">Tactical Optical Grids</span>
@@ -513,40 +549,7 @@
       </div>
     </div>
 
-    <!-- DIAGNOSTICS & SYSTEM CONSOLE -->
     <div style="display: flex; flex-direction: column; gap: 24px;">
-
-      <!-- EVALUATION METRICS -->
-      <div class="panel">
-        <div class="panel__header">
-          <span class="panel__title">Model Accuracy (Time-Shift)</span>
-          <span id="delta-mig-badge" class="node-badge" style="font-size:11px;">ΔMig: --</span>
-        </div>
-        <div class="panel__body">
-          <div class="metrics-grid">
-            <div class="metric-box">
-              <div class="metric-box__label">IoU (T-1 → T)</div>
-              <div class="metric-box__val" id="iou-val">—</div>
-            </div>
-            <div class="metric-box">
-              <div class="metric-box__label">Rolling F1 (N=50)</div>
-              <div class="metric-box__val" id="f1-val">—</div>
-            </div>
-          </div>
-          <div style="margin-bottom:12px;">
-            <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">IoU OVER TIME</div>
-            <canvas id="spark-iou" height="80" style="width:100%; background:var(--surface-black);
-                         border:1px solid var(--hairline-strong);
-                         border-radius:var(--rounded-sm);"></canvas>
-          </div>
-          <div>
-            <div style="font-size:11px; color:var(--ink-muted-48); margin-bottom:6px;">F1 OVER TIME</div>
-            <canvas id="spark-f1" height="80" style="width:100%; background:var(--surface-black);
-                         border:1px solid var(--hairline-strong);
-                         border-radius:var(--rounded-sm);"></canvas>
-          </div>
-        </div>
-      </div>
 
       <div class="panel">
         <div class="panel__header">
@@ -561,14 +564,14 @@
             </div>
             <div class="metric-box">
               <div class="metric-box__label">Fire Pixels Detected</div>
-              <div class="metric-box__val" id="fire-count" style="color: var(--critical)">0</div>
+              <div class="metric-box__val" id="fire-count" style="color: var(--primary-on-dark)">0</div>
             </div>
           </div>
 
           <div class="progress-wrap" style="margin-bottom: 0;">
-            <div class="progress-header"><span>FIFO Buffer Saturation</span><span id="stm-label">0 / 5 frames</span></div>
+            <div class="progress-header"><span>FIFO Temporal Buffer</span><span id="stm-label">0 / 5 frames</span></div>
             <div class="progress-track">
-              <div class="progress-fill fill-stm" id="stm-bar" style="width:0%"></div>
+              <div class="progress-fill" id="stm-bar" style="width:0%"></div>
             </div>
           </div>
 
@@ -606,7 +609,7 @@
 
   <script>
     // ============================================================================
-    // CLOCKS (UTC & MET)
+    // CLOCKS
     // ============================================================================
     const startTime = Date.now();
     setInterval(() => {
@@ -619,14 +622,17 @@
     }, 1000);
 
     // ============================================================================
-    // CANVAS MATHEMATICS & RENDERING
+    // CANVAS RENDERING
     // ============================================================================
     const ctxCurrent = document.getElementById('canvas-current').getContext('2d');
     const ctxGt = document.getElementById('canvas-gt').getContext('2d');
     const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
 
     function drawFireMask(flatMask, ctx, width, colorFn) {
-      if (!flatMask || flatMask.length === 0) return;
+      if (!flatMask || flatMask.length === 0) {
+        ctx.clearRect(0, 0, width, width);
+        return;
+      }
       const height = Math.floor(flatMask.length / width);
       ctx.clearRect(0, 0, width, height);
       for (let i = 0; i < height; i++) {
@@ -640,85 +646,16 @@
       }
     }
 
-    // Deep red/orange mapping for raw feed
-    function currentFireColor(val) {
-      const intensity = Math.min(1, val);
-      const r = 255;
-      const g = Math.round(110 * (1 - intensity));
-      return `rgb(${r}, ${g}, 0)`;
-    }
-
-    // Solid Sky Link Blue for prediction map
-    function predictedFireColor(val) {
-      return '#2997ff'; // var(--primary-on-dark)
-    }
-
-    // Emerald Green for objective ground-truth reality
-    function gtFireColor(val) {
-      return '#00e676';
-    }
+    function currentFireColor(val) { return '#ff453a'; } // Red for input
+    function gtFireColor(val) { return '#00e676'; }      // Green for GT
+    function predictedFireColor(val) { return '#2997ff'; } // Blue for Pred
 
     // ============================================================================
-    // SPARKLINE ENGINE (Zero-Dependency Canvas Charts)
-    // ============================================================================
-    const SPARK_MAX_POINTS = 200;
-    const sparkIoU = { vals: [], migrations: [] };
-    const sparkF1 = { vals: [], migrations: [] };
-    let lastEpoch = 0;
-
-    function drawSparkline(canvasId, data) {
-      const canvas = document.getElementById(canvasId);
-      const ctx = canvas.getContext('2d');
-      const dpr = window.devicePixelRatio || 1;
-      const W = canvas.width = canvas.clientWidth * dpr;
-      const H = canvas.height = 80 * dpr;
-      ctx.clearRect(0, 0, W, H);
-
-      if (data.vals.length < 2) return;
-      const n = data.vals.length;
-      const xStep = W / (SPARK_MAX_POINTS - 1);
-
-      // ── Migration markers (vertical red dashed lines) ─────
-      ctx.strokeStyle = 'rgba(255, 69, 58, 0.7)';
-      ctx.lineWidth = 2 * dpr;
-      ctx.setLineDash([4 * dpr, 3 * dpr]);
-      for (const mi of data.migrations) {
-        const x = mi * xStep;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-      }
-      ctx.setLineDash([]);
-
-      // ── Data line ─────────────────────────────────────────
-      ctx.strokeStyle = '#2997ff';
-      ctx.lineWidth = 1.5 * dpr;
-      ctx.beginPath();
-      for (let i = 0; i < n; i++) {
-        const x = i * xStep;
-        const y = H - (data.vals[i] * H);
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      // ── Gradient fill under line ───────────────────────────
-      ctx.lineTo((n - 1) * xStep, H);
-      ctx.lineTo(0, H);
-      ctx.closePath();
-      const grad = ctx.createLinearGradient(0, 0, 0, H);
-      grad.addColorStop(0, 'rgba(41, 151, 255, 0.15)');
-      grad.addColorStop(1, 'rgba(41, 151, 255, 0.0)');
-      ctx.fillStyle = grad;
-      ctx.fill();
-    }
-
-    // ============================================================================
-    // COG RETICLE LOGIC
+    // RETICLE LOGIC
     // ============================================================================
     function updateReticle(comX, comY) {
-      const INNER = 64;
-      const THRESH = 8;
-
-      const x = Math.max(0, Math.min(INNER - 1, comX || INNER / 2));
-      const y = Math.max(0, Math.min(INNER - 1, comY || INNER / 2));
+      const x = Math.max(0, Math.min(63, comX || 32));
+      const y = Math.max(0, Math.min(63, comY || 32));
 
       document.getElementById('com-h').setAttribute('y1', y);
       document.getElementById('com-h').setAttribute('y2', y);
@@ -727,66 +664,18 @@
       document.getElementById('com-dot').setAttribute('cx', x);
       document.getElementById('com-dot').setAttribute('cy', y);
 
-      const textStr = `X:${x.toFixed(1)} Y:${y.toFixed(1)}`;
       const textEl = document.getElementById('com-text');
       const bgEl = document.getElementById('com-bg');
-
       textEl.setAttribute('x', x + 1.5);
       textEl.setAttribute('y', y - 1.5);
       bgEl.setAttribute('x', x + 1);
       bgEl.setAttribute('y', y - 3.5);
-
-      const group = document.getElementById('reticle-group');
-      if (x < THRESH || x > (INNER - THRESH) || y < THRESH || y > (INNER - THRESH)) {
-        group.classList.add('reticle-alert');
-        textEl.textContent = textStr + " [EDGE_WARN]";
-        bgEl.setAttribute('width', '28');
-      } else {
-        group.classList.remove('reticle-alert');
-        textEl.textContent = textStr;
-        bgEl.setAttribute('width', '18');
-      }
+      textEl.textContent = `X:${x.toFixed(1)} Y:${y.toFixed(1)}`;
     }
 
     // ============================================================================
-    // DOM INJECTION HELPERS
+    // UI UPDATES
     // ============================================================================
-    function updateBuffers(stm, ltm) {
-      const STM_MAX = 5;
-      const stmBar = document.getElementById('stm-bar');
-      const stmLabel = document.getElementById('stm-label');
-      if (stmBar) stmBar.style.width = Math.min(100, (stm / STM_MAX) * 100) + '%';
-      if (stmLabel) stmLabel.textContent = `${stm} / ${STM_MAX} frames`;
-    }
-
-    function renderTelemetryMatrix(envData) {
-      const tbody = document.getElementById('fleet-tbody');
-      tbody.innerHTML = '';
-
-      Object.entries(envData).forEach(([node, data]) => {
-        if (data.type === 'ground') return; // Hide ground stations from view
-
-        const temp = data.temp || 0;
-        const bat = data.battery || 0;
-
-        let tempClass = temp >= 120 ? 'val-danger' : temp > 80 ? 'val-warn' : '';
-        let batClass = bat < 15 ? 'val-danger' : bat < 30 ? 'val-warn' : '';
-        const eclipseTxt = data.eclipse ? '🌑 ECL' : '☀️ VIS';
-
-        // Indicate payload location visually
-        const nodeLabel = data.is_working ? `[ ${node.replace('minikube-', '')} ]` : node.replace('minikube-', '');
-
-        tbody.innerHTML += `
-            <tr>
-                <td style="${data.is_working ? 'color: var(--primary-on-dark);' : ''}">${nodeLabel}</td>
-                <td class="${tempClass}">${temp.toFixed(1)}°</td>
-                <td class="${batClass}">${bat.toFixed(1)}%</td>
-                <td>${eclipseTxt}</td>
-            </tr>
-        `;
-      });
-    }
-
     function sysLog(msg, typeClass = 'log-info') {
       const consoleEl = document.getElementById('system-console');
       const ts = new Date().toISOString().substring(11, 19);
@@ -796,10 +685,29 @@
       consoleEl.scrollTop = consoleEl.scrollHeight;
     }
 
+    function renderTelemetryMatrix(envData) {
+      const tbody = document.getElementById('fleet-tbody');
+      tbody.innerHTML = '';
+      Object.entries(envData).forEach(([node, data]) => {
+        if (data.type === 'ground') return;
+        const temp = data.temp || 0;
+        const bat = data.battery || 0;
+        const nodeLabel = data.is_working ? `[ ${node.replace('minikube-', '')} ]` : node.replace('minikube-', '');
+        tbody.innerHTML += `
+            <tr>
+                <td style="${data.is_working ? 'color: var(--primary-on-dark);' : ''}">${nodeLabel}</td>
+                <td>${temp.toFixed(1)}°</td>
+                <td>${bat.toFixed(1)}%</td>
+                <td>${data.eclipse ? '🌑 ECL' : '☀️ VIS'}</td>
+            </tr>`;
+      });
+    }
+
     // ============================================================================
-    // SSE STREAM INGESTION (BACKEND BINDING)
+    // SSE STREAM 
     // ============================================================================
     let lastFlightState = false;
+    let lastMissionId = null;
     const evtSource = new EventSource('/api/stream');
 
     evtSource.onmessage = (event) => {
@@ -812,86 +720,48 @@
 
       document.getElementById('guardian-id').textContent = data.guardian_id || 'UNKNOWN';
 
-      // Contextual Status Toggling
+      // Status Pill
       const lamp = document.getElementById('status-lamp');
       const statusText = document.getElementById('status-text');
 
       if (flightMode) {
         lamp.className = 'status-pill migrating';
         statusText.textContent = 'ISL Migration Active';
-        if (!lastFlightState) sysLog(`Initiating CRIU checkpoint sequence. Lock acquired.`, 'log-warn');
+        if (!lastFlightState) sysLog(`Initiating CRIU checkpoint. CPU freeze...`, 'log-warn');
       } else {
         lamp.className = 'status-pill nominal';
         statusText.textContent = 'System Nominal';
-        if (lastFlightState) sysLog(`Payload restored on ${data.guardian_id}. UDP socket open.`, 'log-action');
+        if (lastFlightState) sysLog(`Payload restored on ${data.guardian_id}.`, 'log-action');
       }
       lastFlightState = flightMode;
 
-      // Mathematics Rendering
-      drawFireMask(state.prev_fire_mask || [], ctxCurrent, 64, currentFireColor);
-      drawFireMask(state.gt_fire_mask || [], ctxGt, 64, gtFireColor);
-      drawFireMask(state.predicted_fire_mask || [], ctxPredicted, 64, predictedFireColor);
+      // ── UPDATE NEW AI METRICS ──
+      const fireId = state.fire_id !== undefined ? (state.fire_id + 1) : '-';
+      document.getElementById('mission-id').textContent = fireId;
+      document.getElementById('day-id').textContent = state.day_id !== undefined ? (state.day_id + 1) : '-';
+      document.getElementById('input-px').textContent = state.input_fire_px !== undefined ? state.input_fire_px : '-';
+      document.getElementById('ai-conf').textContent = state.ai_confidence !== undefined ? state.ai_confidence.toFixed(2) : '-';
 
+      // Log Mission Change
+      if (state.fire_id !== undefined && state.fire_id !== lastMissionId) {
+        sysLog(`Target Lock Acquired: Mission ${fireId} isolated.`, 'log-action');
+        lastMissionId = state.fire_id;
+      }
+
+      // Drawing
+      drawFireMask(state.prev_fire_mask || [], ctxCurrent, 64, currentFireColor);
+      drawFireMask(state.predicted_fire_mask || [], ctxPredicted, 64, predictedFireColor);
       if (state.center_of_mass) updateReticle(state.center_of_mass.x, state.center_of_mass.y);
 
-      // Diagnostics Assignment
+      // Diagnostics
       document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();
       document.getElementById('fire-count').textContent = (state.fire_pixel_count || 0).toLocaleString();
-      updateBuffers(state.stm_size || 0, state.ltm_size || 0);
 
-      // ── Evaluation Metrics ──────────────────────────────────
-      const evalM = state.eval_metrics || {};
-      const iou = evalM.iou ?? 0;
-      const rollingF1 = evalM.rolling_f1 ?? 0;
-
-      document.getElementById('iou-val').textContent = (iou * 100).toFixed(1) + '%';
-
-      // Sleek Apple Dark Mode styling: dim the value when model is IDLE
-      const f1ValEl = document.getElementById('f1-val');
-      f1ValEl.textContent = (rollingF1 * 100).toFixed(1) + '%';
-      f1ValEl.style.color = evalM.f1 === null ? 'var(--ink-muted-48)' : 'var(--on-dark)';
-
-      document.getElementById('delta-mig-badge').textContent =
-        `ΔMig: ${(evalM.delta_mig ?? 0) > 0 ? '+' : ''}${((evalM.delta_mig ?? 0) * 100).toFixed(1)}%`;
-
-      // Push to sparkline buffers
-      sparkIoU.vals.push(iou);
-
-      // Fix "Plunge to 0" bug: during Idle periods, push the active rolling score to create a plateau
-      const sparkF1Val = (evalM.f1 !== null && evalM.f1 !== undefined) ? evalM.f1 : rollingF1;
-      sparkF1.vals.push(sparkF1Val);
-
-      // Migration marker detection
-      const epoch = data.migration_epoch || 0;
-      if (epoch > lastEpoch) {
-        sparkIoU.migrations.push(sparkIoU.vals.length - 1);
-        sparkF1.migrations.push(sparkF1.vals.length - 1);
-        lastEpoch = epoch;
-        sysLog(`Migration #${epoch} detected — ΔMig marker placed.`, 'log-action');
-      }
-
-      // Ring-buffer trim
-      if (sparkIoU.vals.length > SPARK_MAX_POINTS) {
-        const excess = sparkIoU.vals.length - SPARK_MAX_POINTS;
-        sparkIoU.vals.splice(0, excess);
-        sparkIoU.migrations = sparkIoU.migrations.map(m => m - excess).filter(m => m >= 0);
-        sparkF1.vals.splice(0, excess);
-        sparkF1.migrations = sparkF1.migrations.map(m => m - excess).filter(m => m >= 0);
-      }
-
-      drawSparkline('spark-iou', sparkIoU);
-      drawSparkline('spark-f1', sparkF1);
+      const stmSize = state.history_frames ? state.history_frames.length : 0;
+      document.getElementById('stm-bar').style.width = Math.min(100, (stmSize / 5) * 100) + '%';
+      document.getElementById('stm-label').textContent = `${stmSize} / 5 frames`;
 
       if (Object.keys(env).length > 0) renderTelemetryMatrix(env);
-    };
-
-    evtSource.onerror = () => {
-      const lamp = document.getElementById('status-lamp');
-      lamp.className = 'status-pill';
-      lamp.style.color = 'var(--ink-muted-48)';
-      lamp.style.borderColor = 'var(--hairline-strong)';
-      lamp.style.background = 'transparent';
-      document.getElementById('status-text').textContent = 'Uplink Lost';
     };
   </script>
 </body>

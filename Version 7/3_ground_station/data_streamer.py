@@ -1,8 +1,8 @@
 """
-SPACE CLOUD V7.1 - WSTS DATA STREAMER (Ground Station)
+SPACE CLOUD V7.1 - WSTS DATA STREAMER (Masterstroke Edition)
 =====================================================
-ROLE: Sends ONLY 1 day at a time (23 channels) to force the satellite
-to maintain its own state and history in orbit.
+ROLE: Genera il tensore perfetto a 120 canali, ma ne "affetta" solo l'ultimo 
+giorno (40 canali) per costringere il satellite a fare l'Early Fusion a bordo.
 """
 import socket
 import struct
@@ -25,7 +25,7 @@ except ImportError as e:
     print(f"❌ STREAMER ERROR: {e}")
     sys.exit(1)
 
-WSTS_EVAL_DIR = os.getenv("WSTS_EVAL_DIR", "evaluation_data")
+WSTS_EVAL_DIR = os.getenv("WSTS_EVAL_DIR", os.path.join(CURRENT_DIR, "evaluation_data"))
 WORKER_UDP_NODEPORT = 32005
 STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "1.0"))
 CHUNK_SIZE = 60_000
@@ -50,34 +50,48 @@ def send_frame(sock: socket.socket, blob: bytes, target_ip: str, target_port: in
     return total_chunks
 
 def main():
-    print("🚀 STREAMER: Booting WSTS Uplink (Stateful 23-Channel Mode)...")
+    print("🚀 STREAMER: Booting WSTS Uplink (Stateful 40-Channel Mode)...")
+    
     dataset = FireSpreadDataset(
         data_dir=WSTS_EVAL_DIR,
         included_fire_years=[2021],
-        n_leading_observations=1,         # INVIAMO SOLO 1 GIORNO!
+        n_leading_observations=5,         # 1. Generiamo i 5 giorni completi...
         crop_side_length=64,
         load_from_hdf5=True,
         is_train=False,
-        remove_duplicate_features=False,  # MANTENIAMO I 23 CANALI ORIGINARI
+        remove_duplicate_features=True,   # 2. ...perfettamente ottimizzati a 120 canali!
         stats_years=[2018, 2019]
     )
 
+    dataset_size = len(dataset)
+    if dataset_size == 0:
+        print("\n❌ ERRORE: Dataset vuoto. Controlla la cartella evaluation_data/2021.")
+        sys.exit(1)
+        
+    print(f"📊 STREAMER: Caricamento completato. {dataset_size} frame pronti.")
     target_ip = get_minikube_ip()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     frame_id_counter = 0
-    limit = min(TEST_SLICE_SIZE, len(dataset)) if TEST_MODE else len(dataset)
+    limit = min(TEST_SLICE_SIZE, dataset_size) if TEST_MODE else dataset_size
 
     while True:
         for idx in range(limit):
             x_tensor, _ = dataset[idx]
-            frame_array = x_tensor.numpy().astype(np.float32) # Shape: (23, 64, 64)
+            full_120_array = x_tensor.numpy().astype(np.float32) # Shape: (120, 64, 64)
+
+            # IL BISTURI MATEMATICO: Estraiamo SOLO i dati dell'ultimo giorno (Giorno T)
+            # - Dinamiche del Giorno T: canali da 80 a 100 (20 canali)
+            # - Statica & LandCover: canali da 100 a 120 (20 canali)
+            day_t_dynamic = full_120_array[80:100, :, :]
+            day_t_static = full_120_array[100:120, :, :]
+            frame_array = np.concatenate([day_t_dynamic, day_t_static], axis=0) # Shape: (40, 64, 64)
 
             frame_id_counter = (frame_id_counter + 1) & 0xFFFF_FFFF
             blob = encode_frame(frame_array)
 
             try:
                 n_chunks = send_frame(sock, blob, target_ip, WORKER_UDP_NODEPORT, frame_id_counter)
-                print(f"📤 STREAMER: Inviato Giorno Corrente (Index {idx}) → {len(blob)//1024}KB, {n_chunks} chunk(s)")
+                print(f"📤 STREAMER: Inviato Giorno T (Index {idx}) → {len(blob)//1024}KB, {n_chunks} chunk(s)")
             except Exception as e:
                 print(f"⚠️ STREAMER: Errore UDP: {e}")
 

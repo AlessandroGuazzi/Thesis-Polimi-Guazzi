@@ -1,6 +1,7 @@
 """
 SPACE CLOUD V7.1 - PHOENIX WORKER (Orbital Fusion Engine)
-ROLE: Receives 1 day, pulls history from Guardian, builds the 120-channel tensor.
+ROLE: Riceve 40 canali (1 giorno), chiede lo storico al Guardian, 
+      ricuce i 5 giorni e ottiene il tensore a 120 canali per ResNet-18.
 """
 import socket
 import struct
@@ -16,7 +17,7 @@ GUARDIAN_URL = os.getenv("STATE_ENDPOINT", "http://localhost:80")
 UDP_PORT = 5005
 GRID_W = 64
 GRID_H = 64
-CHANNELS_PER_DAY = 23
+CHANNELS_PER_DAY = 40  # 20 Dinamici + 20 Statici/LandCover
 
 print("🚀 WORKER: Initializing ONNX Runtime Session...", flush=True)
 opts = ort.SessionOptions()
@@ -36,35 +37,28 @@ def compute_center_of_mass(pred_2d):
         return {"x": 32.0, "y": 32.0}
     return {"x": float(fire_coords[:, 1].mean()), "y": float(fire_coords[:, 0].mean())}
 
-def assemble_120_channels(history_list, current_frame):
+def assemble_120_channels(all_days):
     """
-    Fonde i 5 giorni applicando la deduplicazione in orbita per ottenere 120 canali.
-    Struttura WSTS a 23 canali:
-      - [0:20] -> 20 Canali Dinamici (l'indice 19 è la Land Cover categorica)
-      - [20:23] -> 3 Canali Statici (Topografia)
+    all_days è una lista di 5 array (ognuno di shape 40, 64, 64).
+    Dobbiamo ricreare il super-tensore a 120 canali:
+    - 5 * 20 canali dinamici = 100
+    - 1 * 20 canali statici (solo dell'ultimo giorno) = 20
+    Totale: 120 canali.
     """
-    all_days = history_list + [current_frame] # Garantisce T=5 frame totali
+    # 1. Estraiamo i 20 canali dinamici da TUTTI e 5 i giorni
+    dynamic_parts = [day[0:20, :, :] for day in all_days]
     
-    # 1. Estraiamo i 20 canali dinamici per tutti e 5 i giorni (5 * 20 = 100 canali)
-    dynamic_channels = [day[0:20] for day in all_days]
-    tensor_dynamic = np.concatenate(dynamic_channels, axis=0) # Shape: (100, 64, 64)
+    # 2. Estraiamo i 20 canali statici SOLO dal giorno corrente (l'ultimo)
+    static_part = all_days[-1][20:40, :, :]
     
-    # 2. Prendiamo i 3 canali di topografia fissa SOLO dall'ultimo giorno (3 canali)
-    tensor_topo = all_days[-1][20:23] # Shape: (3, 64, 64)
-    
-    # 3. Prendiamo lo strato Land Cover (canale 19) dell'ultimo giorno ed espandiamo One-Hot (17 canali)
-    land_cover = all_days[-1][19].astype(np.int32)
-    land_cover_bounded = np.clip(land_cover, 0, 16)
-    one_hot = np.eye(17)[land_cover_bounded].transpose(2, 0, 1).astype(np.float32) # Shape: (17, 64, 64)
-    
-    # 4. Fusione Finale: 100 + 3 + 17 = 120 Canali!
-    final_input = np.concatenate([tensor_dynamic, tensor_topo, one_hot], axis=0)
-    return final_input.reshape(1, 120, GRID_H, GRID_W)
+    # 3. Cucitura Finale
+    final_tensor = np.concatenate(dynamic_parts + [static_part], axis=0)
+    return final_tensor.reshape(1, 120, GRID_H, GRID_W)
 
 def process_frame(frame_array):
     if session is None: return
 
-    # 1. Recupera la cronologia dei frame precedentemente accumulati dal Guardian
+    # 1. Recupero memoria di stato dal Guardian Sidecar
     try:
         resp = requests.get(f"{GUARDIAN_URL}/state", timeout=2)
         state = resp.json() if resp.status_code == 200 else {}
@@ -79,13 +73,16 @@ def process_frame(frame_array):
         arr = np.frombuffer(base64.b64decode(h), dtype=np.float32).reshape(CHANNELS_PER_DAY, GRID_H, GRID_W)
         history_tensors.append(arr)
 
-    # Mantieni solo i passati T-1 (4) giorni
+    # Assicuriamoci di avere i 4 giorni precedenti in RAM
     if len(history_tensors) > 4: history_tensors = history_tensors[-4:]
     while len(history_tensors) < 4:
         history_tensors.insert(0, np.zeros((CHANNELS_PER_DAY, GRID_H, GRID_W), dtype=np.float32))
 
-    # 2. Esegui la fusione a 120 canali a bordo
-    input_tensor = assemble_120_channels(history_tensors, frame_array)
+    # Aggiungiamo il giorno appena arrivato
+    history_tensors.append(frame_array)
+
+    # 2. Esegui la fusione a 120 canali a bordo!
+    input_tensor = assemble_120_channels(history_tensors)
 
     # 3. Inferenza ONNX
     input_name = session.get_inputs()[0].name
@@ -93,13 +90,12 @@ def process_frame(frame_array):
     logits = session.run([output_name], {input_name: input_tensor})[0]
     pred_mask = (logits > 0).astype(int)[0, 0]
 
-    # Mappa incendi ieri (canale 0 del giorno corrente) per la dashboard
+    # Il canale 0 del nostro array da 40 canali è la maschera fuochi reali di oggi
     prev_fire_mask = (frame_array[0, :, :] > 0).astype(int)
-
     fire_pixel_count = int(np.sum(pred_mask))
     com = compute_center_of_mass(pred_mask)
     
-    # 4. Spedisci il nuovo giorno ed i calcoli al Guardian per salvarli in RAM
+    # 4. Invia il nuovo frame e le metriche al Guardian per salvare lo stato
     current_b64 = base64.b64encode(frame_array.tobytes()).decode('ascii')
     payload = {
         "new_frame": current_b64,
@@ -113,14 +109,14 @@ def process_frame(frame_array):
     }
     try:
         requests.post(f"{GUARDIAN_URL}/state", json=payload, timeout=2)
-        print(f"✅ WORKER: Elaborato Giorno {sample_count+1}. Fuoco rilevato: {fire_pixel_count} pixel.")
+        print(f"✅ WORKER: Elaborato Giorno {sample_count+1}. Fuoco rilevato: {fire_pixel_count} pixel.", flush=True)
     except Exception as e:
-        print(f"⚠️ WORKER: Errore push Guardian: {e}")
+        print(f"⚠️ WORKER: Errore push Guardian: {e}", flush=True)
 
 def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", UDP_PORT))
-    print(f"📡 WORKER: UDP Telemetry Receiver attivo sulla porta {UDP_PORT}")
+    print(f"📡 WORKER: UDP Telemetry Receiver attivo sulla porta {UDP_PORT}", flush=True)
 
     frame_buffers = {}
     last_cleanup = time.time()
@@ -142,7 +138,7 @@ def main():
                 frame_array = np.frombuffer(decompressed, dtype='>f4').astype(np.float32).reshape(CHANNELS_PER_DAY, GRID_H, GRID_W)
                 process_frame(frame_array)
             except Exception as e:
-                print(f"⚠️ WORKER: Decodifica fallita: {e}")
+                print(f"⚠️ WORKER: Decodifica fallita: {e}", flush=True)
 
         now = time.time()
         if now - last_cleanup > 10.0:

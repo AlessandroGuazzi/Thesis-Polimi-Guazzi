@@ -65,16 +65,25 @@ async function initRedisSub() {
 // HTTP ENDPOINTS
 // ---------------------------------------------------------------------------
 
-// The stateless Python worker POSTs the newest frame and its predictions here
+// Il worker stateless invia qui il frame da registrare e le metriche calcolate
 app.post('/state', (req, res) => {
     if (flightMode) {
-        console.log("⚠️ GUARDIAN: Rejecting /state POST — flightMode is ACTIVE.");
+        console.log("⚠️ GUARDIAN: Rifiutato POST /state — flightMode ATTIVO per CRIU.");
         return res.status(503).json({ error: "MIGRATION_IN_PROGRESS" });
     }
 
     const body = req.body;
 
-    // Aggiorniamo direttamente le metriche e le maschere (molto più leggero per la RAM)
+    // GESTIONE CODA FIFO STATO PREZIOSO: Registra il frame a 23 canali in RAM
+    if (body.new_frame) {
+        guardianMemory.history_frames.push(body.new_frame);
+        // Manteniamo esattamente la finestra temporale storica T=5 giorni
+        if (guardianMemory.history_frames.length > 5) {
+            guardianMemory.history_frames.shift();
+        }
+    }
+
+    // Aggiorna le metriche autoritative per la Dashboard UI
     if (body.metrics) {
         Object.assign(guardianMemory, body.metrics);
     }

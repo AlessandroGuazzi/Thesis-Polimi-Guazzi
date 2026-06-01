@@ -18,7 +18,8 @@ GUARDIAN_URL = os.getenv("STATE_ENDPOINT", "http://localhost:80")
 UDP_PORT = 5005
 GRID_W = 64
 GRID_H = 64
-CHANNELS_PER_DAY = 40  
+CHANNELS_PER_DAY = 7    # 7 features per day (post-preprocessing, vegetation-only)
+TOTAL_CHANNELS = 35     # 7 features × 5 days (assembled from Guardian FIFO + current frame)
 
 # =====================================================================
 # MISSION CALIBRATION (Threshold Moving)
@@ -43,90 +44,116 @@ def compute_center_of_mass(pred_2d):
         return {"x": 32.0, "y": 32.0}
     return {"x": float(fire_coords[:, 1].mean()), "y": float(fire_coords[:, 0].mean())}
 
-def assemble_120_channels(all_days):
-    dynamic_idx = list(range(12)) + [15] + list(range(33, 40))
-    dynamic_parts = [day[dynamic_idx, :, :] for day in all_days[:-1]]
-    last_day = all_days[-1]
-    final_tensor = np.concatenate(dynamic_parts + [last_day], axis=0)
-    return final_tensor.reshape(1, 120, GRID_H, GRID_W)
+def assemble_35_channels(history_tensors, current_frame):
+    """Concatenate 4 past frames + current frame along channel axis.
+    All 7 features are dynamic, so simple concat replicates training flattening.
+    Input:  history_tensors = list of 4 arrays, each (7, 64, 64)
+            current_frame   = (7, 64, 64)
+    Output: (1, 35, 64, 64) ready for ONNX"""
+    all_days = history_tensors + [current_frame]
+    stacked = np.concatenate(all_days, axis=0)  # (35, 64, 64)
+    return stacked.reshape(1, TOTAL_CHANNELS, GRID_H, GRID_W)
 
-current_fire_id = None
 
 def process_frame(frame_array, fire_id, day_id):
-    global current_fire_id
+    """Stateless conditional inference cycle:
+    ① GET history from Guardian (with exponential backoff during CRIU freezes)
+    ② If cache < 4 frames → WARM-UP: skip ONNX, POST frame to populate buffer
+    ③ If cache = 4 frames → ACTIVE: assemble 35-ch, ONNX, POST frame + real metrics"""
     if session is None: return
 
-    if current_fire_id != fire_id:
-        print(f"\n🔥 WORKER: Rilevato Nuovo Incendio (ID: {fire_id+1})! Inizializzazione nuova missione...", flush=True)
-        current_fire_id = fire_id
+    # ① Fetch temporal history with exponential backoff (CRIU freeze resilience)
+    MAX_RETRIES = 3
+    RETRY_BASE_DELAY = 0.5  # seconds
+    state = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = requests.get(f"{GUARDIAN_URL}/state", timeout=2)
+            if resp.status_code == 200:
+                state = resp.json()
+                break
+        except Exception:
+            delay = RETRY_BASE_DELAY * (2 ** attempt)
+            print(f"⚠️ WORKER: Guardian unreachable (attempt {attempt+1}/{MAX_RETRIES}). Retrying in {delay:.1f}s...", flush=True)
+            time.sleep(delay)
 
-    try:
-        resp = requests.get(f"{GUARDIAN_URL}/state", timeout=2)
-        state = resp.json() if resp.status_code == 200 else {}
-    except:
-        state = {}
+    if state is None:
+        print(f"🚨 WORKER: Guardian offline after {MAX_RETRIES} retries. Dropping frame to preserve stateless integrity.", flush=True)
+        return
 
     history_b64 = state.get("history_frames", [])
     sample_count = state.get("sample_count", 0)
 
-    history_tensors = []
-    for h in history_b64:
-        arr = np.frombuffer(base64.b64decode(h), dtype=np.float32).reshape(CHANNELS_PER_DAY, GRID_H, GRID_W)
-        history_tensors.append(arr)
-
-    if len(history_tensors) > 4: 
-        history_tensors = history_tensors[-4:]
-
-    # PROTOCOLLO DI ISOLAMENTO MATEMATICO
-    valid_history_length = min(day_id, 4)
-    if valid_history_length == 0:
-        history_tensors = []
-    else:
-        history_tensors = history_tensors[-valid_history_length:]
-
-    while len(history_tensors) < 4:
-        if len(history_tensors) > 0:
-            history_tensors.insert(0, np.copy(history_tensors[0]))
-        else:
-            history_tensors.insert(0, np.copy(frame_array))
-
-    history_tensors.append(frame_array)
-    input_tensor = assemble_120_channels(history_tensors)
-
-    input_name = session.get_inputs()[0].name
-    output_name = session.get_outputs()[0].name
-    logits = session.run([output_name], {input_name: input_tensor})[0]
-    
-    # ESTRAZIONE PIXEL CON LA NUOVA SOGLIA CALIBRATA
-    pred_mask = (logits > CALIBRATION_THRESHOLD).astype(int)[0, 0]
-    max_logit = float(np.max(logits))
-
-    prev_fire_mask = (frame_array[39, :, :] > 0).astype(int)
-    
+    # Extract basic input metrics (available in both phases)
+    prev_fire_mask = (frame_array[6, :, :] > 0).astype(int)
     input_fire_px = int(np.sum(prev_fire_mask))
-    fire_pixel_count = int(np.sum(pred_mask))
-    com = compute_center_of_mass(pred_mask)
-    
+
+    # Encode current frame for Guardian storage
     current_b64 = base64.b64encode(frame_array.tobytes()).decode('ascii')
-    payload = {
-        "new_frame": current_b64,
-        "metrics": {
-            "prev_fire_mask": prev_fire_mask.tolist(),
-            "predicted_fire_mask": pred_mask.tolist(),
-            "center_of_mass": com,
-            "fire_pixel_count": fire_pixel_count,
-            "sample_count": sample_count + 1,
-            # ====== NUOVI DATI PER LA DASHBOARD ======
-            "fire_id": fire_id + 1,
-            "day_id": day_id + 1,
-            "input_fire_px": input_fire_px,
-            "ai_confidence": round(max_logit, 2)
-            # =========================================
+
+    # =========================================================================
+    # PHASE GATE: Warm-Up vs Active Inference
+    # =========================================================================
+    if len(history_b64) < 4:
+        # ② WARM-UP PHASE (Days 1–4): Populate Guardian cache, skip ONNX
+        print(f"⏳ WORKER [Incendio {fire_id+1} | Giorno {day_id+1}] | Warm-Up ({len(history_b64)+1}/4 cache) | Input: {input_fire_px} px", flush=True)
+        payload = {
+            "new_frame": current_b64,
+            "metrics": {
+                "prev_fire_mask": prev_fire_mask.tolist(),
+                "predicted_fire_mask": [],
+                "center_of_mass": {"x": 32.0, "y": 32.0},
+                "fire_pixel_count": 0,
+                "sample_count": sample_count + 1,
+                "fire_id": fire_id + 1,
+                "day_id": day_id + 1,
+                "input_fire_px": input_fire_px,
+                "ai_confidence": 0.0,
+                "tracking_iou": 0.0
+            }
         }
-    }
+    else:
+        # ③ ACTIVE INFERENCE PHASE (Day 5+): Full 35-channel ONNX execution
+        history_tensors = []
+        for h in history_b64[-4:]:
+            arr = np.frombuffer(base64.b64decode(h), dtype=np.float32).reshape(CHANNELS_PER_DAY, GRID_H, GRID_W)
+            history_tensors.append(arr)
+
+        input_tensor = assemble_35_channels(history_tensors, frame_array)
+
+        input_name = session.get_inputs()[0].name
+        output_name = session.get_outputs()[0].name
+        logits = session.run([output_name], {input_name: input_tensor})[0]
+
+        pred_mask = (logits > CALIBRATION_THRESHOLD).astype(int)[0, 0]
+        max_logit = float(np.max(logits))
+        fire_pixel_count = int(np.sum(pred_mask))
+        com = compute_center_of_mass(pred_mask)
+
+        # Tracking IoU: spatial overlap between input fire (T-1) and predicted fire (T)
+        intersection = int(np.sum((prev_fire_mask == 1) & (pred_mask == 1)))
+        union = int(np.sum((prev_fire_mask == 1) | (pred_mask == 1)))
+        tracking_iou = round(intersection / union, 4) if union > 0 else 0.0
+
+        print(f"✅ WORKER [Incendio {fire_id+1} | Giorno {day_id+1}] | Input: {input_fire_px} px -> Previsto: {fire_pixel_count} px (Conf: {max_logit:.2f}, IoU: {tracking_iou:.2f})", flush=True)
+        payload = {
+            "new_frame": current_b64,
+            "metrics": {
+                "prev_fire_mask": prev_fire_mask.tolist(),
+                "predicted_fire_mask": pred_mask.tolist(),
+                "center_of_mass": com,
+                "fire_pixel_count": fire_pixel_count,
+                "sample_count": sample_count + 1,
+                "fire_id": fire_id + 1,
+                "day_id": day_id + 1,
+                "input_fire_px": input_fire_px,
+                "ai_confidence": round(max_logit, 2),
+                "tracking_iou": tracking_iou
+            }
+        }
+
     try:
         requests.post(f"{GUARDIAN_URL}/state", json=payload, timeout=2)
-        print(f"✅ WORKER [Incendio {fire_id+1} | Giorno {day_id+1}] | Input: {input_fire_px} px -> Previsto: {fire_pixel_count} px (Conf: {max_logit:.2f})", flush=True)
     except Exception as e:
         pass
 
@@ -157,11 +184,11 @@ def main():
                 decompressed = zlib.decompress(blob)
                 frame_array = np.frombuffer(decompressed, dtype='>f4').astype(np.float32)
                 
-                EXPECTED_SIZE = CHANNELS_PER_DAY * GRID_H * GRID_W
+                EXPECTED_SIZE = CHANNELS_PER_DAY * GRID_H * GRID_W  # 7 * 64 * 64 = 28,672
                 if frame_array.size != EXPECTED_SIZE:
                     continue
                     
-                frame_array = frame_array.reshape(CHANNELS_PER_DAY, GRID_H, GRID_W)
+                frame_array = frame_array.reshape(CHANNELS_PER_DAY, GRID_H, GRID_W)  # (7, 64, 64)
                 process_frame(frame_array, fire_id, day_id)
             except Exception as e:
                 pass

@@ -9,6 +9,7 @@
 const express = require('express');
 const redis = require('redis');
 const fs = require('fs');
+const path = require('path');
 const bodyParser = require('body-parser');
 
 const app = express();
@@ -16,11 +17,18 @@ const PORT = 80;
 
 app.use(bodyParser.json({ limit: '50mb' }));
 
+// --- DASHBOARD STATIC ASSET DELIVERY ---
+app.use(express.static(path.join(__dirname, 'dashboard-ui')));
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dashboard-ui', 'index.html'));
+});
+
 // ---------------------------------------------------------------------------
 // INTERNAL STATE (The Single Source of Truth)
 // ---------------------------------------------------------------------------
 let guardianMemory = {
-    history_frames: [], // FIFO rolling buffer for the last T=5 days
+    history_frames: [], // FIFO rolling buffer: last 4 past days (7-ch frames, ~610 KB total)
     predicted_fire_mask: [],
     prev_fire_mask: [],
     center_of_mass: { x: 32, y: 32 },
@@ -34,7 +42,8 @@ let guardianMemory = {
     fire_id: 0,
     day_id: 0,
     input_fire_px: 0,
-    ai_confidence: 0
+    ai_confidence: 0,
+    tracking_iou: 0
 };
 
 let flightMode = false;
@@ -98,22 +107,30 @@ app.get('/state', (req, res) => {
 app.post('/state', (req, res) => {
     const { new_frame, metrics } = req.body;
     if (new_frame && metrics) {
+        // FIRE ISOLATION: Reset FIFO buffer when a new fire mission begins
+        const incomingFireId = metrics.fire_id || 0;
+        if (incomingFireId !== guardianMemory.fire_id && guardianMemory.fire_id !== 0) {
+            console.log(`🔥 GUARDIAN: New fire mission detected (${guardianMemory.fire_id} → ${incomingFireId}). Flushing history buffer.`);
+            guardianMemory.history_frames = [];
+        }
+
         guardianMemory.history_frames.push(new_frame);
-        if (guardianMemory.history_frames.length > 5) {
-            guardianMemory.history_frames.shift(); // FIFO T=5
+        if (guardianMemory.history_frames.length > 4) {
+            guardianMemory.history_frames.shift(); // FIFO T=4 (Worker brings the 5th day)
         }
 
         guardianMemory.prev_fire_mask = metrics.prev_fire_mask || [];
         guardianMemory.predicted_fire_mask = metrics.predicted_fire_mask || [];
         guardianMemory.center_of_mass = metrics.center_of_mass || { x: 32, y: 32 };
         guardianMemory.fire_pixel_count = metrics.fire_pixel_count || 0;
-        guardianMemory.sample_count = metrics.sample_count || 0;
+        guardianMemory.sample_count = (metrics.sample_count !== undefined) ? metrics.sample_count : (guardianMemory.sample_count + 1);
 
         // ESTRAZIONE NUOVI DATI MISSIONE
         guardianMemory.fire_id = metrics.fire_id || 0;
         guardianMemory.day_id = metrics.day_id || 0;
         guardianMemory.input_fire_px = metrics.input_fire_px || 0;
         guardianMemory.ai_confidence = metrics.ai_confidence || 0;
+        guardianMemory.tracking_iou = metrics.tracking_iou || 0;
 
         guardianMemory.status = "TRACKING_ACTIVE";
         guardianMemory.last_contact = Date.now();

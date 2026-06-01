@@ -470,6 +470,51 @@
     .log-action {
       color: var(--primary-on-dark);
     }
+    /* ── DELTA ANALYSIS LEGEND ──────────────────────────────────── */
+    .delta-legend {
+      display: flex;
+      gap: 12px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+
+    .delta-legend__item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--ink-muted-48);
+    }
+
+    .delta-legend__swatch {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    /* ── IoU GAUGE ──────────────────────────────────────────────── */
+    .iou-gauge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .iou-gauge__track {
+      width: 60px;
+      height: 6px;
+      background: rgba(0, 0, 0, 0.4);
+      border-radius: var(--rounded-pill);
+      overflow: hidden;
+      border: 1px solid var(--hairline);
+    }
+
+    .iou-gauge__fill {
+      height: 100%;
+      border-radius: var(--rounded-pill);
+      transition: width 0.3s ease, background 0.3s ease;
+    }
   </style>
 </head>
 
@@ -500,6 +545,12 @@
       <div class="t-stat">📡 INPUT PX (T-1): <span id="input-px" class="highlight">0</span> <span
           style="font-size:10px; font-weight:400; color:var(--ink-muted-48)">px</span></div>
       <div class="t-stat">🧠 AI CONFIDENCE: <span id="ai-conf">0.00</span></div>
+      <div class="t-stat iou-gauge">🎯 TRACKING IoU:
+        <div class="iou-gauge__track">
+          <div class="iou-gauge__fill" id="iou-bar" style="width:0%; background:var(--ink-muted-48)"></div>
+        </div>
+        <span id="iou-val" style="color: var(--ink-muted-48); font-family: var(--font-mono); font-size: 13px;">0.00</span>
+      </div>
     </div>
   </div>
 
@@ -521,10 +572,15 @@
 
         <div style="display:flex; flex-direction:column; gap:8px;">
           <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
-            <span>Ground Truth (T)</span> <span style="font-family:var(--font-mono)">64x64</span>
+            <span>Delta Analysis</span> <span style="font-family:var(--font-mono)">64x64</span>
           </div>
           <div class="canvas-wrapper">
-            <canvas id="canvas-gt" width="64" height="64"></canvas>
+            <canvas id="canvas-delta" width="64" height="64"></canvas>
+          </div>
+          <div class="delta-legend">
+            <div class="delta-legend__item"><div class="delta-legend__swatch" style="background:#30d158"></div>Overlap</div>
+            <div class="delta-legend__item"><div class="delta-legend__swatch" style="background:#2997ff"></div>New Spread</div>
+            <div class="delta-legend__item"><div class="delta-legend__swatch" style="background:#ff9f0a"></div>Contraction</div>
           </div>
         </div>
 
@@ -569,7 +625,7 @@
           </div>
 
           <div class="progress-wrap" style="margin-bottom: 0;">
-            <div class="progress-header"><span>FIFO Temporal Buffer</span><span id="stm-label">0 / 5 frames</span></div>
+            <div class="progress-header"><span>FIFO Temporal Buffer</span><span id="stm-label">0 / 4 frames</span></div>
             <div class="progress-track">
               <div class="progress-fill" id="stm-bar" style="width:0%"></div>
             </div>
@@ -625,19 +681,21 @@
     // CANVAS RENDERING
     // ============================================================================
     const ctxCurrent = document.getElementById('canvas-current').getContext('2d');
-    const ctxGt = document.getElementById('canvas-gt').getContext('2d');
     const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
+    const ctxDelta = document.getElementById('canvas-delta').getContext('2d');
 
-    function drawFireMask(flatMask, ctx, width, colorFn) {
-      if (!flatMask || flatMask.length === 0) {
+    function drawFireMask(mask, ctx, width, colorFn) {
+      if (!mask || mask.length === 0) {
         ctx.clearRect(0, 0, width, width);
         return;
       }
-      const height = Math.floor(flatMask.length / width);
+      // Handle both flat [v, v, ...] and nested [[v, ...], [v, ...]] arrays from Python
+      const is2D = Array.isArray(mask[0]);
+      const height = is2D ? mask.length : Math.floor(mask.length / width);
       ctx.clearRect(0, 0, width, height);
       for (let i = 0; i < height; i++) {
         for (let j = 0; j < width; j++) {
-          const val = flatMask[i * width + j];
+          const val = is2D ? mask[i][j] : mask[i * width + j];
           if (val > 0) {
             ctx.fillStyle = colorFn(val);
             ctx.fillRect(j, i, 1, 1);
@@ -646,8 +704,40 @@
       }
     }
 
+    function getMaskVal(mask, is2D, i, j, width) {
+      if (!mask || mask.length === 0) return 0;
+      return is2D ? (mask[i] ? mask[i][j] || 0 : 0) : (mask[i * width + j] || 0);
+    }
+
+    function drawDeltaMap(inputMask, predMask, ctx, width) {
+      ctx.clearRect(0, 0, width, width);
+      const hasInput = inputMask && inputMask.length > 0;
+      const hasPred = predMask && predMask.length > 0;
+      if (!hasInput && !hasPred) return;
+
+      const in2D = hasInput && Array.isArray(inputMask[0]);
+      const pr2D = hasPred && Array.isArray(predMask[0]);
+
+      for (let i = 0; i < width; i++) {
+        for (let j = 0; j < width; j++) {
+          const inV = getMaskVal(inputMask, in2D, i, j, width) > 0;
+          const prV = getMaskVal(predMask, pr2D, i, j, width) > 0;
+
+          if (inV && prV) {
+            ctx.fillStyle = '#30d158'; // Green: overlap — tracked correctly
+          } else if (prV) {
+            ctx.fillStyle = '#2997ff'; // Blue: new predicted spread
+          } else if (inV) {
+            ctx.fillStyle = '#ff9f0a'; // Orange: contraction / not predicted
+          } else {
+            continue;
+          }
+          ctx.fillRect(j, i, 1, 1);
+        }
+      }
+    }
+
     function currentFireColor(val) { return '#ff453a'; } // Red for input
-    function gtFireColor(val) { return '#00e676'; }      // Green for GT
     function predictedFireColor(val) { return '#2997ff'; } // Blue for Pred
 
     // ============================================================================
@@ -736,9 +826,9 @@
       lastFlightState = flightMode;
 
       // ── UPDATE NEW AI METRICS ──
-      const fireId = state.fire_id !== undefined ? (state.fire_id + 1) : '-';
+      const fireId = state.fire_id !== undefined ? state.fire_id : '-';
       document.getElementById('mission-id').textContent = fireId;
-      document.getElementById('day-id').textContent = state.day_id !== undefined ? (state.day_id + 1) : '-';
+      document.getElementById('day-id').textContent = state.day_id !== undefined ? state.day_id : '-';
       document.getElementById('input-px').textContent = state.input_fire_px !== undefined ? state.input_fire_px : '-';
       document.getElementById('ai-conf').textContent = state.ai_confidence !== undefined ? state.ai_confidence.toFixed(2) : '-';
 
@@ -749,17 +839,37 @@
       }
 
       // Drawing
-      drawFireMask(state.prev_fire_mask || [], ctxCurrent, 64, currentFireColor);
-      drawFireMask(state.predicted_fire_mask || [], ctxPredicted, 64, predictedFireColor);
+      const inputMask = state.prev_fire_mask || [];
+      const predMask = state.predicted_fire_mask || [];
+      drawFireMask(inputMask, ctxCurrent, 64, currentFireColor);
+      drawFireMask(predMask, ctxPredicted, 64, predictedFireColor);
+      drawDeltaMap(inputMask, predMask, ctxDelta, 64);
       if (state.center_of_mass) updateReticle(state.center_of_mass.x, state.center_of_mass.y);
+
+      // IoU Gauge
+      const iou = state.tracking_iou !== undefined ? state.tracking_iou : 0;
+      const iouPct = Math.min(100, Math.round(iou * 100));
+      document.getElementById('iou-val').textContent = iou.toFixed(2);
+      const iouBar = document.getElementById('iou-bar');
+      iouBar.style.width = iouPct + '%';
+      if (iou >= 0.5) {
+        iouBar.style.background = 'var(--ok)';
+        document.getElementById('iou-val').style.color = 'var(--ok)';
+      } else if (iou >= 0.2) {
+        iouBar.style.background = 'var(--warn)';
+        document.getElementById('iou-val').style.color = 'var(--warn)';
+      } else {
+        iouBar.style.background = 'var(--critical)';
+        document.getElementById('iou-val').style.color = 'var(--critical)';
+      }
 
       // Diagnostics
       document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();
       document.getElementById('fire-count').textContent = (state.fire_pixel_count || 0).toLocaleString();
 
       const stmSize = state.history_frames ? state.history_frames.length : 0;
-      document.getElementById('stm-bar').style.width = Math.min(100, (stmSize / 5) * 100) + '%';
-      document.getElementById('stm-label').textContent = `${stmSize} / 5 frames`;
+      document.getElementById('stm-bar').style.width = Math.min(100, (stmSize / 4) * 100) + '%';
+      document.getElementById('stm-label').textContent = `${stmSize} / 4 frames`;
 
       if (Object.keys(env).length > 0) renderTelemetryMatrix(env);
     };

@@ -49,12 +49,13 @@ def main():
     dataset = FireSpreadDataset(
         data_dir=WSTS_EVAL_DIR,
         included_fire_years=[2021],
-        n_leading_observations=5,         
+        n_leading_observations=1,         
         crop_side_length=64,
         load_from_hdf5=True,
         is_train=False,
-        remove_duplicate_features=True, 
-        stats_years=[2018, 2019]
+        remove_duplicate_features=False,
+        stats_years=[2018, 2019],
+        features_to_keep=[0, 1, 2, 3, 4, 38, 39]
     )
 
     dataset_size = len(dataset)
@@ -98,7 +99,7 @@ def main():
             
             for i in indices:
                 x_test, _ = dataset[i]
-                fire_mask = x_test.numpy()[-1, :, :] 
+                fire_mask = x_test.numpy()[0, -1, :, :] 
                 fire_coords = np.argwhere(fire_mask > 0)
                 if len(fire_coords) > max_fire_px:
                     max_fire_px = len(fire_coords)
@@ -114,8 +115,8 @@ def main():
                 x_tensor, _ = dataset[dataset_idx]
                 full_array = x_tensor.numpy().astype(np.float32)
 
-                frame_array = full_array[-40:, :, :]
-                frame_array = frame_array[:, fixed_sy:fixed_sy+64, fixed_sx:fixed_sx+64]
+                # full_array shape: (1, 7, H, W) — squeeze time dim, apply spatial crop
+                frame_array = full_array[0, :, fixed_sy:fixed_sy+64, fixed_sx:fixed_sx+64]
 
                 blob = encode_frame(frame_array)
                 

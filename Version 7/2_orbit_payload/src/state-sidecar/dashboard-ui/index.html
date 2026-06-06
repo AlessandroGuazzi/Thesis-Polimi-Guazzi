@@ -276,7 +276,7 @@
     /* ── TACTICAL GRIDS (CANVAS) ────────────────────────────────── */
     .tactical-grid-container {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: 1fr 1fr;
       gap: var(--space-lg);
     }
 
@@ -470,6 +470,7 @@
     .log-action {
       color: var(--primary-on-dark);
     }
+
     /* ── DELTA ANALYSIS LEGEND ──────────────────────────────────── */
     .delta-legend {
       display: flex;
@@ -515,6 +516,88 @@
       border-radius: var(--rounded-pill);
       transition: width 0.3s ease, background 0.3s ease;
     }
+
+    /* ── THRESHOLD CALIBRATION SLIDER ──────────────────────────── */
+    .calibration-strip {
+      margin-top: var(--space-lg);
+      background: var(--tile-2);
+      border: 1px solid var(--hairline);
+      border-radius: var(--rounded-md);
+      padding: var(--space-md) var(--space-lg);
+      display: flex;
+      align-items: center;
+      gap: var(--space-lg);
+      flex-wrap: wrap;
+    }
+
+    .calibration-strip__label {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--ink-muted-48);
+      white-space: nowrap;
+    }
+
+    .calibration-strip__label strong {
+      color: var(--warn);
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .calibration-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      flex: 1;
+      min-width: 160px;
+      height: 6px;
+      background: linear-gradient(90deg, rgba(255, 255, 255, 0.08), var(--warn), var(--critical));
+      border-radius: var(--rounded-pill);
+      outline: none;
+      cursor: pointer;
+    }
+
+    .calibration-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--on-dark);
+      border: 2px solid var(--warn);
+      box-shadow: 0 0 6px rgba(255, 214, 10, 0.4);
+      cursor: grab;
+      transition: box-shadow 0.2s;
+    }
+
+    .calibration-slider::-webkit-slider-thumb:hover {
+      box-shadow: 0 0 12px rgba(255, 214, 10, 0.7);
+    }
+
+    .calibration-slider::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--on-dark);
+      border: 2px solid var(--warn);
+      box-shadow: 0 0 6px rgba(255, 214, 10, 0.4);
+      cursor: grab;
+    }
+
+    .calibration-iou {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--ink-muted-48);
+    }
+
+    .calibration-iou__val {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--on-dark);
+      min-width: 48px;
+      text-align: right;
+    }
   </style>
 </head>
 
@@ -549,7 +632,8 @@
         <div class="iou-gauge__track">
           <div class="iou-gauge__fill" id="iou-bar" style="width:0%; background:var(--ink-muted-48)"></div>
         </div>
-        <span id="iou-val" style="color: var(--ink-muted-48); font-family: var(--font-mono); font-size: 13px;">0.00</span>
+        <span id="iou-val"
+          style="color: var(--ink-muted-48); font-family: var(--font-mono); font-size: 13px;">0.00</span>
       </div>
     </div>
   </div>
@@ -563,42 +647,43 @@
 
         <div style="display:flex; flex-direction:column; gap:8px;">
           <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
-            <span>Input Hotspots (T-1)</span> <span style="font-family:var(--font-mono)">64x64</span>
+            <span>Input Hotspots (T-1)</span> <span style="font-family:var(--font-mono)">128x128</span>
           </div>
           <div class="canvas-wrapper">
-            <canvas id="canvas-current" width="64" height="64"></canvas>
+            <canvas id="canvas-current" width="128" height="128"></canvas>
           </div>
         </div>
 
-        <div style="display:flex; flex-direction:column; gap:8px;">
-          <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
-            <span>Delta Analysis</span> <span style="font-family:var(--font-mono)">64x64</span>
-          </div>
-          <div class="canvas-wrapper">
-            <canvas id="canvas-delta" width="64" height="64"></canvas>
-          </div>
-          <div class="delta-legend">
-            <div class="delta-legend__item"><div class="delta-legend__swatch" style="background:#30d158"></div>Overlap</div>
-            <div class="delta-legend__item"><div class="delta-legend__swatch" style="background:#2997ff"></div>New Spread</div>
-            <div class="delta-legend__item"><div class="delta-legend__swatch" style="background:#ff9f0a"></div>Contraction</div>
-          </div>
-        </div>
 
         <div style="display:flex; flex-direction:column; gap:8px;">
           <div style="font-size:12px; color:var(--ink-muted-48); display:flex; justify-content:space-between;">
-            <span>CNN Prediction (ResNet-18)</span> <span style="font-family:var(--font-mono)">64x64</span>
+            <span>Heatmap Prediction + GT Overlay</span> <span style="font-family:var(--font-mono)">128×128</span>
           </div>
           <div class="canvas-wrapper">
-            <canvas id="canvas-predicted" width="64" height="64"></canvas>
-            <svg id="com-overlay" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+            <canvas id="canvas-predicted" width="128" height="128"></canvas>
+            <svg id="com-overlay" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
               <g id="reticle-group">
-                <line id="com-h" class="reticle-line" x1="0" y1="32" x2="64" y2="32" />
-                <line id="com-v" class="reticle-line" x1="32" y1="0" x2="32" y2="64" />
-                <circle id="com-dot" class="reticle-center" cx="32" cy="32" r="1.5" />
+                <line id="com-h" class="reticle-line" x1="0" y1="64" x2="128" y2="64" />
+                <line id="com-v" class="reticle-line" x1="64" y1="0" x2="64" y2="128" />
+                <circle id="com-dot" class="reticle-center" cx="64" cy="64" r="3" />
                 <rect id="com-bg" x="33.5" y="28.5" width="18" height="3" fill="var(--surface-black)" rx="0.5" />
                 <text id="com-text" class="reticle-text" x="34" y="31">X:-- Y:--</text>
               </g>
             </svg>
+          </div>
+        </div>
+
+        <!-- THRESHOLD CALIBRATION SLIDER -->
+        <div class="calibration-strip" style="grid-column: 1 / -1;">
+          <div class="calibration-strip__label">🎚️ THRESHOLD: <strong id="threshold-display">0.50</strong></div>
+          <input type="range" id="threshold-slider" class="calibration-slider" min="0.0" max="1.0" step="0.05"
+            value="0.5">
+          <div class="calibration-iou">
+            🎯 IoU (Calibrated):
+            <div class="iou-gauge__track" style="width:80px">
+              <div class="iou-gauge__fill" id="cal-iou-bar" style="width:0%; background:var(--ink-muted-48)"></div>
+            </div>
+            <span class="calibration-iou__val" id="cal-iou-val">--</span>
           </div>
         </div>
 
@@ -682,7 +767,13 @@
     // ============================================================================
     const ctxCurrent = document.getElementById('canvas-current').getContext('2d');
     const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
-    const ctxDelta = document.getElementById('canvas-delta').getContext('2d');
+
+    // ==========================================================================
+    // PREDICTION BUFFER (Temporal Alignment: T-day prediction vs T+1-day truth)
+    // ==========================================================================
+    let predictionBuffer = null;  // Stores 128x128 probability matrix from previous SSE cycle
+    let inputHotspotsBuffer = null; // Stores yesterday's real fire mask (the input to yesterday's prediction)
+    let currentGroundTruth = null; // Stores the current day's real fire mask for IoU
 
     function drawFireMask(mask, ctx, width, colorFn) {
       if (!mask || mask.length === 0) {
@@ -704,48 +795,179 @@
       }
     }
 
-    function getMaskVal(mask, is2D, i, j, width) {
-      if (!mask || mask.length === 0) return 0;
-      return is2D ? (mask[i] ? mask[i][j] || 0 : 0) : (mask[i * width + j] || 0);
+
+
+    function currentFireColor(val) { return '#ff453a'; } // Red for input
+
+    // ==========================================================================
+    // HSL → RGB CONVERSION HELPER (for ImageData pixel buffer)
+    // ==========================================================================
+    function hslToRgb(h, s, l) {
+      s /= 100;
+      l /= 100;
+      let c = (1 - Math.abs(2 * l - 1)) * s;
+      let x = c * (1 - Math.abs((h / 60) % 2 - 1));
+      let m = l - c / 2;
+      let r = 0, g = 0, b = 0;
+      if (0 <= h && h < 60) { r = c; g = x; b = 0; }
+      else if (60 <= h && h < 120) { r = x; g = c; b = 0; }
+      else if (120 <= h && h < 180) { r = 0; g = c; b = x; }
+      else if (180 <= h && h < 240) { r = 0; g = x; b = c; }
+      else if (240 <= h && h < 300) { r = x; g = 0; b = c; }
+      else if (300 <= h && h < 360) { r = c; g = 0; b = x; }
+      return [
+        Math.round((r + m) * 255),
+        Math.round((g + m) * 255),
+        Math.round((b + m) * 255)
+      ];
     }
 
-    function drawDeltaMap(inputMask, predMask, ctx, width) {
+    // ==========================================================================
+    // HEATMAP RENDERING (ImageData Direct Pixel Manipulation)
+    // ==========================================================================
+    function drawHeatmap(probMask, ctx, width, threshold) {
       ctx.clearRect(0, 0, width, width);
-      const hasInput = inputMask && inputMask.length > 0;
-      const hasPred = predMask && predMask.length > 0;
-      if (!hasInput && !hasPred) return;
-
-      const in2D = hasInput && Array.isArray(inputMask[0]);
-      const pr2D = hasPred && Array.isArray(predMask[0]);
-
+      if (!probMask || probMask.length === 0) return;
+      const is2D = Array.isArray(probMask[0]);
+      const imgData = ctx.createImageData(width, width);
+      const data = imgData.data;
       for (let i = 0; i < width; i++) {
         for (let j = 0; j < width; j++) {
-          const inV = getMaskVal(inputMask, in2D, i, j, width) > 0;
-          const prV = getMaskVal(predMask, pr2D, i, j, width) > 0;
-
-          if (inV && prV) {
-            ctx.fillStyle = '#30d158'; // Green: overlap — tracked correctly
-          } else if (prV) {
-            ctx.fillStyle = '#2997ff'; // Blue: new predicted spread
-          } else if (inV) {
-            ctx.fillStyle = '#ff9f0a'; // Orange: contraction / not predicted
-          } else {
+          const p = is2D ? probMask[i][j] : probMask[i * width + j];
+          const idx = (i * width + j) * 4;
+          // Dynamic Threshold Alignment: hide pixels below the active threshold
+          if (p < threshold || p < 0.1) {
+            data[idx + 3] = 0; // fully transparent
             continue;
           }
-          ctx.fillRect(j, i, 1, 1);
+          // Compute HSL color from probability
+          let hue, sat, lum, alpha;
+          if (p < 0.5) {
+            const t = (p - 0.1) / 0.4;
+            hue = 60 - t * 30;       // 60 (yellow) → 30 (orange)
+            sat = 90 + t * 10;       // 90% → 100%
+            lum = 55 - t * 10;       // 55% → 45%
+            alpha = 0.4 + t * 0.35;  // 0.4 → 0.75
+          } else {
+            const t = (p - 0.5) / 0.5;
+            hue = 30 - t * 30;       // 30 (orange) → 0 (red)
+            sat = 100;
+            lum = 45 - t * 15;       // 45% → 30%
+            alpha = 0.75 + t * 0.25; // 0.75 → 1.0
+          }
+          const [r, g, b] = hslToRgb(hue, sat, lum);
+          data[idx] = r;
+          data[idx + 1] = g;
+          data[idx + 2] = b;
+          data[idx + 3] = Math.round(alpha * 255);
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    // ==========================================================================
+    // CONTOUR OVERLAY (Ground Truth perimeter drawing)
+    // ==========================================================================
+    function drawContour(fireMask, ctx, width, color) {
+      if (!fireMask || fireMask.length === 0) return;
+      const is2D = Array.isArray(fireMask[0]);
+      ctx.fillStyle = color;
+      for (let i = 0; i < width; i++) {
+        for (let j = 0; j < width; j++) {
+          const val = is2D ? fireMask[i][j] : fireMask[i * width + j];
+          if (val <= 0) continue;
+          // Check if this pixel is on the perimeter (at least one neighbor is 0 or border)
+          let isEdge = false;
+          const neighbors = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+          for (const [di, dj] of neighbors) {
+            const ni = i + di, nj = j + dj;
+            if (ni < 0 || ni >= width || nj < 0 || nj >= width) { isEdge = true; break; }
+            const nVal = is2D ? fireMask[ni][nj] : fireMask[ni * width + nj];
+            if (nVal <= 0) { isEdge = true; break; }
+          }
+          if (isEdge) ctx.fillRect(j, i, 1, 1);
         }
       }
     }
 
-    function currentFireColor(val) { return '#ff453a'; } // Red for input
-    function predictedFireColor(val) { return '#2997ff'; } // Blue for Pred
+    // ==========================================================================
+    // DYNAMIC IoU CALCULATION (Client-Side, Threshold-Based)
+    // ==========================================================================
+    function computeIoU(probMask, truthMask, threshold, width) {
+      if (!probMask || probMask.length === 0 || !truthMask || truthMask.length === 0) return -1;
+      const pIs2D = Array.isArray(probMask[0]);
+      const tIs2D = Array.isArray(truthMask[0]);
+      let intersection = 0, union = 0;
+      for (let i = 0; i < width; i++) {
+        for (let j = 0; j < width; j++) {
+          const pVal = (pIs2D ? probMask[i][j] : probMask[i * width + j]) >= threshold ? 1 : 0;
+          const tVal = (tIs2D ? truthMask[i][j] : truthMask[i * width + j]) > 0 ? 1 : 0;
+          if (pVal && tVal) intersection++;
+          if (pVal || tVal) union++;
+        }
+      }
+      return union > 0 ? intersection / union : 0;
+    }
+
+    // ==========================================================================
+    // THRESHOLD SLIDER EVENT
+    // ==========================================================================
+    const thresholdSlider = document.getElementById('threshold-slider');
+    const thresholdDisplay = document.getElementById('threshold-display');
+    const calIouBar = document.getElementById('cal-iou-bar');
+    const calIouVal = document.getElementById('cal-iou-val');
+
+    function updateCalibrationIoU() {
+      const threshold = parseFloat(thresholdSlider.value);
+      thresholdDisplay.textContent = threshold.toFixed(2);
+
+      // ── Always redraw the heatmap with the current threshold ──
+      if (predictionBuffer && predictionBuffer.length > 0) {
+        drawHeatmap(predictionBuffer, ctxPredicted, 128, threshold);
+        // Re-overlay the ground truth contour on top of the thresholded heatmap
+        if (currentGroundTruth && currentGroundTruth.length > 0) {
+          drawContour(currentGroundTruth, ctxPredicted, 128, '#30d158');
+        }
+      } else {
+        ctxPredicted.clearRect(0, 0, 128, 128);
+      }
+
+      // ── Compute and display the calibrated IoU ──
+      if (!predictionBuffer || !currentGroundTruth) {
+        calIouVal.textContent = '--';
+        calIouBar.style.width = '0%';
+        calIouBar.style.background = 'var(--ink-muted-48)';
+        return;
+      }
+      const iou = computeIoU(predictionBuffer, currentGroundTruth, threshold, 128);
+      if (iou < 0) {
+        calIouVal.textContent = '--';
+        calIouBar.style.width = '0%';
+        return;
+      }
+      const iouPct = Math.min(100, Math.round(iou * 100));
+      calIouVal.textContent = iou.toFixed(2);
+      calIouBar.style.width = iouPct + '%';
+      if (iou >= 0.5) {
+        calIouBar.style.background = 'var(--ok)';
+        calIouVal.style.color = 'var(--ok)';
+      } else if (iou >= 0.2) {
+        calIouBar.style.background = 'var(--warn)';
+        calIouVal.style.color = 'var(--warn)';
+      } else {
+        calIouBar.style.background = 'var(--critical)';
+        calIouVal.style.color = 'var(--critical)';
+      }
+    }
+
+    thresholdSlider.addEventListener('input', updateCalibrationIoU);
 
     // ============================================================================
     // RETICLE LOGIC
     // ============================================================================
     function updateReticle(comX, comY) {
-      const x = Math.max(0, Math.min(63, comX || 32));
-      const y = Math.max(0, Math.min(63, comY || 32));
+      const x = Math.max(0, Math.min(127, comX || 64));
+      const y = Math.max(0, Math.min(127, comY || 64));
 
       document.getElementById('com-h').setAttribute('y1', y);
       document.getElementById('com-h').setAttribute('y2', y);
@@ -836,17 +1058,39 @@
       if (state.fire_id !== undefined && state.fire_id !== lastMissionId) {
         sysLog(`Target Lock Acquired: Mission ${fireId} isolated.`, 'log-action');
         lastMissionId = state.fire_id;
+        predictionBuffer = null;
+        inputHotspotsBuffer = null;
       }
 
-      // Drawing
+      // ── TEMPORAL BUFFER LOGIC ──
+      // 1. Current ground truth = prev_fire_mask from today's SSE frame (AF_T+1)
       const inputMask = state.prev_fire_mask || [];
-      const predMask = state.predicted_fire_mask || [];
-      drawFireMask(inputMask, ctxCurrent, 64, currentFireColor);
-      drawFireMask(predMask, ctxPredicted, 64, predictedFireColor);
-      drawDeltaMap(inputMask, predMask, ctxDelta, 64);
+      currentGroundTruth = inputMask;
+
+      // 2. Snapshot yesterday's input hotspots before overwriting
+      const yesterdayInput = inputHotspotsBuffer;
+
+      // 3. New probability prediction arriving now (for tomorrow's comparison)
+      const newProbMask = state.predicted_probability_mask || [];
+
+      // ── CANVAS: Input Hotspots (shows AF_T, the input to the prediction yesterday) ──
+      if (yesterdayInput && yesterdayInput.length > 0) {
+        drawFireMask(yesterdayInput, ctxCurrent, 128, currentFireColor);
+      } else {
+        // Fall back to current inputMask on first frame
+        drawFireMask(inputMask, ctxCurrent, 128, currentFireColor);
+      }
+
+      // ── Reticle ──
       if (state.center_of_mass) updateReticle(state.center_of_mass.x, state.center_of_mass.y);
 
-      // IoU Gauge
+      // 4. Update temporal buffers for next cycle
+      if (newProbMask.length > 0) {
+        predictionBuffer = newProbMask;
+      }
+      inputHotspotsBuffer = inputMask;
+
+      // ── IoU Gauge (server-side tracking IoU) ──
       const iou = state.tracking_iou !== undefined ? state.tracking_iou : 0;
       const iouPct = Math.min(100, Math.round(iou * 100));
       document.getElementById('iou-val').textContent = iou.toFixed(2);
@@ -862,6 +1106,9 @@
         iouBar.style.background = 'var(--critical)';
         document.getElementById('iou-val').style.color = 'var(--critical)';
       }
+
+      // ── Centralized rendering: heatmap + contour + calibrated IoU ──
+      updateCalibrationIoU();
 
       // Diagnostics
       document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();

@@ -16,8 +16,8 @@ import onnxruntime as ort
 
 GUARDIAN_URL = os.getenv("STATE_ENDPOINT", "http://localhost:80")
 UDP_PORT = 5005
-GRID_W = 64
-GRID_H = 64
+GRID_W = 128
+GRID_H = 128
 CHANNELS_PER_DAY = 7    # 7 features per day (post-preprocessing, vegetation-only)
 TOTAL_CHANNELS = 35     # 7 features × 5 days (assembled from Guardian FIFO + current frame)
 
@@ -41,7 +41,7 @@ except Exception as e:
 def compute_center_of_mass(pred_2d):
     fire_coords = np.argwhere(pred_2d == 1)
     if len(fire_coords) == 0:
-        return {"x": 32.0, "y": 32.0}
+        return {"x": 64.0, "y": 64.0}
     return {"x": float(fire_coords[:, 1].mean()), "y": float(fire_coords[:, 0].mean())}
 
 def assemble_35_channels(history_tensors, current_frame):
@@ -102,7 +102,8 @@ def process_frame(frame_array, fire_id, day_id):
             "metrics": {
                 "prev_fire_mask": prev_fire_mask.tolist(),
                 "predicted_fire_mask": [],
-                "center_of_mass": {"x": 32.0, "y": 32.0},
+                "predicted_probability_mask": [],
+                "center_of_mass": {"x": 64.0, "y": 64.0},
                 "fire_pixel_count": 0,
                 "sample_count": sample_count + 1,
                 "fire_id": fire_id + 1,
@@ -125,29 +126,36 @@ def process_frame(frame_array, fire_id, day_id):
         output_name = session.get_outputs()[0].name
         logits = session.run([output_name], {input_name: input_tensor})[0]
 
-        pred_mask = (logits > CALIBRATION_THRESHOLD).astype(int)[0, 0]
-        max_logit = float(np.max(logits))
+        # Sigmoid: convert raw logits to continuous probabilities [0.0, 1.0]
+        prob_mask = 1.0 / (1.0 + np.exp(-logits.astype(np.float64)))
+        prob_mask = prob_mask.astype(np.float32)[0, 0]  # (128, 128) float32
+
+        # Binary mask at fixed threshold 0.5 for debug logging & CoM
+        DEBUG_THRESHOLD = 0.5
+        pred_mask = (prob_mask >= DEBUG_THRESHOLD).astype(int)
+        max_prob = float(np.max(prob_mask))
         fire_pixel_count = int(np.sum(pred_mask))
         com = compute_center_of_mass(pred_mask)
 
-        # Tracking IoU: spatial overlap between input fire (T-1) and predicted fire (T)
+        # Tracking IoU at debug threshold (console only)
         intersection = int(np.sum((prev_fire_mask == 1) & (pred_mask == 1)))
         union = int(np.sum((prev_fire_mask == 1) | (pred_mask == 1)))
         tracking_iou = round(intersection / union, 4) if union > 0 else 0.0
 
-        print(f"✅ WORKER [Incendio {fire_id+1} | Giorno {day_id+1}] | Input: {input_fire_px} px -> Previsto: {fire_pixel_count} px (Conf: {max_logit:.2f}, IoU: {tracking_iou:.2f})", flush=True)
+        print(f"✅ WORKER [Incendio {fire_id+1} | Giorno {day_id+1}] | Input: {input_fire_px} px -> Previsto: {fire_pixel_count} px (MaxProb: {max_prob:.4f}, IoU@0.5: {tracking_iou:.2f})", flush=True)
         payload = {
             "new_frame": current_b64,
             "metrics": {
                 "prev_fire_mask": prev_fire_mask.tolist(),
                 "predicted_fire_mask": pred_mask.tolist(),
+                "predicted_probability_mask": prob_mask.tolist(),
                 "center_of_mass": com,
                 "fire_pixel_count": fire_pixel_count,
                 "sample_count": sample_count + 1,
                 "fire_id": fire_id + 1,
                 "day_id": day_id + 1,
                 "input_fire_px": input_fire_px,
-                "ai_confidence": round(max_logit, 2),
+                "ai_confidence": round(max_prob, 4),
                 "tracking_iou": tracking_iou
             }
         }

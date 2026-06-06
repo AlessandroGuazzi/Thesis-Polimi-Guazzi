@@ -30,8 +30,9 @@ app.get('/', (req, res) => {
 let guardianMemory = {
     history_frames: [], // FIFO rolling buffer: last 4 past days (7-ch frames, ~610 KB total)
     predicted_fire_mask: [],
+    predicted_probability_mask: [],  // 128x128 float [0.0–1.0] continuous probability map
     prev_fire_mask: [],
-    center_of_mass: { x: 32, y: 32 },
+    center_of_mass: { x: 64, y: 64 },
     fire_pixel_count: 0,
     sample_count: 0,
     migration_epoch: 0,
@@ -121,7 +122,8 @@ app.post('/state', (req, res) => {
 
         guardianMemory.prev_fire_mask = metrics.prev_fire_mask || [];
         guardianMemory.predicted_fire_mask = metrics.predicted_fire_mask || [];
-        guardianMemory.center_of_mass = metrics.center_of_mass || { x: 32, y: 32 };
+        guardianMemory.predicted_probability_mask = metrics.predicted_probability_mask || [];
+        guardianMemory.center_of_mass = metrics.center_of_mass || { x: 64, y: 64 };
         guardianMemory.fire_pixel_count = metrics.fire_pixel_count || 0;
         guardianMemory.sample_count = (metrics.sample_count !== undefined) ? metrics.sample_count : (guardianMemory.sample_count + 1);
 
@@ -208,7 +210,7 @@ setInterval(() => {
         broadcastToClients();
 
         const agentState = {
-            center_of_mass: guardianMemory.center_of_mass || { x: 32, y: 32 },
+            center_of_mass: guardianMemory.center_of_mass || { x: 64, y: 64 },
             fire_pixel_count: guardianMemory.fire_pixel_count || 0,
             last_migration_time: payloadLastLandedTime
         };

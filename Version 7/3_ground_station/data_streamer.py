@@ -27,7 +27,7 @@ except ImportError as e:
 
 WSTS_EVAL_DIR = os.getenv("WSTS_EVAL_DIR", os.path.join(CURRENT_DIR, "evaluation_data"))
 WORKER_UDP_NODEPORT = 32005
-STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "2.0"))
+STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "3.0"))
 CHUNK_SIZE = 60_000
 
 def get_minikube_ip() -> str:
@@ -50,7 +50,7 @@ def main():
         data_dir=WSTS_EVAL_DIR,
         included_fire_years=[2021],
         n_leading_observations=1,         
-        crop_side_length=64,
+        crop_side_length=128,
         load_from_hdf5=True,
         is_train=False,
         remove_duplicate_features=False,
@@ -106,8 +106,8 @@ def main():
                     best_cy = int(fire_coords[:, 0].mean())
                     best_cx = int(fire_coords[:, 1].mean())
                     
-            fixed_sy = max(0, min(fire_mask.shape[0] - 64, best_cy - 32))
-            fixed_sx = max(0, min(fire_mask.shape[1] - 64, best_cx - 32))
+            fixed_sy = max(0, min(fire_mask.shape[0] - 128, best_cy - 64))
+            fixed_sx = max(0, min(fire_mask.shape[1] - 128, best_cx - 64))
             print(f"🎯 Ottica bloccata sull'epicentro (Max Estensione: {max_fire_px} px).")
             print(f"📡 Inizio trasmissione di {len(indices)} giorni sequenziali...\n")
             
@@ -116,7 +116,7 @@ def main():
                 full_array = x_tensor.numpy().astype(np.float32)
 
                 # full_array shape: (1, 7, H, W) — squeeze time dim, apply spatial crop
-                frame_array = full_array[0, :, fixed_sy:fixed_sy+64, fixed_sx:fixed_sx+64]
+                frame_array = full_array[0, :, fixed_sy:fixed_sy+128, fixed_sx:fixed_sx+128]
 
                 blob = encode_frame(frame_array)
                 

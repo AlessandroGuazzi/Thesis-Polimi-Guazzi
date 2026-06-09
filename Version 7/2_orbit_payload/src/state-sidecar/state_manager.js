@@ -79,8 +79,15 @@ function initRedisSub() {
 // SERVER / SSE
 // ---------------------------------------------------------------------------
 function broadcastToClients() {
+    // Build a lightweight copy of guardianMemory without the heavy history_frames.
+    // Replace the ~600 KB array with a simple integer for the progress bar.
+    const liteState = Object.assign({}, guardianMemory, {
+        history_count: guardianMemory.history_frames.length
+    });
+    delete liteState.history_frames;
+
     const payload = {
-        internal_state: guardianMemory,
+        internal_state: liteState,
         environment: fleetState,
         flight_mode: flightMode,
         guardian_id: process.env.HOSTNAME || "GUARDIAN-UNKNOWN"
@@ -104,17 +111,40 @@ app.get('/state', (req, res) => {
     res.json(guardianMemory);
 });
 
+// Dedicated lightweight endpoint: returns only the history frames and sample_count.
+// Used by the Python worker before inference to avoid parsing heavy prediction masks.
+// FIRE ISOLATION: If the worker's fire_id differs from the stored one, flush the
+// entire state *before* responding, so the worker sees an empty cache and enters warm-up.
+app.get('/state/history', (req, res) => {
+    const incomingFireId = parseInt(req.query.fire_id, 10) || 0;
+    if (incomingFireId !== 0 && guardianMemory.fire_id !== 0 && incomingFireId !== guardianMemory.fire_id) {
+        console.log(`🔥 GUARDIAN: New fire mission detected (${guardianMemory.fire_id} → ${incomingFireId}). Flushing state.`);
+        guardianMemory.history_frames = [];
+        guardianMemory.predicted_fire_mask = [];
+        guardianMemory.predicted_probability_mask = [];
+        guardianMemory.prev_fire_mask = [];
+        guardianMemory.center_of_mass = { x: 64, y: 64 };
+        guardianMemory.fire_pixel_count = 0;
+        guardianMemory.sample_count = 0;
+        guardianMemory.ai_confidence = 0;
+        guardianMemory.tracking_iou = 0;
+        guardianMemory.fire_id = incomingFireId;
+        guardianMemory.day_id = 0;
+        guardianMemory.input_fire_px = 0;
+        guardianMemory.status = "WAITING_PAYLOAD";
+        // Broadcast cleared state so the dashboard resets visuals immediately
+        broadcastToClients();
+    }
+    res.json({
+        history_frames: guardianMemory.history_frames,
+        sample_count: guardianMemory.sample_count
+    });
+});
+
 // IL WORKER PYTHON INVIA I DATI QUI
 app.post('/state', (req, res) => {
     const { new_frame, metrics } = req.body;
     if (new_frame && metrics) {
-        // FIRE ISOLATION: Reset FIFO buffer when a new fire mission begins
-        const incomingFireId = metrics.fire_id || 0;
-        if (incomingFireId !== guardianMemory.fire_id && guardianMemory.fire_id !== 0) {
-            console.log(`🔥 GUARDIAN: New fire mission detected (${guardianMemory.fire_id} → ${incomingFireId}). Flushing history buffer.`);
-            guardianMemory.history_frames = [];
-        }
-
         guardianMemory.history_frames.push(new_frame);
         if (guardianMemory.history_frames.length > 4) {
             guardianMemory.history_frames.shift(); // FIFO T=4 (Worker brings the 5th day)
@@ -136,6 +166,9 @@ app.post('/state', (req, res) => {
 
         guardianMemory.status = "TRACKING_ACTIVE";
         guardianMemory.last_contact = Date.now();
+
+        // Event-driven broadcast: push to dashboard only when new data arrives
+        broadcastToClients();
 
         res.sendStatus(200);
     } else {
@@ -204,11 +237,9 @@ startServer();
 initRedisSub();
 setupWatcher();
 
-// PACEMAKER (500ms)
+// HOUSEKEEPING (500ms) – lightweight file I/O only, NO SSE broadcast
 setInterval(() => {
     if (!flightMode) {
-        broadcastToClients();
-
         const agentState = {
             center_of_mass: guardianMemory.center_of_mass || { x: 64, y: 64 },
             fire_pixel_count: guardianMemory.fire_pixel_count || 0,

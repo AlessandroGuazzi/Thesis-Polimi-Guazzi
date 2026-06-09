@@ -780,13 +780,11 @@
         ctx.clearRect(0, 0, width, width);
         return;
       }
-      // Handle both flat [v, v, ...] and nested [[v, ...], [v, ...]] arrays from Python
-      const is2D = Array.isArray(mask[0]);
-      const height = is2D ? mask.length : Math.floor(mask.length / width);
+      const height = Math.floor(mask.length / width);
       ctx.clearRect(0, 0, width, height);
       for (let i = 0; i < height; i++) {
         for (let j = 0; j < width; j++) {
-          const val = is2D ? mask[i][j] : mask[i * width + j];
+          const val = mask[i * width + j];
           if (val > 0) {
             ctx.fillStyle = colorFn(val);
             ctx.fillRect(j, i, 1, 1);
@@ -828,12 +826,11 @@
     function drawHeatmap(probMask, ctx, width, threshold) {
       ctx.clearRect(0, 0, width, width);
       if (!probMask || probMask.length === 0) return;
-      const is2D = Array.isArray(probMask[0]);
       const imgData = ctx.createImageData(width, width);
       const data = imgData.data;
       for (let i = 0; i < width; i++) {
         for (let j = 0; j < width; j++) {
-          const p = is2D ? probMask[i][j] : probMask[i * width + j];
+          const p = probMask[i * width + j];
           const idx = (i * width + j) * 4;
           // Dynamic Threshold Alignment: hide pixels below the active threshold
           if (p < threshold || p < 0.1) {
@@ -842,18 +839,18 @@
           }
           // Compute HSL color from probability
           let hue, sat, lum, alpha;
-          if (p < 0.5) {
-            const t = (p - 0.1) / 0.4;
-            hue = 60 - t * 30;       // 60 (yellow) → 30 (orange)
-            sat = 90 + t * 10;       // 90% → 100%
-            lum = 55 - t * 10;       // 55% → 45%
-            alpha = 0.4 + t * 0.35;  // 0.4 → 0.75
+          if (p < 0.9) {
+            const t = (p - 0.1) / 0.8;
+            hue = 60 - t * 45;       // 60 (yellow) → 15 (orange-red)
+            sat = 80 + t * 20;       // 80% → 100%
+            lum = 65 - t * 20;       // 65% (lighter yellow) → 45% (orange-red)
+            alpha = 0.3 + t * 0.55;  // 0.3 → 0.85
           } else {
-            const t = (p - 0.5) / 0.5;
-            hue = 30 - t * 30;       // 30 (orange) → 0 (red)
+            const t = (p - 0.9) / 0.1;
+            hue = 15 - t * 15;       // 15 (orange-red) → 0 (dense red)
             sat = 100;
             lum = 45 - t * 15;       // 45% → 30%
-            alpha = 0.75 + t * 0.25; // 0.75 → 1.0
+            alpha = 0.85 + t * 0.15; // 0.85 → 1.0
           }
           const [r, g, b] = hslToRgb(hue, sat, lum);
           data[idx] = r;
@@ -870,11 +867,10 @@
     // ==========================================================================
     function drawContour(fireMask, ctx, width, color) {
       if (!fireMask || fireMask.length === 0) return;
-      const is2D = Array.isArray(fireMask[0]);
       ctx.fillStyle = color;
       for (let i = 0; i < width; i++) {
         for (let j = 0; j < width; j++) {
-          const val = is2D ? fireMask[i][j] : fireMask[i * width + j];
+          const val = fireMask[i * width + j];
           if (val <= 0) continue;
           // Check if this pixel is on the perimeter (at least one neighbor is 0 or border)
           let isEdge = false;
@@ -882,7 +878,7 @@
           for (const [di, dj] of neighbors) {
             const ni = i + di, nj = j + dj;
             if (ni < 0 || ni >= width || nj < 0 || nj >= width) { isEdge = true; break; }
-            const nVal = is2D ? fireMask[ni][nj] : fireMask[ni * width + nj];
+            const nVal = fireMask[ni * width + nj];
             if (nVal <= 0) { isEdge = true; break; }
           }
           if (isEdge) ctx.fillRect(j, i, 1, 1);
@@ -895,13 +891,11 @@
     // ==========================================================================
     function computeIoU(probMask, truthMask, threshold, width) {
       if (!probMask || probMask.length === 0 || !truthMask || truthMask.length === 0) return -1;
-      const pIs2D = Array.isArray(probMask[0]);
-      const tIs2D = Array.isArray(truthMask[0]);
       let intersection = 0, union = 0;
       for (let i = 0; i < width; i++) {
         for (let j = 0; j < width; j++) {
-          const pVal = (pIs2D ? probMask[i][j] : probMask[i * width + j]) >= threshold ? 1 : 0;
-          const tVal = (tIs2D ? truthMask[i][j] : truthMask[i * width + j]) > 0 ? 1 : 0;
+          const pVal = probMask[i * width + j] >= threshold ? 1 : 0;
+          const tVal = truthMask[i * width + j] > 0 ? 1 : 0;
           if (pVal && tVal) intersection++;
           if (pVal || tVal) union++;
         }
@@ -1114,7 +1108,7 @@
       document.getElementById('sample-count').textContent = (state.sample_count || 0).toLocaleString();
       document.getElementById('fire-count').textContent = (state.fire_pixel_count || 0).toLocaleString();
 
-      const stmSize = state.history_frames ? state.history_frames.length : 0;
+      const stmSize = state.history_count !== undefined ? state.history_count : 0;
       document.getElementById('stm-bar').style.width = Math.min(100, (stmSize / 4) * 100) + '%';
       document.getElementById('stm-label').textContent = `${stmSize} / 4 frames`;
 

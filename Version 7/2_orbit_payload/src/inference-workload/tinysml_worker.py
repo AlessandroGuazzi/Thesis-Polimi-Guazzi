@@ -65,24 +65,24 @@ def process_frame(frame_array, fire_id, day_id):
     # ① Fetch temporal history with exponential backoff (CRIU freeze resilience)
     MAX_RETRIES = 3
     RETRY_BASE_DELAY = 0.5  # seconds
-    state = None
+    history_resp = None
     for attempt in range(MAX_RETRIES):
         try:
-            resp = requests.get(f"{GUARDIAN_URL}/state", timeout=2)
+            resp = requests.get(f"{GUARDIAN_URL}/state/history", params={"fire_id": fire_id + 1}, timeout=2)
             if resp.status_code == 200:
-                state = resp.json()
+                history_resp = resp.json()
                 break
         except Exception:
             delay = RETRY_BASE_DELAY * (2 ** attempt)
             print(f"⚠️ WORKER: Guardian unreachable (attempt {attempt+1}/{MAX_RETRIES}). Retrying in {delay:.1f}s...", flush=True)
             time.sleep(delay)
 
-    if state is None:
+    if history_resp is None:
         print(f"🚨 WORKER: Guardian offline after {MAX_RETRIES} retries. Dropping frame to preserve stateless integrity.", flush=True)
         return
 
-    history_b64 = state.get("history_frames", [])
-    sample_count = state.get("sample_count", 0)
+    history_b64 = history_resp.get("history_frames", [])
+    sample_count = history_resp.get("sample_count", 0)
 
     # Extract basic input metrics (available in both phases)
     prev_fire_mask = (frame_array[6, :, :] > 0).astype(int)
@@ -100,7 +100,7 @@ def process_frame(frame_array, fire_id, day_id):
         payload = {
             "new_frame": current_b64,
             "metrics": {
-                "prev_fire_mask": prev_fire_mask.tolist(),
+                "prev_fire_mask": prev_fire_mask.flatten().tolist(),
                 "predicted_fire_mask": [],
                 "predicted_probability_mask": [],
                 "center_of_mass": {"x": 64.0, "y": 64.0},
@@ -146,9 +146,9 @@ def process_frame(frame_array, fire_id, day_id):
         payload = {
             "new_frame": current_b64,
             "metrics": {
-                "prev_fire_mask": prev_fire_mask.tolist(),
-                "predicted_fire_mask": pred_mask.tolist(),
-                "predicted_probability_mask": prob_mask.tolist(),
+                "prev_fire_mask": prev_fire_mask.flatten().tolist(),
+                "predicted_fire_mask": pred_mask.flatten().tolist(),
+                "predicted_probability_mask": np.round(prob_mask, 2).flatten().tolist(),
                 "center_of_mass": com,
                 "fire_pixel_count": fire_pixel_count,
                 "sample_count": sample_count + 1,

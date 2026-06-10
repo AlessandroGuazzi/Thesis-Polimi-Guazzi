@@ -42,9 +42,9 @@ B_SAFE = float(os.getenv("B_SAFE", "15.0"))   # Below this → predictive energy
 B_FUSE = float(os.getenv("B_FUSE", "5.0"))    # At or below this → critical shutdown danger
 
 # Lateral tracking threshold for Trigger B (pixels from grid edge)
-# If Center of Mass X coordinate goes below this OR above (64 - this), trigger
+# If Center of Mass X coordinate goes below this OR above (128 - this), trigger
 LATERAL_THRESHOLD = int(os.getenv("LATERAL_THRESHOLD", "8"))
-GRID_W = 64  # Width of the satellite's visual swath (matches the worker's GRID_W)
+GRID_W = 128  # Width of the satellite's visual swath (matches the worker's GRID_W)
 
 # Telemetry delta thresholds: only push to Floating Master if value changed enough
 DELTA_TEMP    = 1.0   # Degrees Celsius
@@ -609,7 +609,7 @@ def _rebuild_and_deploy(tar_path):
             # where a new migration could fire against a still-frozen Guardian.
             probe = subprocess.run(
                 f"kubectl exec {pod_name} -c sidecar-guardian -- "
-                f"wget -q -O /dev/null --timeout=1 http://localhost:80/state",
+                f"wget -q -O /dev/null --timeout=1 http://localhost:80/",
                 shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
             )
             if probe.returncode == 0:
@@ -670,6 +670,15 @@ def _rebuild_and_deploy_master(tar_path):
 
 def main():
     print(f"🚀 NODE AGENT V6 ONLINE — satellite: {NODE_NAME}", flush=True)
+
+    # Clean up stale IPC files from previous interrupted runs
+    for stale_file in ["/tmp/relay_complete", "/tmp/checkpoint.tar", "/tmp/payload_state.json"]:
+        try:
+            if os.path.exists(stale_file):
+                os.remove(stale_file)
+                print(f"🧹 AGENT: Cleaned stale IPC file: {stale_file}", flush=True)
+        except Exception:
+            pass
 
     topology_redis = None
     while not topology_redis:

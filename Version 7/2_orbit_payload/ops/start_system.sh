@@ -100,12 +100,20 @@ kubectl wait --for=condition=ready pod -l app=topology-master --timeout=90s > /d
 echo -e "${YELLOW}[4/6] Opening communication uplinks...${NC}"
 
 # Ground Redis telemetry bus
-kubectl port-forward svc/ground-redis 6379:6379 > /dev/null 2>&1 &
-sleep 1
+(
+    while true; do
+        kubectl port-forward svc/ground-redis 6379:6379 > /dev/null 2>&1
+        sleep 1
+    done
+) &
 
 # Floating Master topology store
-kubectl port-forward svc/topology-master 6380:6379 > /dev/null 2>&1 &
-sleep 1
+(
+    while true; do
+        kubectl port-forward svc/topology-master 6380:6379 > /dev/null 2>&1
+        sleep 1
+    done
+) &
 
 # Guardian SML Payload Dashboard
 (

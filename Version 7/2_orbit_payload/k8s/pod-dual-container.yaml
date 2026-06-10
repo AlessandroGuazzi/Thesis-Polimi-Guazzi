@@ -91,10 +91,10 @@ spec:
           resources:
             requests:
               cpu: "50m"
-              memory: "64Mi"
+              memory: "256Mi"
             limits:
               cpu: "200m"
-              memory: "128Mi"
+              memory: "512Mi"
 
         # -----------------------------------------------------------
         # 2. PHOENIX (Stateless Phoenix Worker — ResNet-18 CNN)
@@ -119,7 +119,7 @@ spec:
           resources:
             requests:
               cpu: "500m"
-              memory: "256Mi"
+              memory: "512Mi"
             limits:
               cpu: "2000m"
-              memory: "256Mi"
+              memory: "512Mi"

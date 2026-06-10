@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Space Cloud V7.1 — Guardian SML Sidecar</title>
+  <title>Space Cloud V7.2 — Guardian SML Sidecar (Multi-Tenant)</title>
 
   <style>
     /* ── DESIGN TOKENS (Apple Dark Mode) ────────────────────────── */
@@ -604,7 +604,7 @@
 <body>
 
   <nav class="global-nav">
-    <div class="global-nav__brand">Space Cloud <span>V7.1</span></div>
+    <div class="global-nav__brand">Space Cloud <span>V7.2</span></div>
     <div class="global-nav__cluster">
       <div class="global-nav__clock"><strong>UTC</strong> <span id="clock-utc">00:00:00Z</span></div>
       <div class="global-nav__clock"><strong>MET</strong> <span id="clock-met">T+00:00:00</span></div>
@@ -622,7 +622,9 @@
 
   <div class="telemetry-bar-wrapper">
     <div class="telemetry-bar">
-      <div class="t-stat">🔥 MISSION ID: <span id="mission-id" style="color: var(--primary-on-dark);">AWAITING</span>
+      <div class="t-stat">🛰️ ACTIVE MISSIONS: <span id="mission-count" style="color: var(--primary-on-dark);">0</span>
+      </div>
+      <div class="t-stat">🔥 TRACKING FIRE: <span id="mission-id" style="color: var(--primary-on-dark);">AWAITING</span>
       </div>
       <div class="t-stat">📅 DAY ID: <span id="day-id">--</span></div>
       <div class="t-stat">📡 INPUT PX (T-1): <span id="input-px" class="highlight">0</span> <span
@@ -769,11 +771,12 @@
     const ctxPredicted = document.getElementById('canvas-predicted').getContext('2d');
 
     // ==========================================================================
-    // PREDICTION BUFFER (Temporal Alignment: T-day prediction vs T+1-day truth)
+    // PREDICTION BUFFER (Per-Fire: Temporal Alignment T-day prediction vs T+1-day truth)
     // ==========================================================================
-    let predictionBuffer = null;  // Stores 128x128 probability matrix from previous SSE cycle
-    let inputHotspotsBuffer = null; // Stores yesterday's real fire mask (the input to yesterday's prediction)
-    let currentGroundTruth = null; // Stores the current day's real fire mask for IoU
+    // These buffers are keyed per fire_id to prevent cross-contamination
+    // when the interleaved stream rapidly cycles through different missions.
+    let perFireBuffers = {};  // { fire_id: { prediction, inputHotspots, groundTruth } }
+    let currentDisplayFireId = null; // Which fire is currently being rendered
 
     function drawFireMask(mask, ctx, width, colorFn) {
       if (!mask || mask.length === 0) {
@@ -915,25 +918,29 @@
       const threshold = parseFloat(thresholdSlider.value);
       thresholdDisplay.textContent = threshold.toFixed(2);
 
+      // Use the per-fire buffers set during the SSE handler
+      const predBuf = window._currentPredictionBuffer;
+      const gtBuf = window._currentGroundTruth;
+
       // ── Always redraw the heatmap with the current threshold ──
-      if (predictionBuffer && predictionBuffer.length > 0) {
-        drawHeatmap(predictionBuffer, ctxPredicted, 128, threshold);
+      if (predBuf && predBuf.length > 0) {
+        drawHeatmap(predBuf, ctxPredicted, 128, threshold);
         // Re-overlay the ground truth contour on top of the thresholded heatmap
-        if (currentGroundTruth && currentGroundTruth.length > 0) {
-          drawContour(currentGroundTruth, ctxPredicted, 128, '#30d158');
+        if (gtBuf && gtBuf.length > 0) {
+          drawContour(gtBuf, ctxPredicted, 128, '#30d158');
         }
       } else {
         ctxPredicted.clearRect(0, 0, 128, 128);
       }
 
       // ── Compute and display the calibrated IoU ──
-      if (!predictionBuffer || !currentGroundTruth) {
+      if (!predBuf || !gtBuf) {
         calIouVal.textContent = '--';
         calIouBar.style.width = '0%';
         calIouBar.style.background = 'var(--ink-muted-48)';
         return;
       }
-      const iou = computeIoU(predictionBuffer, currentGroundTruth, threshold, 128);
+      const iou = computeIoU(predBuf, gtBuf, threshold, 128);
       if (iou < 0) {
         calIouVal.textContent = '--';
         calIouBar.style.width = '0%';
@@ -1023,8 +1030,12 @@
       const state = data.internal_state || {};
       const env = data.environment || {};
       const flightMode = data.flight_mode;
+      const activeMissionCount = data.active_mission_count || 0;
 
       document.getElementById('guardian-id').textContent = data.guardian_id || 'UNKNOWN';
+
+      // Active missions counter
+      document.getElementById('mission-count').textContent = activeMissionCount;
 
       // Status Pill
       const lamp = document.getElementById('status-lamp');
@@ -1041,48 +1052,58 @@
       }
       lastFlightState = flightMode;
 
-      // ── UPDATE NEW AI METRICS ──
-      const fireId = state.fire_id !== undefined ? state.fire_id : '-';
-      document.getElementById('mission-id').textContent = fireId;
+      // ── UPDATE AI METRICS ──
+      const fireId = state.fire_id !== undefined ? state.fire_id : 0;
+      document.getElementById('mission-id').textContent = fireId || '-';
       document.getElementById('day-id').textContent = state.day_id !== undefined ? state.day_id : '-';
       document.getElementById('input-px').textContent = state.input_fire_px !== undefined ? state.input_fire_px : '-';
       document.getElementById('ai-conf').textContent = state.ai_confidence !== undefined ? state.ai_confidence.toFixed(2) : '-';
 
-      // Log Mission Change
-      if (state.fire_id !== undefined && state.fire_id !== lastMissionId) {
-        sysLog(`Target Lock Acquired: Mission ${fireId} isolated.`, 'log-action');
-        lastMissionId = state.fire_id;
-        predictionBuffer = null;
-        inputHotspotsBuffer = null;
+      // ── PER-FIRE BUFFER MANAGEMENT ──
+      // Each fire_id gets its own prediction/input/ground-truth buffers
+      if (fireId && !perFireBuffers[fireId]) {
+        perFireBuffers[fireId] = { prediction: null, inputHotspots: null, groundTruth: null };
       }
 
-      // ── TEMPORAL BUFFER LOGIC ──
-      // 1. Current ground truth = prev_fire_mask from today's SSE frame (AF_T+1)
+      // Log Mission Change
+      if (fireId && fireId !== lastMissionId) {
+        sysLog(`Target Lock Acquired: Mission ${fireId} isolated.`, 'log-action');
+        lastMissionId = fireId;
+      }
+      currentDisplayFireId = fireId;
+
+      // ── TEMPORAL BUFFER LOGIC (per-fire isolation) ──
       const inputMask = state.prev_fire_mask || [];
-      currentGroundTruth = inputMask;
-
-      // 2. Snapshot yesterday's input hotspots before overwriting
-      const yesterdayInput = inputHotspotsBuffer;
-
-      // 3. New probability prediction arriving now (for tomorrow's comparison)
       const newProbMask = state.predicted_probability_mask || [];
 
-      // ── CANVAS: Input Hotspots (shows AF_T, the input to the prediction yesterday) ──
+      let currentGroundTruth = null;
+      let yesterdayInput = null;
+
+      if (fireId && perFireBuffers[fireId]) {
+        const fb = perFireBuffers[fireId];
+        // 1. Current ground truth = prev_fire_mask from today's SSE frame
+        currentGroundTruth = inputMask;
+        fb.groundTruth = inputMask;
+
+        // 2. Snapshot yesterday's input hotspots before overwriting
+        yesterdayInput = fb.inputHotspots;
+
+        // 3. Update temporal buffers for next cycle of THIS fire
+        if (newProbMask.length > 0) {
+          fb.prediction = newProbMask;
+        }
+        fb.inputHotspots = inputMask;
+      }
+
+      // ── CANVAS: Input Hotspots ──
       if (yesterdayInput && yesterdayInput.length > 0) {
         drawFireMask(yesterdayInput, ctxCurrent, 128, currentFireColor);
       } else {
-        // Fall back to current inputMask on first frame
         drawFireMask(inputMask, ctxCurrent, 128, currentFireColor);
       }
 
       // ── Reticle ──
       if (state.center_of_mass) updateReticle(state.center_of_mass.x, state.center_of_mass.y);
-
-      // 4. Update temporal buffers for next cycle
-      if (newProbMask.length > 0) {
-        predictionBuffer = newProbMask;
-      }
-      inputHotspotsBuffer = inputMask;
 
       // ── IoU Gauge (server-side tracking IoU) ──
       const iou = state.tracking_iou !== undefined ? state.tracking_iou : 0;
@@ -1102,6 +1123,9 @@
       }
 
       // ── Centralized rendering: heatmap + contour + calibrated IoU ──
+      // Render current prediction directly (fallback to last known during warm-up)
+      window._currentPredictionBuffer = newProbMask.length > 0 ? newProbMask : (fireId && perFireBuffers[fireId] ? perFireBuffers[fireId].prediction : null);
+      window._currentGroundTruth = currentGroundTruth;
       updateCalibrationIoU();
 
       // Diagnostics

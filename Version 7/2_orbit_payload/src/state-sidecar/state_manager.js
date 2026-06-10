@@ -1,7 +1,8 @@
 // =============================================================================
-//  SPACE GUARDIAN V7.1 (Stateful Sidecar — Time-Series CNN Wildfire Tracker)
-//  Role: Survives satellite migrations via CRIU. Stores the FIFO T=5 history
-//        buffer and the latest prediction mask.
+//  SPACE GUARDIAN V7.2 (Multi-Tenant Sidecar — Spatial Multiplexing Edition)
+//  Role: Survives satellite migrations via CRIU. Stores a FIFO T=5 history
+//        buffer PER FIRE MISSION in a fleetMemory dictionary.
+//        Supports interleaved LEO orbital data streams from multiple fires.
 //        Provides the pre-freeze flush handshake, Ground Redis subscriber,
 //        and the SSE dashboard stream with AI Confidence metrics.
 // =============================================================================
@@ -25,27 +26,33 @@ app.get('/', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// INTERNAL STATE (The Single Source of Truth)
+// INTERNAL STATE (Multi-Tenant Fleet Memory)
 // ---------------------------------------------------------------------------
-let guardianMemory = {
-    history_frames: [], // FIFO rolling buffer: last 4 past days (7-ch frames, ~610 KB total)
-    predicted_fire_mask: [],
-    predicted_probability_mask: [],  // 128x128 float [0.0–1.0] continuous probability map
-    prev_fire_mask: [],
-    center_of_mass: { x: 64, y: 64 },
-    fire_pixel_count: 0,
-    sample_count: 0,
-    migration_epoch: 0,
-    status: "WAITING_PAYLOAD",
-    last_contact: null,
+// Each fire_id gets its own isolated state object in this dictionary.
+// CRIU will snapshot the entire fleetMemory during migration.
+let fleetMemory = {};  // { fire_id: { history_frames, predicted_fire_mask, ... } }
+let lastUpdatedFireId = null;  // Pointer to the most recently updated fire
+let migrationEpoch = 0;
 
-    // --- NUOVE METRICHE AI (Mission Tracking) ---
-    fire_id: 0,
-    day_id: 0,
-    input_fire_px: 0,
-    ai_confidence: 0,
-    tracking_iou: 0
-};
+// Factory: creates a fresh, empty state object for a new fire mission
+function createMissionState(fireId) {
+    return {
+        history_frames: [],
+        predicted_fire_mask: [],
+        predicted_probability_mask: [],
+        prev_fire_mask: [],
+        center_of_mass: { x: 64, y: 64 },
+        fire_pixel_count: 0,
+        sample_count: 0,
+        status: "WAITING_PAYLOAD",
+        last_contact: null,
+        fire_id: fireId,
+        day_id: 0,
+        input_fire_px: 0,
+        ai_confidence: 0,
+        tracking_iou: 0
+    };
+}
 
 let flightMode = false;
 let serverInstance = null;
@@ -79,17 +86,48 @@ function initRedisSub() {
 // SERVER / SSE
 // ---------------------------------------------------------------------------
 function broadcastToClients() {
-    // Build a lightweight copy of guardianMemory without the heavy history_frames.
-    // Replace the ~600 KB array with a simple integer for the progress bar.
-    const liteState = Object.assign({}, guardianMemory, {
-        history_count: guardianMemory.history_frames.length
-    });
-    delete liteState.history_frames;
+    // Send the state of the most recently updated fire mission to the dashboard.
+    // Also include a lightweight summary of all active missions.
+    let liteState = {
+        status: "WAITING_PAYLOAD",
+        fire_id: 0, day_id: 0, input_fire_px: 0,
+        ai_confidence: 0, tracking_iou: 0,
+        fire_pixel_count: 0, sample_count: 0,
+        center_of_mass: { x: 64, y: 64 },
+        predicted_fire_mask: [], predicted_probability_mask: [], prev_fire_mask: [],
+        history_count: 0
+    };
+
+    if (lastUpdatedFireId !== null && fleetMemory[lastUpdatedFireId]) {
+        const mem = fleetMemory[lastUpdatedFireId];
+        liteState = Object.assign({}, mem, {
+            history_count: mem.history_frames.length
+        });
+        delete liteState.history_frames;
+    }
+
+    // Build a lightweight list of all tracked missions for the dashboard
+    // IMPORTANT: We do NOT spread fleetMemory[fid].internal_state here because
+    // it contains massive 128x128 arrays for every single fire, which causes 
+    // a 15MB JSON payload that freezes the dashboard.
+    const activeMissions = Object.keys(fleetMemory).map(fid => ({
+        fire_id: fleetMemory[fid].fire_id,
+        day_id: fleetMemory[fid].day_id,
+        history_count: fleetMemory[fid].history_frames.length,
+        status: fleetMemory[fid].status,
+        input_fire_px: fleetMemory[fid].internal_state ? fleetMemory[fid].internal_state.input_fire_px : 0,
+        fire_pixel_count: fleetMemory[fid].internal_state ? fleetMemory[fid].internal_state.fire_pixel_count : 0,
+        ai_confidence: fleetMemory[fid].internal_state ? fleetMemory[fid].internal_state.ai_confidence : 0,
+        tracking_iou: fleetMemory[fid].internal_state ? fleetMemory[fid].internal_state.tracking_iou : 0
+    }));
 
     const payload = {
         internal_state: liteState,
+        active_missions: activeMissions,
+        active_mission_count: activeMissions.length,
         environment: fleetState,
         flight_mode: flightMode,
+        migration_epoch: migrationEpoch,
         guardian_id: process.env.HOSTNAME || "GUARDIAN-UNKNOWN"
     };
 
@@ -108,64 +146,65 @@ app.get('/api/stream', (req, res) => {
 });
 
 app.get('/state', (req, res) => {
-    res.json(guardianMemory);
+    res.json({
+        fleet_memory: fleetMemory,
+        last_updated_fire_id: lastUpdatedFireId,
+        migration_epoch: migrationEpoch
+    });
 });
 
 // Dedicated lightweight endpoint: returns only the history frames and sample_count.
 // Used by the Python worker before inference to avoid parsing heavy prediction masks.
-// FIRE ISOLATION: If the worker's fire_id differs from the stored one, flush the
-// entire state *before* responding, so the worker sees an empty cache and enters warm-up.
+// SPATIAL MULTIPLEXING: Each fire_id has its own isolated buffer. No flushing needed.
 app.get('/state/history', (req, res) => {
     const incomingFireId = parseInt(req.query.fire_id, 10) || 0;
-    if (incomingFireId !== 0 && guardianMemory.fire_id !== 0 && incomingFireId !== guardianMemory.fire_id) {
-        console.log(`🔥 GUARDIAN: New fire mission detected (${guardianMemory.fire_id} → ${incomingFireId}). Flushing state.`);
-        guardianMemory.history_frames = [];
-        guardianMemory.predicted_fire_mask = [];
-        guardianMemory.predicted_probability_mask = [];
-        guardianMemory.prev_fire_mask = [];
-        guardianMemory.center_of_mass = { x: 64, y: 64 };
-        guardianMemory.fire_pixel_count = 0;
-        guardianMemory.sample_count = 0;
-        guardianMemory.ai_confidence = 0;
-        guardianMemory.tracking_iou = 0;
-        guardianMemory.fire_id = incomingFireId;
-        guardianMemory.day_id = 0;
-        guardianMemory.input_fire_px = 0;
-        guardianMemory.status = "WAITING_PAYLOAD";
-        // Broadcast cleared state so the dashboard resets visuals immediately
-        broadcastToClients();
+    // If this fire_id doesn't exist yet, initialize a fresh state for it
+    if (!fleetMemory[incomingFireId]) {
+        console.log(`🆕 GUARDIAN: New fire mission ${incomingFireId} registered in fleet memory.`);
+        fleetMemory[incomingFireId] = createMissionState(incomingFireId);
     }
+    const missionState = fleetMemory[incomingFireId];
     res.json({
-        history_frames: guardianMemory.history_frames,
-        sample_count: guardianMemory.sample_count
+        history_frames: missionState.history_frames,
+        sample_count: missionState.sample_count
     });
 });
 
-// IL WORKER PYTHON INVIA I DATI QUI
+// IL WORKER PYTHON INVIA I DATI QUI (Multi-Tenant: routes to correct fire state)
 app.post('/state', (req, res) => {
     const { new_frame, metrics } = req.body;
     if (new_frame && metrics) {
-        guardianMemory.history_frames.push(new_frame);
-        if (guardianMemory.history_frames.length > 4) {
-            guardianMemory.history_frames.shift(); // FIFO T=4 (Worker brings the 5th day)
+        const fireId = metrics.fire_id || 0;
+
+        // Ensure this fire has a state object
+        if (!fleetMemory[fireId]) {
+            fleetMemory[fireId] = createMissionState(fireId);
+        }
+        const mem = fleetMemory[fireId];
+
+        mem.history_frames.push(new_frame);
+        if (mem.history_frames.length > 4) {
+            mem.history_frames.shift(); // FIFO T=4 (Worker brings the 5th day)
         }
 
-        guardianMemory.prev_fire_mask = metrics.prev_fire_mask || [];
-        guardianMemory.predicted_fire_mask = metrics.predicted_fire_mask || [];
-        guardianMemory.predicted_probability_mask = metrics.predicted_probability_mask || [];
-        guardianMemory.center_of_mass = metrics.center_of_mass || { x: 64, y: 64 };
-        guardianMemory.fire_pixel_count = metrics.fire_pixel_count || 0;
-        guardianMemory.sample_count = (metrics.sample_count !== undefined) ? metrics.sample_count : (guardianMemory.sample_count + 1);
+        mem.prev_fire_mask = metrics.prev_fire_mask || [];
+        mem.predicted_fire_mask = metrics.predicted_fire_mask || [];
+        mem.predicted_probability_mask = metrics.predicted_probability_mask || [];
+        mem.center_of_mass = metrics.center_of_mass || { x: 64, y: 64 };
+        mem.fire_pixel_count = metrics.fire_pixel_count || 0;
+        mem.sample_count = (metrics.sample_count !== undefined) ? metrics.sample_count : (mem.sample_count + 1);
 
-        // ESTRAZIONE NUOVI DATI MISSIONE
-        guardianMemory.fire_id = metrics.fire_id || 0;
-        guardianMemory.day_id = metrics.day_id || 0;
-        guardianMemory.input_fire_px = metrics.input_fire_px || 0;
-        guardianMemory.ai_confidence = metrics.ai_confidence || 0;
-        guardianMemory.tracking_iou = metrics.tracking_iou || 0;
+        mem.fire_id = fireId;
+        mem.day_id = metrics.day_id || 0;
+        mem.input_fire_px = metrics.input_fire_px || 0;
+        mem.ai_confidence = metrics.ai_confidence || 0;
+        mem.tracking_iou = metrics.tracking_iou || 0;
 
-        guardianMemory.status = "TRACKING_ACTIVE";
-        guardianMemory.last_contact = Date.now();
+        mem.status = "TRACKING_ACTIVE";
+        mem.last_contact = Date.now();
+
+        // Update the global pointer so the dashboard knows which fire just reported
+        lastUpdatedFireId = fireId;
 
         // Event-driven broadcast: push to dashboard only when new data arrives
         broadcastToClients();
@@ -184,7 +223,7 @@ app.on('connection', (socket) => {
 function startServer() {
     if (serverInstance) serverInstance.close();
     serverInstance = app.listen(PORT, () => {
-        console.log(`🚀 Guardian V7.1 Sidecar listening on port ${PORT}`);
+        console.log(`🚀 Guardian V7.2 Multi-Tenant Sidecar listening on port ${PORT}`);
     });
 }
 
@@ -224,7 +263,7 @@ setInterval(() => {
 
         flightMode = false;
         payloadLastLandedTime = Date.now() / 1000;
-        guardianMemory.migration_epoch += 1;
+        migrationEpoch += 1;
 
         startServer();
         initRedisSub();
@@ -240,11 +279,17 @@ setupWatcher();
 // HOUSEKEEPING (500ms) – lightweight file I/O only, NO SSE broadcast
 setInterval(() => {
     if (!flightMode) {
-        const agentState = {
-            center_of_mass: guardianMemory.center_of_mass || { x: 64, y: 64 },
-            fire_pixel_count: guardianMemory.fire_pixel_count || 0,
-            last_migration_time: payloadLastLandedTime
+        // Report the last updated fire's metrics for the node agent
+        let agentState = {
+            center_of_mass: { x: 64, y: 64 },
+            fire_pixel_count: 0,
+            last_migration_time: payloadLastLandedTime,
+            active_missions: Object.keys(fleetMemory).length
         };
+        if (lastUpdatedFireId !== null && fleetMemory[lastUpdatedFireId]) {
+            agentState.center_of_mass = fleetMemory[lastUpdatedFireId].center_of_mass || { x: 64, y: 64 };
+            agentState.fire_pixel_count = fleetMemory[lastUpdatedFireId].fire_pixel_count || 0;
+        }
 
         fs.writeFile('/tmp/payload_state.json', JSON.stringify(agentState), (err) => { });
 

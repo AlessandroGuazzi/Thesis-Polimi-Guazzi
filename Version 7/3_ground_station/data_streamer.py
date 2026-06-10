@@ -1,8 +1,10 @@
 """
-SPACE CLOUD V7.1 - WSTS DATA STREAMER (Multi-Mission Fleet Edition)
+SPACE CLOUD V7.2 - WSTS DATA STREAMER (LEO Orbital Interleave Edition)
 =====================================================
-ROLE: Raggruppa i dataset per incendio, trasmette le sequenze in modo 
-isolato e inietta gli ID (Fire e Day) nel pacchetto UDP.
+ROLE: Simulates realistic LEO satellite data acquisition by interleaving
+daily observations across all active fire missions. Epicenters are
+pre-computed, then data is streamed orbit-by-orbit (day-by-day) with
+each orbit visiting every fire location sequentially.
 """
 import socket
 import struct
@@ -27,7 +29,8 @@ except ImportError as e:
 
 WSTS_EVAL_DIR = os.getenv("WSTS_EVAL_DIR", os.path.join(CURRENT_DIR, "evaluation_data"))
 WORKER_UDP_NODEPORT = 32005
-STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "3.0"))
+STREAM_INTERVAL = float(os.getenv("STREAM_INTERVAL", "1.5"))
+WARMUP_INTERVAL = 0.15
 CHUNK_SIZE = 60_000
 
 def get_minikube_ip() -> str:
@@ -40,7 +43,7 @@ def encode_frame(frame: np.ndarray) -> bytes:
     return zlib.compress(frame.astype('>f4').tobytes())
 
 def main():
-    print("🚀 STREAMER: Booting WSTS Uplink (Multi-Mission Fleet Edition)...")
+    print("🚀 STREAMER: Booting WSTS Uplink (LEO Orbital Interleave Edition)...")
     
     year_dir = os.path.join(WSTS_EVAL_DIR, "2021")
     if not os.path.exists(year_dir):
@@ -81,37 +84,66 @@ def main():
         fires.append((current_fire_name, current_indices))
         
     print(f"🌲 Analisi Globale completata: Trovati {len(fires)} incendi distinti in evaluation_data.")
+
     # =========================================================================
+    # PRE-COMPUTATION PHASE: Compute epicenters for ALL fires (Lightweight)
+    # =========================================================================
+    print(f"\n🎯 Pre-computing epicenters for all {len(fires)} fires (Lightweight scan)...")
+    fire_epicenters = []  # List of (fixed_sy, fixed_sx) per fire
+
+    for fire_idx, (fire_name, indices) in enumerate(fires):
+        best_cy, best_cx = 144, 112
+        max_fire_px = 0
+        last_fire_mask = None
+
+        # Robust epicenter lock: Scan all days to find the max fire spread
+        for i in indices:
+            x_test, _ = dataset[i]
+            fire_mask = x_test.numpy()[0, -1, :, :]
+            last_fire_mask = fire_mask
+            
+            fire_coords = np.argwhere(fire_mask > 0)
+            if len(fire_coords) > max_fire_px:
+                max_fire_px = len(fire_coords)
+                best_cy = int(fire_coords[:, 0].mean())
+                best_cx = int(fire_coords[:, 1].mean())
+
+        fixed_sy = max(0, min(last_fire_mask.shape[0] - 128, best_cy - 64))
+        fixed_sx = max(0, min(last_fire_mask.shape[1] - 128, best_cx - 64))
+        fire_epicenters.append((fixed_sy, fixed_sx))
+        print(f"   ✅ Fire {fire_idx+1}/{len(fires)} [{fire_name}]: epicenter locked (max {max_fire_px} px)")
+
+    print(f"🎯 All epicenters securely locked. Commencing Orbital Simulation...\n")
+    # =========================================================================
+
+    # Determine the maximum number of days across all fires
+    max_days = max(len(indices) for _, indices in fires)
 
     target_ip = get_minikube_ip()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     while True:
-        # Iteriamo su tutti e 12 gli incendi in modo sequenziale
-        for fire_idx, (fire_name, indices) in enumerate(fires):
-            print(f"\n=======================================================")
-            print(f"🔥 INIZIO MISSIONE: Incendio {fire_idx+1}/{len(fires)} [{fire_name}]")
-            print(f"=======================================================")
-            
-            # Radar: Troviamo l'epicentro per QUESTO specifico incendio
-            best_cy, best_cx = 144, 112 
-            max_fire_px = 0
-            
-            for i in indices:
-                x_test, _ = dataset[i]
-                fire_mask = x_test.numpy()[0, -1, :, :] 
-                fire_coords = np.argwhere(fire_mask > 0)
-                if len(fire_coords) > max_fire_px:
-                    max_fire_px = len(fire_coords)
-                    best_cy = int(fire_coords[:, 0].mean())
-                    best_cx = int(fire_coords[:, 1].mean())
-                    
-            fixed_sy = max(0, min(fire_mask.shape[0] - 128, best_cy - 64))
-            fixed_sx = max(0, min(fire_mask.shape[1] - 128, best_cx - 64))
-            print(f"🎯 Ottica bloccata sull'epicentro (Max Estensione: {max_fire_px} px).")
-            print(f"📡 Inizio trasmissione di {len(indices)} giorni sequenziali...\n")
-            
-            for day_idx, dataset_idx in enumerate(indices):
+        # =====================================================================
+        # INTERLEAVED ORBITAL SIMULATION
+        # Outer loop = day (orbital pass), Inner loop = fire (regions visited)
+        # =====================================================================
+        for day_idx in range(max_days):
+            is_warmup = day_idx < 4
+            current_interval = WARMUP_INTERVAL if is_warmup else STREAM_INTERVAL
+            phase_name = "WARM-UP (FAST FORWARD)" if is_warmup else "ACTIVE INFERENCE"
+
+            print(f"\n{'='*60}")
+            print(f"🛰️  ORBITAL PASS {day_idx+1}/{max_days} — [{phase_name}] Scanning all active missions")
+            print(f"{'='*60}")
+
+            for fire_idx, (fire_name, indices) in enumerate(fires):
+                # Skip this fire if it has fewer days than the current orbit
+                if day_idx >= len(indices):
+                    continue
+
+                dataset_idx = indices[day_idx]
+                fixed_sy, fixed_sx = fire_epicenters[fire_idx]
+
                 x_tensor, _ = dataset[dataset_idx]
                 full_array = x_tensor.numpy().astype(np.float32)
 
@@ -119,8 +151,8 @@ def main():
                 frame_array = full_array[0, :, fixed_sy:fixed_sy+128, fixed_sx:fixed_sx+128]
 
                 blob = encode_frame(frame_array)
-                
-                # UPGRADE UDP: Aggiungiamo Fire_ID e Day_ID nell'header (Formato: !IIBB)
+
+                # UDP header: Fire_ID and Day_ID (Formato: !IIBB)
                 total_chunks = (len(blob) + CHUNK_SIZE - 1) // CHUNK_SIZE
                 for chunk_idx in range(total_chunks):
                     chunk_data = blob[chunk_idx * CHUNK_SIZE : (chunk_idx + 1) * CHUNK_SIZE]
@@ -129,13 +161,12 @@ def main():
                         sock.sendto(header + chunk_data, (target_ip, WORKER_UDP_NODEPORT))
                     except:
                         pass
-                
-                # Il Log formattato esattamente come da tua richiesta
-                print(f"📤 STREAMER [Incendio {fire_idx+1}/{len(fires)}]: Inviato Giorno {day_idx+1} → {len(blob)//1024}KB, {total_chunks} chunk(s)")
-                time.sleep(STREAM_INTERVAL)
-                
-            print(f"\n🔄 Incendio terminato. Pausa di 5 secondi e riavvio simulazione...")
-            time.sleep(10)
+
+                print(f"📤 ORBIT {day_idx+1} | Fire {fire_idx+1}/{len(fires)} [{fire_name}]: Day {day_idx+1}/{len(indices)} → {len(blob)//1024}KB, {total_chunks} chunk(s)")
+                time.sleep(current_interval)
+
+        print(f"\n🔄 All orbital passes completed. Restarting simulation cycle...")
+        time.sleep(10)
 
 if __name__ == "__main__":
     main()

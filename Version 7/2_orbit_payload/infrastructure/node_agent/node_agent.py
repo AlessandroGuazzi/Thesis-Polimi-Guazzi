@@ -369,6 +369,13 @@ def trigger_local_migration(topology_redis, migration_type, exclude_node=""):
     relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
     subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
 
+    # ---- SYNCHRONOUS SOURCE TEARDOWN (Fix for Double Migration) ----
+    # Instantly kill the local pod on the source node so the Digital Twin Simulator
+    # knows it has evacuated. This prevents the simulator from firing a second
+    # thermal warning while the destination node is slowly running Buildah.
+    print("🧹 AGENT: Tearing down local pod to prevent ghost hardware triggers...", flush=True)
+    subprocess.run("kubectl scale deployment space-mission --replicas=0", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     # Delete the local state file so we don't read "ghost" data after the payload leaves
     try:
         os.remove("/tmp/payload_state.json")
@@ -634,6 +641,8 @@ def _rebuild_and_deploy(tar_path):
 def _rebuild_and_deploy_master(tar_path):
     print("🔨 AGENT [BUILDAH]: Reconstructing Topology Master...", flush=True)
 
+    t_start = time.time()
+
     # Sanitize the landing zone: Nuke any stale IPC files from previous runs
     # BEFORE the new pod boots. This guarantees the agent will wait for the
     # newly restored Guardian to write a fresh state with a fresh 30s cooldown.
@@ -657,6 +666,7 @@ def _rebuild_and_deploy_master(tar_path):
     buildah rm restoration-master
     """
     subprocess.run(build_script, shell=True, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"⏱️  AGENT: Buildah done in {time.time() - t_start:.2f}s", flush=True)
 
     patch = json.dumps({"spec": {"template": {"spec": {
         "terminationGracePeriodSeconds": 0,

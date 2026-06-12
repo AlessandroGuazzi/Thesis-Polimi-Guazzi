@@ -11,6 +11,7 @@ const express = require('express');
 const redis = require('redis');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const bodyParser = require('body-parser');
 
 const app = express();
@@ -167,13 +168,19 @@ app.get('/state/history', (req, res) => {
         fleetMemory[incomingFireId] = createMissionState(incomingFireId);
     }
     const missionState = fleetMemory[incomingFireId];
-    // ---- BINARY BUFFER RE-ENCODING (Change 1.2) ----
-    // History frames are stored as raw Buffers internally (see POST /state).
-    // Re-encode them to base64 strings for the Python worker, which expects
-    // base64-encoded float32 arrays it can decode with base64.b64decode().
-    const historyAsBase64 = missionState.history_frames.map(buf =>
-        Buffer.isBuffer(buf) ? buf.toString('base64') : buf
-    );
+    // ---- IN-MEMORY COMPRESSION (Change 6.2) ----
+    // History frames are stored as zlib-compressed Buffers internally.
+    // Inflate them and re-encode to base64 strings for the Python worker.
+    const historyAsBase64 = missionState.history_frames.map(buf => {
+        if (Buffer.isBuffer(buf)) {
+            try {
+                return zlib.inflateSync(buf).toString('base64');
+            } catch (e) {
+                return buf.toString('base64');
+            }
+        }
+        return buf;
+    });
     res.json({
         history_frames: historyAsBase64,
         sample_count: missionState.sample_count
@@ -192,13 +199,14 @@ app.post('/state', (req, res) => {
         }
         const mem = fleetMemory[fireId];
 
-        // ---- BINARY BUFFER COMPACTION (Change 1.2) ----
-        // Store history frames as raw binary Buffers instead of base64 strings.
-        // V8 stores strings internally as UTF-16 (2 bytes per char), which doubles
-        // the memory cost of base64-encoded data. Buffer backing stores are allocated
-        // as external memory outside the V8 managed heap, eliminating this penalty.
-        // A 7×128×128 float32 frame: base64 string = ~1.2 MB in V8; Buffer = ~448 KB.
-        mem.history_frames.push(Buffer.from(new_frame, 'base64'));
+        // ---- IN-MEMORY COMPRESSION (Change 6.3) ----
+        // Store history frames as zlib-compressed binary Buffers.
+        // A 7×128×128 float32 frame is highly compressible since much of it is sparse
+        // or contains structured features. Compressing it drops the RAM footprint from
+        // 448 KB to a fraction of that, slashing the CRIU checkpoint size.
+        const rawBuffer = Buffer.from(new_frame, 'base64');
+        const compressedBuffer = zlib.deflateSync(rawBuffer);
+        mem.history_frames.push(compressedBuffer);
         if (mem.history_frames.length > 4) {
             mem.history_frames.shift(); // FIFO T=4 (Worker brings the 5th day)
         }

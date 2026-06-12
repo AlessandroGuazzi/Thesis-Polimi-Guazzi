@@ -70,16 +70,19 @@ function initRedisSub() {
     if (redisSubscriber) {
         redisSubscriber.quit();
     }
-    redisSubscriber = redis.createClient({ url: 'redis://ground-redis.default.svc.cluster.local:6379' });
-    redisSubscriber.on('error', (err) => console.log('Redis Client Error', err));
-    redisSubscriber.connect().then(() => {
-        redisSubscriber.pSubscribe('telemetry/*', (message, channel) => {
-            try {
-                const nodeName = channel.split('/')[1];
-                fleetState[nodeName] = JSON.parse(message);
-            } catch (e) { }
-        });
-    });
+    const client = redis.createClient({ url: 'redis://ground-redis.default.svc.cluster.local:6379' });
+    redisSubscriber = client;
+    client.on('error', (err) => console.log('Redis Client Error', err));
+    client.connect().then(() => {
+        if (redisSubscriber === client) {
+            client.pSubscribe('telemetry/*', (message, channel) => {
+                try {
+                    const nodeName = channel.split('/')[1];
+                    fleetState[nodeName] = JSON.parse(message);
+                } catch (e) { }
+            });
+        }
+    }).catch(err => console.log('Redis Connect Error', err));
 }
 
 // ---------------------------------------------------------------------------
@@ -234,8 +237,8 @@ function setupWatcher() {
     try {
         if (dirWatcher) dirWatcher.close();
         dirWatcher = fs.watch('/tmp', (eventType, filename) => {
-            if (filename === 'freeze_signal' && !flightMode) {
-                console.log("❄️ GUARDIAN: FREEZE SIGNAL DETECTED. PREPARING FOR MIGRATION...");
+            if (filename === 'prepare_jump' && !flightMode) {
+                console.log("❄️ GUARDIAN: PREPARE JUMP SIGNAL DETECTED. PREPARING FOR MIGRATION...");
                 flightMode = true;
                 if (serverInstance) {
                     serverInstance.close(() => console.log("Guardian HTTP Server closed."));
@@ -297,7 +300,7 @@ setInterval(() => {
             console.log("🚨 GUARDIAN: Node Agent requested pre-freeze flush. Auto-acknowledging instantly.");
             try {
                 fs.unlinkSync('/tmp/flush_state');
-                fs.writeFileSync('/tmp/flush_ack', 'ACK');
+                fs.writeFileSync('/tmp/flush_complete', 'ACK');
             } catch (e) { }
         }
     }

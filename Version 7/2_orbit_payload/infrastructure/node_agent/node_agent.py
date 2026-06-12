@@ -352,7 +352,7 @@ def trigger_local_migration(topology_redis, migration_type, exclude_node=""):
         if time.time() - start > FLUSH_TIMEOUT_SECONDS: break
         time.sleep(0.1)
 
-    for f in ["/tmp/flush_state", "/tmp/flush_complete"]:
+    for f in ["/tmp/flush_state", "/tmp/flush_complete", "/tmp/prepare_jump"]:
         try:
             os.remove(f)
         except:
@@ -406,7 +406,7 @@ def _request_checkpoint(app_label, container_name):
     Consolidated, highly verbose CRIU checkpoint requester.
     Prints exact Kubelet HTTP responses to diagnose failures instantly.
     """
-    # print(f"📸 AGENT: Requesting {container_name} CRIU checkpoint from Kubelet...", flush=True)
+    print(f"📸 AGENT: Requesting {container_name} CRIU checkpoint from Kubelet...", flush=True)
 
     # 1. Dynamically discover the exact pod name
     try:
@@ -420,7 +420,7 @@ def _request_checkpoint(app_label, container_name):
         print(f"❌ AGENT: kubectl get pod exception: {e}", flush=True)
         return None
 
-    # print(f"🎯 AGENT: Target Pod: {pod_name} | Container: {container_name}", flush=True)
+    print(f"🎯 AGENT: Target Pod: {pod_name} | Container: {container_name}", flush=True)
 
     # 2. Attempt Direct Kubelet Proxy Request
     token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -441,7 +441,7 @@ def _request_checkpoint(app_label, container_name):
             return None
 
         path = resp.json()["items"][0]
-        # print(f"✅ AGENT: Checkpoint created at {path}", flush=True)
+        print(f"✅ AGENT: Checkpoint created at {path}", flush=True)
         return path
 
     except Exception as e:
@@ -541,11 +541,11 @@ def _rebuild_and_deploy(tar_path):
     buildah rm restoration-lab
     """
     subprocess.run(build_script, shell=True, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # print(f"⏱️  AGENT: Buildah done in {time.time() - t_start:.2f}s", flush=True)
+    print(f"⏱️  AGENT: Buildah done in {time.time() - t_start:.2f}s", flush=True)
 
     # ---- STEP 2: K8s — reschedule the Pod on this node ----
     t0 = time.time()
-    # print("🗺️ AGENT [K8S]: Patching Deployment to this node...", flush=True)
+    print("🗺️ AGENT [K8S]: Patching Deployment to this node...", flush=True)
 
     patch = json.dumps({
         "spec": {"template": {"spec": {
@@ -566,12 +566,13 @@ def _rebuild_and_deploy(tar_path):
         }}}
     })
 
-    subprocess.run("kubectl scale deployment space-mission --replicas=0", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-    subprocess.run("kubectl delete pod -l app=space-mission --force --grace-period=0",
-                   shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-    subprocess.run(f"kubectl patch deployment space-mission --type=strategic -p '{patch}'", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-    subprocess.run("kubectl scale deployment space-mission --replicas=1", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-    # print(f"⏱️  AGENT: K8s patch done in {time.time() - t0:.2f}s", flush=True)
+    subprocess.run("kubectl scale deployment space-mission --replicas=0", shell=True)
+    subprocess.run("kubectl delete pod -l app=space-mission --force --grace-period=0", shell=True)
+    res_patch = subprocess.run(f"kubectl patch deployment space-mission --type=strategic -p '{patch}'", shell=True, capture_output=True, text=True)
+    if res_patch.returncode != 0:
+        print(f"❌ KUBECTL PATCH ERROR: {res_patch.stderr}", flush=True)
+    subprocess.run("kubectl scale deployment space-mission --replicas=1", shell=True)
+    print(f"⏱️  AGENT: K8s patch done in {time.time() - t0:.2f}s", flush=True)
 
     # ---- STEP 3: Wait for pod to boot, signal landing, then confirm readiness ----
     t0 = time.time()

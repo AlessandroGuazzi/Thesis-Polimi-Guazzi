@@ -51,7 +51,7 @@ echo -e "${BLUE}>>> Route: ${HOPS[*]}${NC}"
 # ---- Compute source SHA256 ----
 SOURCE_SHA=$(sha256sum "$CHECKPOINT_PATH" | cut -d' ' -f1)
 FILE_SIZE=$(du -h "$CHECKPOINT_PATH" | cut -f1)
-# echo -e "${GREEN}[SRC] Checkpoint: $CHECKPOINT_PATH ($FILE_SIZE) SHA256: ${SOURCE_SHA:0:16}...${NC}"
+echo -e "${GREEN}[SRC] Checkpoint: $CHECKPOINT_PATH ($FILE_SIZE) SHA256: ${SOURCE_SHA:0:16}...${NC}"
 
 t_start=$(date +%s%N)
 
@@ -124,7 +124,7 @@ ssh -o StrictHostKeyChecking=no root@$FINAL_IP "mv /tmp/relay/checkpoint.tar /va
 # Compute total wall-clock transfer time
 t_end=$(date +%s%N)
 t_total_ms=$(( (t_end - t_start) / 1000000 ))
-# echo -e "⏱️  Total relay time: ${t_total_ms}ms (${TOTAL_HOPS} hops)"
+echo -e "⏱️  Total relay time: ${t_total_ms}ms (${TOTAL_HOPS} hops)"
 # echo -e "📊 Expected at 50 Mbps + 40ms latency: ~$((TOTAL_HOPS * 4000))ms per hop"
 
 # Write the Atomic Trigger File directly to the permanent mailbox

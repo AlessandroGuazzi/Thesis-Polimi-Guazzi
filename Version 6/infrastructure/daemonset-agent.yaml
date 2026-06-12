@@ -100,9 +100,9 @@ spec:
 
         # Temperature thresholds for VirtualSatellite Trigger A prediction
         - name: T_SAFE
-          value: "9000.0"
+          value: "90.0"
         - name: T_FUSE
-          value: "12000.0"
+          value: "120.0"
 
         # Battery thresholds for VirtualSatellite Trigger C prediction (%)
         - name: B_SAFE

@@ -23,14 +23,9 @@ fi
 echo -e "${BLUE}>>> 🚀 SPACE CLOUD V7.1 — MISSION CONTROL LAUNCHER <<<${NC}"
 
 # =============================================================================
-# BLOCK 1: TABULA RASA (optional full cleanup)
-# Removes all previous deployments and stale images for a clean start.
+# BLOCK 1.5: REUSABLE CLEANUP LOGIC
 # =============================================================================
-read -p "❓ Run TABULA RASA (full cluster cleanup) before starting? (y/N): " choice
-if [[ "$choice" =~ ^([yY])$ ]]; then
-    echo -e "${RED}🧹 Running Tabula Rasa...${NC}"
-
-    # Delete V7 workloads
+do_cleanup() {
     kubectl delete deployment space-mission topology-master ground-redis --ignore-not-found=true
     kubectl delete daemonset  space-node-agent --ignore-not-found=true
     kubectl delete service    ground-redis topology-master topology-dashboard \
@@ -39,28 +34,32 @@ if [[ "$choice" =~ ^([yY])$ ]]; then
     # Clean restored images from satellite nodes
     for NODE in minikube-m02 minikube-m03 minikube-m04; do
         minikube ssh -n $NODE "sudo buildah rmi localhost/space-sidecar:restored" > /dev/null 2>&1 || true
-        minikube ssh -n $NODE "sudo buildah rmi localhost/space-topology-dashboard:latest" > /dev/null 2>&1 || true
     done
+}
 
+# =============================================================================
+# BLOCK 1: TABULA RASA (optional full cleanup)
+# Removes all previous deployments and stale images for a clean start.
+# =============================================================================
+read -p "❓ Run TABULA RASA (full cluster cleanup) before starting? (y/N): " choice
+if [[ "$choice" =~ ^([yY])$ ]]; then
+    echo -e "${RED}🧹 Running Tabula Rasa...${NC}"
+    do_cleanup
     echo -e "${GREEN}✅ Cluster clean. Ready for launch.${NC}\n"
-    sleep 2
+    sleep 10
 fi
 
 # =============================================================================
 # BLOCK 2: SIGNAL HANDLER & PRE-FLIGHT CLEANUP
-# Kills all background processes (simulator, streamer, dashboards) on Ctrl+C.
 # =============================================================================
-cleanup() {
+trap_cleanup() {
     echo -e "\n${RED}🛑 ABORT: Shutting down local subsystems...${NC}"
     kill $(jobs -p) 2>/dev/null
     pkill -f -9 "global_dashboard.py|data_streamer.py|environment_sim.py" 2>/dev/null || true
-    kubectl delete deployment space-mission topology-master ground-redis --ignore-not-found=true
-    kubectl delete daemonset  space-node-agent --ignore-not-found=true
-    kubectl delete service    ground-redis topology-master topology-dashboard \
-                              space-dashboard-svc space-telemetry-udp space-udp-uplink --ignore-not-found=true
+    do_cleanup
     exit
 }
-trap cleanup SIGINT SIGTERM EXIT
+trap trap_cleanup SIGINT SIGTERM EXIT
 
 # Pre-flight cleanup: Terminate any orphan ground-station python processes from previous runs
 pkill -f -9 "global_dashboard.py|data_streamer.py|environment_sim.py" 2>/dev/null || true

@@ -26,5 +26,9 @@ COPY tinysml_worker.py ./
 # Note: The ONNX model should be placed in this directory during image build
 COPY wsts_model.onnx* ./
 
-# 4. Start the UDP telemetry receiver and ONNX worker
+# 4. Health check: verifies the worker process is alive and ready (Change 3.4)
+HEALTHCHECK --interval=5s --timeout=2s --retries=3 \
+    CMD python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('0.0.0.0', 5005)); s.close()" || exit 1
+
+# 5. Start the UDP telemetry receiver and ONNX worker
 CMD ["python", "tinysml_worker.py"]

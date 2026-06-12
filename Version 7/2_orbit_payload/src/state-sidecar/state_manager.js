@@ -167,8 +167,15 @@ app.get('/state/history', (req, res) => {
         fleetMemory[incomingFireId] = createMissionState(incomingFireId);
     }
     const missionState = fleetMemory[incomingFireId];
+    // ---- BINARY BUFFER RE-ENCODING (Change 1.2) ----
+    // History frames are stored as raw Buffers internally (see POST /state).
+    // Re-encode them to base64 strings for the Python worker, which expects
+    // base64-encoded float32 arrays it can decode with base64.b64decode().
+    const historyAsBase64 = missionState.history_frames.map(buf =>
+        Buffer.isBuffer(buf) ? buf.toString('base64') : buf
+    );
     res.json({
-        history_frames: missionState.history_frames,
+        history_frames: historyAsBase64,
         sample_count: missionState.sample_count
     });
 });
@@ -185,7 +192,13 @@ app.post('/state', (req, res) => {
         }
         const mem = fleetMemory[fireId];
 
-        mem.history_frames.push(new_frame);
+        // ---- BINARY BUFFER COMPACTION (Change 1.2) ----
+        // Store history frames as raw binary Buffers instead of base64 strings.
+        // V8 stores strings internally as UTF-16 (2 bytes per char), which doubles
+        // the memory cost of base64-encoded data. Buffer backing stores are allocated
+        // as external memory outside the V8 managed heap, eliminating this penalty.
+        // A 7×128×128 float32 frame: base64 string = ~1.2 MB in V8; Buffer = ~448 KB.
+        mem.history_frames.push(Buffer.from(new_frame, 'base64'));
         if (mem.history_frames.length > 4) {
             mem.history_frames.shift(); // FIFO T=4 (Worker brings the 5th day)
         }
@@ -239,6 +252,26 @@ function setupWatcher() {
         dirWatcher = fs.watch('/tmp', (eventType, filename) => {
             if (filename === 'prepare_jump' && !flightMode) {
                 console.log("❄️ GUARDIAN: PREPARE JUMP SIGNAL DETECTED. PREPARING FOR MIGRATION...");
+
+                // =============================================================
+                // PRE-FREEZE STATE PRUNING (Change 1.1)
+                // Strip ephemeral inference outputs from all fire missions.
+                // These are derived outputs that the worker will regenerate
+                // on the next inference cycle after landing. Keeping them in
+                // fleetMemory wastes ~350 KB per fire in the CRIU checkpoint.
+                // =============================================================
+                const EPHEMERAL_KEYS = ['predicted_fire_mask', 'predicted_probability_mask', 'prev_fire_mask'];
+                let totalPruned = 0;
+                for (const fid of Object.keys(fleetMemory)) {
+                    for (const key of EPHEMERAL_KEYS) {
+                        if (fleetMemory[fid][key] && fleetMemory[fid][key].length > 0) {
+                            totalPruned += fleetMemory[fid][key].length;
+                            fleetMemory[fid][key] = [];
+                        }
+                    }
+                }
+                console.log(`🧹 GUARDIAN: Pre-freeze pruning complete. Stripped ${totalPruned} ephemeral elements from ${Object.keys(fleetMemory).length} fire(s).`);
+
                 flightMode = true;
                 if (serverInstance) {
                     serverInstance.close(() => console.log("Guardian HTTP Server closed."));
@@ -249,6 +282,21 @@ function setupWatcher() {
                     redisSubscriber.quit();
                     redisSubscriber = null;
                 }
+
+                // =============================================================
+                // SYNCHRONOUS GARBAGE COLLECTION (Change 5.2)
+                // Force V8 to sweep the heap and reclaim the memory from the 
+                // stripped arrays BEFORE we write freeze_ack. If we don't do this,
+                // the stripped arrays remain as "floating garbage" and CRIU will
+                // snapshot them anyway, keeping the payload at 137MB.
+                // =============================================================
+                if (global.gc) {
+                    console.log("🧹 GUARDIAN: Forcing synchronous Garbage Collection...");
+                    global.gc();
+                } else {
+                    console.log("⚠️ GUARDIAN: global.gc() not available. Payload may be bloated.");
+                }
+
                 fs.writeFileSync('/tmp/freeze_ack', 'ACK');
                 console.log("❄️ GUARDIAN: ACK sent. Ready to be frozen by CRIU.");
             }

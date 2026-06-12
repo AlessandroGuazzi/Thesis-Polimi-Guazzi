@@ -2,13 +2,20 @@
 #  SPACE CLOUD V7 - KUBERNETES MISSION DEPLOYMENT (Dual-Container Pod)
 #  Description:
 #  Orchestrates the 'sidecar-guardian' (stateful, CRIU-migratable) and the
-#  'payload-phoenix' (ResNet-18 Data-Level Fusion Worker) in the same pod.
+#  'payload-phoenix' (ONNX Data-Level Fusion Worker) in the same pod.
+#
+#  CRIU MIGRATION SCOPE:
+#   - ONLY the 'sidecar-guardian' container is checkpointed by CRIU.
+#   - The 'payload-phoenix' worker is killed during migration and cold-restarted
+#     from its original container image on the destination node.
+#   - The worker recovers temporal context from the Guardian via GET /state/history.
 #
 #  Key changes from V6:
 #   - Payload is strictly STATELESS (Zero memory retention).
 #   - Port 5005/UDP added for 120-channel telemetry ingestion.
 #   - Heavy historical buffers shifted to Earth Ground Station.
 #   - Added strict Resource Quotas for Guardian to prevent Noisy Neighbor.
+#   - Guardian pre-freeze pruning strips ephemeral masks before CRIU checkpoint.
 # =============================================================================
 
 apiVersion: apps/v1
@@ -30,6 +37,13 @@ spec:
       # === ORBITAL CONSTRAINT ===
       nodeSelector:
         type: satellite
+
+      # === PROCESS NAMESPACE ISOLATION (Change 3.1) ===
+      # Explicit declaration that containers do NOT share a process namespace.
+      # This is the K8s default, but is set explicitly to document the CRIU
+      # isolation boundary: the Guardian's PID namespace is checkpointed
+      # independently — CRIU never walks the worker's process tree.
+      shareProcessNamespace: false
 
       # === PHASE 1: QoS PREVENTION (SOFT ANTI-AFFINITY) ===
       affinity:
@@ -97,9 +111,11 @@ spec:
               memory: "512Mi"
 
         # -----------------------------------------------------------
-        # 2. PHOENIX (Stateless Phoenix Worker — ResNet-18 CNN)
-        # This container receives UDP frames and runs the ONNX model.
-        # It is intentionally NOT migrated via CRIU.
+        # 2. PHOENIX (Stateless Worker — ONNX CNN)
+        # NOTE: This container is NOT migrated via CRIU. It is killed
+        # during migration and cold-restarted from its original image
+        # on the destination node. It recovers temporal context from
+        # the Guardian via GET /state/history on each inference frame.
         # -----------------------------------------------------------
         - name: payload-phoenix
           image: localhost/space-workload:latest

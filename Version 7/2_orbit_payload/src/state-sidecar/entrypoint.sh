@@ -7,4 +7,4 @@
 # which is essential for CRIU to correctly identify the target process.
 echo "🛡️  GUARDIAN: Cold Start Initialization..."
 
-exec node state_manager.js
+exec node --expose-gc state_manager.js

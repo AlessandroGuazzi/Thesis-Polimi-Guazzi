@@ -27,16 +27,34 @@ TOTAL_CHANNELS = 35     # 7 features × 5 days (assembled from Guardian FIFO + c
 # =====================================================================
 CALIBRATION_THRESHOLD = 0.0
 
-print("🚀 WORKER: Initializing ONNX Runtime Session...", flush=True)
-opts = ort.SessionOptions()
-opts.inter_op_num_threads = 1
-opts.intra_op_num_threads = 1
+# =============================================================================
+# ONNX SESSION — LAZY INITIALIZATION (Change 2.1)
+# =============================================================================
+# The ONNX model is NOT loaded at import time. It is deferred until the first
+# frame that actually requires inference (when history cache has >= 4 frames).
+# During the warm-up phase (days 1–4), the worker runs with ~20 MB RSS
+# (Python + NumPy only) instead of ~120 MB (with ONNX Runtime loaded).
+# After a migration cold-restart, this also speeds up boot time — the model
+# is loaded lazily only when the first real inference frame arrives.
+# =============================================================================
+session = None
 
-try:
-    session = ort.InferenceSession('wsts_model.onnx', sess_options=opts, providers=['CPUExecutionProvider'])
-    print("✅ WORKER: ONNX Session ready.", flush=True)
-except Exception as e:
-    session = None
+def _ensure_session():
+    """Lazy-load the ONNX model on first use. Returns the session or None."""
+    global session
+    if session is not None:
+        return session
+    print("🚀 WORKER: Initializing ONNX Runtime Session (lazy)...", flush=True)
+    opts = ort.SessionOptions()
+    opts.inter_op_num_threads = 1
+    opts.intra_op_num_threads = 1
+    try:
+        session = ort.InferenceSession('wsts_model.onnx', sess_options=opts, providers=['CPUExecutionProvider'])
+        print("✅ WORKER: ONNX Session ready.", flush=True)
+    except Exception as e:
+        print(f"❌ WORKER: ONNX load failed: {e}", flush=True)
+        session = None
+    return session
 
 def compute_center_of_mass(pred_2d):
     fire_coords = np.argwhere(pred_2d == 1)
@@ -59,8 +77,7 @@ def process_frame(frame_array, fire_id, day_id):
     """Stateless conditional inference cycle:
     ① GET history from Guardian (with exponential backoff during CRIU freezes)
     ② If cache < 4 frames → WARM-UP: skip ONNX, POST frame to populate buffer
-    ③ If cache = 4 frames → ACTIVE: assemble 35-ch, ONNX, POST frame + real metrics"""
-    if session is None: return
+    ③ If cache = 4 frames → ACTIVE: lazy-load ONNX, assemble 35-ch, infer, POST"""
 
     # ① Fetch temporal history with exponential backoff (CRIU freeze resilience)
     MAX_RETRIES = 3
@@ -115,6 +132,12 @@ def process_frame(frame_array, fire_id, day_id):
         }
     else:
         # ③ ACTIVE INFERENCE PHASE (Day 5+): Full 35-channel ONNX execution
+        # Lazy-load the ONNX session on first use (Change 2.1)
+        sess = _ensure_session()
+        if sess is None:
+            print(f"❌ WORKER [Incendio {fire_id+1} | Giorno {day_id+1}] | ONNX session unavailable. Skipping inference.", flush=True)
+            return
+
         history_tensors = []
         for h in history_b64[-4:]:
             arr = np.frombuffer(base64.b64decode(h), dtype=np.float32).reshape(CHANNELS_PER_DAY, GRID_H, GRID_W)
@@ -122,9 +145,9 @@ def process_frame(frame_array, fire_id, day_id):
 
         input_tensor = assemble_35_channels(history_tensors, frame_array)
 
-        input_name = session.get_inputs()[0].name
-        output_name = session.get_outputs()[0].name
-        logits = session.run([output_name], {input_name: input_tensor})[0]
+        input_name = sess.get_inputs()[0].name
+        output_name = sess.get_outputs()[0].name
+        logits = sess.run([output_name], {input_name: input_tensor})[0]
 
         # Sigmoid: convert raw logits to continuous probabilities [0.0, 1.0]
         prob_mask = 1.0 / (1.0 + np.exp(-logits.astype(np.float64)))

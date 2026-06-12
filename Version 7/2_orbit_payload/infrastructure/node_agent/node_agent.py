@@ -574,6 +574,12 @@ def _rebuild_and_deploy(tar_path):
     subprocess.run("kubectl scale deployment space-mission --replicas=1", shell=True)
     print(f"⏱️  AGENT: K8s patch done in {time.time() - t0:.2f}s", flush=True)
 
+    # ---- CRIU SCOPE LOGGING (Change 4.1) ----
+    # Document the architectural intention: Guardian is restored from CRIU checkpoint,
+    # worker cold-boots fresh from its original image (ONNX model loaded lazily).
+    print(f"📋 AGENT: Guardian → CRIU-restored image ({new_image_tag})", flush=True)
+    print(f"📋 AGENT: Worker  → fresh cold-boot image (localhost/space-workload:latest)", flush=True)
+
     # ---- STEP 3: Wait for pod to boot, signal landing, then confirm readiness ----
     t0 = time.time()
     pod_name = None
@@ -614,7 +620,10 @@ def _rebuild_and_deploy(tar_path):
                 shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
             )
             if probe.returncode == 0:
-                print(f"\u2705 AGENT: Total restore time: {time.time() - t_start:.2f}s", flush=True)
+                # ---- DUAL-CONTAINER READINESS CONFIRMATION (Change 4.2) ----
+                print(f"✅ AGENT: Guardian is alive on destination node.", flush=True)
+                print(f"📋 AGENT: Worker container cold-booting independently (stateless, no CRIU restore).", flush=True)
+                print(f"✅ AGENT: Total restore time: {time.time() - t_start:.2f}s", flush=True)
                 return
 
         time.sleep(0.1)

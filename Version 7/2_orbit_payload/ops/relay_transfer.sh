@@ -53,6 +53,15 @@ SOURCE_SHA=$(sha256sum "$CHECKPOINT_PATH" | cut -d' ' -f1)
 FILE_SIZE=$(du -h "$CHECKPOINT_PATH" | cut -f1)
 echo -e "${GREEN}[SRC] Checkpoint: $CHECKPOINT_PATH ($FILE_SIZE) SHA256: ${SOURCE_SHA:0:16}...${NC}"
 
+# ---- Checkpoint Size Regression Detector (Change 3.5) ----
+# If the checkpoint exceeds 30 MB, something has re-inflated the Guardian's
+# fleetMemory (e.g., ephemeral masks not pruned, base64 strings not compacted).
+FILE_SIZE_BYTES=$(stat -c %s "$CHECKPOINT_PATH")
+if [ "$FILE_SIZE_BYTES" -gt 31457280 ]; then
+    echo -e "${RED}⚠️  PAYLOAD BLOAT WARNING: Checkpoint is ${FILE_SIZE}! (Expected < 30 MB)${NC}"
+    echo -e "${RED}    This indicates a regression in the Guardian's pre-freeze pruning strategy.${NC}"
+fi
+
 t_start=$(date +%s%N)
 
 # ---- Multi-Hop Relay Loop ----

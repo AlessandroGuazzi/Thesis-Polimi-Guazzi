@@ -247,15 +247,20 @@ app.post('/state', (req, res) => {
     }
 });
 
-app.on('connection', (socket) => {
-    activeSockets.add(socket);
-    socket.on('close', () => activeSockets.delete(socket));
-});
-
 function startServer() {
     if (serverInstance) serverInstance.close();
     serverInstance = app.listen(PORT, () => {
         console.log(`🚀 Guardian V7.2 Multi-Tenant Sidecar listening on port ${PORT}`);
+    });
+
+    // FIX: Track TCP sockets on the actual http.Server, NOT on the Express app.
+    // Express does not emit 'connection' events — only http.Server does.
+    // Without this, activeSockets was always empty and the socket.destroy()
+    // loop during prepare_jump was a no-op, causing SSE connections to hang
+    // for ~15s during migration instead of being closed immediately.
+    serverInstance.on('connection', (socket) => {
+        activeSockets.add(socket);
+        socket.on('close', () => activeSockets.delete(socket));
     });
 }
 

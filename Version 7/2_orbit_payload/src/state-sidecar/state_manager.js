@@ -89,9 +89,7 @@ function initRedisSub() {
 // ---------------------------------------------------------------------------
 // SERVER / SSE
 // ---------------------------------------------------------------------------
-function broadcastToClients() {
-    // Send the state of the most recently updated fire mission to the dashboard.
-    // Also include a lightweight summary of all active missions.
+function buildPayload() {
     let liteState = {
         status: "WAITING_PAYLOAD",
         fire_id: 0, day_id: 0, input_fire_px: 0,
@@ -110,10 +108,6 @@ function broadcastToClients() {
         delete liteState.history_frames;
     }
 
-    // Build a lightweight list of all tracked missions for the dashboard
-    // IMPORTANT: We do NOT spread fleetMemory[fid].internal_state here because
-    // it contains massive 128x128 arrays for every single fire, which causes 
-    // a 15MB JSON payload that freezes the dashboard.
     const activeMissions = Object.keys(fleetMemory).map(fid => ({
         fire_id: fleetMemory[fid].fire_id,
         day_id: fleetMemory[fid].day_id,
@@ -125,16 +119,26 @@ function broadcastToClients() {
         tracking_iou: fleetMemory[fid].internal_state ? fleetMemory[fid].internal_state.tracking_iou : 0
     }));
 
-    const payload = {
+    let guardianId = "GUARDIAN-UNKNOWN";
+    try {
+        guardianId = fs.readFileSync('/etc/hostname', 'utf8').trim();
+    } catch (e) {
+        guardianId = process.env.HOSTNAME || "GUARDIAN-UNKNOWN";
+    }
+
+    return {
         internal_state: liteState,
         active_missions: activeMissions,
         active_mission_count: activeMissions.length,
         environment: fleetState,
         flight_mode: flightMode,
         migration_epoch: migrationEpoch,
-        guardian_id: process.env.HOSTNAME || "GUARDIAN-UNKNOWN"
+        guardian_id: guardianId
     };
+}
 
+function broadcastToClients() {
+    const payload = buildPayload();
     const dataStr = `data: ${JSON.stringify(payload)}\n\n`;
     sseClients.forEach(client => {
         client.res.write(dataStr);
@@ -147,6 +151,10 @@ app.get('/api/stream', (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     sseClients.push({ req, res });
     req.on('close', () => { sseClients = sseClients.filter(c => c.res !== res); });
+
+    // SEND INITIAL STATE IMMEDIATELY SO DASHBOARD RESUMES INSTANTLY
+    const payload = buildPayload();
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
 });
 
 app.get('/state', (req, res) => {
@@ -286,6 +294,7 @@ function setupWatcher() {
                 }
                 for (const socket of activeSockets) socket.destroy();
                 activeSockets.clear();
+                sseClients = []; // CLEAR DEAD SSE CLIENTS!
                 if (redisSubscriber) {
                     redisSubscriber.quit();
                     redisSubscriber = null;

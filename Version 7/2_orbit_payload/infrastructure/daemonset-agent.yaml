@@ -115,9 +115,9 @@ spec:
 
             # Battery thresholds for VirtualSatellite Trigger C prediction (%)
             - name: B_SAFE
-              value: "-15.0"
+              value: "5.0"
             - name: B_FUSE
-              value: "-5.0"
+              value: "2.0"
 
             # Lateral tracking threshold for Trigger B CoM edge detection (pixels)
             - name: LATERAL_THRESHOLD

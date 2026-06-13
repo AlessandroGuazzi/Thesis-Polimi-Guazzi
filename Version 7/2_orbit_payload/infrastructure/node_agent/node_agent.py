@@ -70,23 +70,23 @@ ORBIT_PERIOD   = 300.0
 ECLIPSE_START  = 220
 ECLIPSE_END    = 320
 TEMP_SPACE     = -270.0
-THERMAL_MASS   = 80.0
+THERMAL_MASS   = 180.0
 HEATING_SUN    = 100.0
 HEATING_CPU_IDLE = 10.0
 # --- DUAL WORKLOAD THERMAL CONSTANTS ---
-HEATING_SML_LOAD     = 80.0
+HEATING_SML_LOAD     = 10.0
 HEATING_MASTER_LOAD  = 10.0
 COOLING_K      = 4.0
 # --- ENERGY DYNAMICS CONSTANTS ---
 BATTERY_CHARGE_RATE = 5.0
 BATTERY_DRAIN_IDLE_SUN = 1.0
-BATTERY_DRAIN_IDLE_ECLIPSE = 0.25  # Deep sleep hibernation mode
+BATTERY_DRAIN_IDLE_ECLIPSE = 0.1  # Deep sleep hibernation mode
 
 # Differentiated payload drain (Sun vs. Eclipse)
-BATTERY_DRAIN_SML_SUN = 3.0
-BATTERY_DRAIN_SML_ECLIPSE = 4.0    # Higher drain: requires active heaters in the dark
-BATTERY_DRAIN_MASTER_SUN = 1.0
-BATTERY_DRAIN_MASTER_ECLIPSE = 1.5 # Moderate heater overhead
+BATTERY_DRAIN_SML_SUN = 0.1
+BATTERY_DRAIN_SML_ECLIPSE = 0.1    # Higher drain: requires active heaters in the dark
+BATTERY_DRAIN_MASTER_SUN = 0.1
+BATTERY_DRAIN_MASTER_ECLIPSE = 0.1 # Moderate heater overhead
 
 
 class VirtualSatellite:
@@ -406,6 +406,9 @@ def trigger_master_migration(topology_redis, migration_type, exclude_node=""):
     print(f"📡 AGENT: Starting relay transfer to {route_result['route']}...", flush=True)
     relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
     subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
+
+    print("🧹 AGENT: Tearing down local master pod to prevent ghost hardware triggers...", flush=True)
+    subprocess.run("kubectl scale deployment topology-master --replicas=0", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _request_checkpoint(app_label, container_name):
@@ -800,6 +803,9 @@ def main():
 
                 # ---- EXECUTE HARDWARE MIGRATION SCENARIOS ----
                 if should_migrate:
+                    if migration_lock.locked():
+                        continue  # Silently wait while an evacuation is actively running
+                    
                     # SCENARIO 1: DOUBLE EVACUATION
                     if has_sml and has_master:
                         # Ensure both the SML global cooldown and the Master local cooldown have passed

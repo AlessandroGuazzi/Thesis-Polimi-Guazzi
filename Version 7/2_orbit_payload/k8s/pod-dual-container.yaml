@@ -87,6 +87,8 @@ spec:
           env:
             - name: NODE_NAME
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: NODE_OPTIONS
+              value: "--expose-gc"
 
           # === CRITICAL: ELEVATED PRIVILEGES FOR CRIU ===
           securityContext:

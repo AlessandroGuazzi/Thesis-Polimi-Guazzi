@@ -34,8 +34,8 @@ HEATING_SUN = 100.0  # Heat gain from direct solar radiation
 HEATING_CPU_IDLE = 10.0  # Heat gain from hardware in standby
 
 # --- DUAL WORKLOAD THERMAL CONSTANTS ---
-HEATING_SML_LOAD = 60.0  # Massive matrix multiplications
-HEATING_MASTER_LOAD = 15.0  # Graph database & Lua script execution
+HEATING_SML_LOAD = 10.0  # Massive matrix multiplications
+HEATING_MASTER_LOAD = 10.0  # Graph database & Lua script execution
 
 COOLING_K = 4.0  # Radiative cooling efficiency constant
 
@@ -44,10 +44,10 @@ BATTERY_DRAIN_IDLE_SUN = 0.1  # Power consumption in standby (sunlight)
 BATTERY_DRAIN_IDLE_ECLIPSE = 0.1  # Deep sleep hibernation in eclipse
 
 # Differentiated payload drain (Sun vs. Eclipse)
-BATTERY_DRAIN_SML_SUN = 0.7
-BATTERY_DRAIN_SML_ECLIPSE = 0.7    # Higher drain: requires active heaters in the dark
-BATTERY_DRAIN_MASTER_SUN = 0.2
-BATTERY_DRAIN_MASTER_ECLIPSE = 0.2 # Moderate heater overhead
+BATTERY_DRAIN_SML_SUN = 0.1
+BATTERY_DRAIN_SML_ECLIPSE = 0.1    # Higher drain: requires active heaters in the dark
+BATTERY_DRAIN_MASTER_SUN = 0.1
+BATTERY_DRAIN_MASTER_ECLIPSE = 0.1 # Moderate heater overhead
 
 # Setup logging for simulation monitoring
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [SIM] %(message)s', datefmt='%H:%M:%S')

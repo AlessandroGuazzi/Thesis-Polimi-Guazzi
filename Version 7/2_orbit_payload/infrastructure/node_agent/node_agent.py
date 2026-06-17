@@ -334,42 +334,79 @@ def _update_adjacency(topology_redis, telemetry):
 def trigger_local_migration(topology_redis, migration_type, exclude_node=""):
     """Sequence for migrating the Time-Series CNN Payload"""
     print(f"\n🚨 AGENT: Payload Migration triggered! Type={migration_type} | Exclude={exclude_node}", flush=True)
-    route_result = query_floating_master(topology_redis, migration_type, exclude_node)
 
-    # Catch both None and empty route arrays
-    if not route_result or not route_result.get("route"):
-        return None
+    failed_nodes = set()
+    if exclude_node:
+        for node in exclude_node.split(","):
+            if node:
+                failed_nodes.add(node)
 
-    # Capture the final destination of the calculated multi-hop route
-    destination = route_result["route"][-1]
+    destination = None
+    while True:
+        exclude_str = ",".join(failed_nodes)
+        route_result = query_floating_master(topology_redis, migration_type, exclude_str)
 
-    manifest = {"route": route_result["route"], "type": migration_type, "source": NODE_NAME}
-    manifest_path = "/tmp/migration_manifest.json"
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f)
+        # Catch both None and empty route arrays
+        if not route_result or not route_result.get("route"):
+            print("❌ AGENT: No valid path found after excluding failed nodes. Aborting migration.", flush=True)
+            # Re-animate local container if it is in flightMode
+            try:
+                open("/tmp/landed", "w").close()
+                print("🔄 AGENT: Recovering local payload pod (touched /tmp/landed).", flush=True)
+            except:
+                pass
+            return None
 
-    open("/tmp/flush_state", "w").close()
-    start = time.time()
-    while not os.path.exists("/tmp/flush_complete"):
-        if time.time() - start > FLUSH_TIMEOUT_SECONDS: break
-        time.sleep(0.1)
+        # Capture the final destination of the calculated multi-hop route
+        destination = route_result["route"][-1]
 
-    for f in ["/tmp/flush_state", "/tmp/flush_complete", "/tmp/prepare_jump"]:
-        try:
-            os.remove(f)
-        except:
-            pass
+        manifest = {"route": route_result["route"], "type": migration_type, "source": NODE_NAME}
+        manifest_path = "/tmp/migration_manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
 
-    open("/tmp/prepare_jump", "w").close()
-    time.sleep(0.5)
+        open("/tmp/flush_state", "w").close()
+        start = time.time()
+        while not os.path.exists("/tmp/flush_complete"):
+            if time.time() - start > FLUSH_TIMEOUT_SECONDS: break
+            time.sleep(0.1)
 
-    # Use the consolidated checkpoint engine
-    checkpoint_path = _request_checkpoint("space-mission", "sidecar-guardian")
-    if not checkpoint_path: return None
+        for f in ["/tmp/flush_state", "/tmp/flush_complete", "/tmp/prepare_jump"]:
+            try:
+                os.remove(f)
+            except:
+                pass
 
-    print(f"📡 AGENT: Starting relay transfer to {route_result['route']}...", flush=True)
-    relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
-    subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
+        open("/tmp/prepare_jump", "w").close()
+        time.sleep(0.5)
+
+        # Use the consolidated checkpoint engine
+        checkpoint_path = _request_checkpoint("space-mission", "sidecar-guardian")
+        if not checkpoint_path:
+            print("❌ AGENT: Checkpoint failed. Aborting migration.", flush=True)
+            try:
+                open("/tmp/landed", "w").close()
+                print("🔄 AGENT: Recovering local payload pod (touched /tmp/landed).", flush=True)
+            except:
+                pass
+            return None
+
+        print(f"📡 AGENT: Starting relay transfer to {route_result['route']}...", flush=True)
+        relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
+        res = subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
+
+        if res.returncode == 0:
+            print(f"✅ AGENT: Relay transfer succeeded to {destination}.", flush=True)
+            break
+        else:
+            print(f"⚠️ AGENT: Relay transfer to {destination} failed (code {res.returncode}). Retrying path calculation...", flush=True)
+            failed_nodes.add(destination)
+            # Clean up local flags for retry
+            for trigger in ["/tmp/prepare_jump", "/tmp/flush_complete", "/tmp/flush_state"]:
+                try:
+                    os.remove(trigger)
+                except:
+                    pass
 
     # ---- SYNCHRONOUS SOURCE TEARDOWN (Fix for Double Migration) ----
     # Instantly kill the local pod on the source node so the Digital Twin Simulator
@@ -393,24 +430,45 @@ def trigger_master_migration(topology_redis, migration_type, exclude_node=""):
     # FIX: Added exclude_node to the print statement for easier debugging
     print(f"\n🚨 AGENT: MASTER Topology Migration triggered! Type={migration_type} | Exclude={exclude_node}", flush=True)
 
-    route_result = query_floating_master(topology_redis, migration_type, exclude_node)
-    if not route_result or not route_result.get("route"): return
+    failed_nodes = set()
+    if exclude_node:
+        for node in exclude_node.split(","):
+            if node:
+                failed_nodes.add(node)
 
-    manifest = {"route": route_result["route"], "type": migration_type, "source": NODE_NAME}
-    manifest_path = "/tmp/master_migration_manifest.json"
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f)
+    destination = None
+    while True:
+        exclude_str = ",".join(failed_nodes)
+        route_result = query_floating_master(topology_redis, migration_type, exclude_str)
+        if not route_result or not route_result.get("route"):
+            print("❌ AGENT: No valid path found for Master. Aborting migration.", flush=True)
+            return None
 
-    # Use the consolidated checkpoint engine
-    checkpoint_path = _request_checkpoint("topology-master", "topology-redis")
-    if not checkpoint_path: return
+        destination = route_result["route"][-1]
 
-    print(f"📡 AGENT: Starting relay transfer to {route_result['route']}...", flush=True)
-    relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
-    subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
+        manifest = {"route": route_result["route"], "type": migration_type, "source": NODE_NAME}
+        manifest_path = "/tmp/master_migration_manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
+
+        # Use the consolidated checkpoint engine
+        checkpoint_path = _request_checkpoint("topology-master", "topology-redis")
+        if not checkpoint_path: return None
+
+        print(f"📡 AGENT: Starting relay transfer to {route_result['route']}...", flush=True)
+        relay_script = os.path.join(os.path.dirname(__file__), "..", "..", "ops", "relay_transfer.sh")
+        res = subprocess.run(["bash", relay_script, checkpoint_path, manifest_path], capture_output=False)
+
+        if res.returncode == 0:
+            print(f"✅ AGENT: Master relay transfer succeeded to {destination}.", flush=True)
+            break
+        else:
+            print(f"⚠️ AGENT: Master relay transfer to {destination} failed (code {res.returncode}). Retrying path calculation...", flush=True)
+            failed_nodes.add(destination)
 
     print("🧹 AGENT: Tearing down local master pod to prevent ghost hardware triggers...", flush=True)
     subprocess.run("kubectl scale deployment topology-master --replicas=0", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return destination
 
 
 def _request_checkpoint(app_label, container_name):
@@ -696,8 +754,13 @@ def _rebuild_and_deploy_master(tar_path):
 def main():
     print(f"🚀 NODE AGENT V6 ONLINE — satellite: {NODE_NAME}", flush=True)
 
-    # Clean up stale IPC files from previous interrupted runs
-    for stale_file in ["/tmp/relay_complete", "/tmp/checkpoint.tar", "/tmp/payload_state.json"]:
+    # Clean up stale IPC files from previous interrupted runs to guarantee a clean slate
+    stale_files = [
+        "/tmp/relay_complete", "/tmp/checkpoint.tar", "/tmp/payload_state.json",
+        "/tmp/prepare_jump", "/tmp/flush_complete", "/tmp/flush_state",
+        "/tmp/freeze_ack", "/tmp/landed"
+    ]
+    for stale_file in stale_files:
         try:
             if os.path.exists(stale_file):
                 os.remove(stale_file)

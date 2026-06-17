@@ -198,7 +198,7 @@ local best_score = INF
 
 for _, name in ipairs(all_nodes) do
     -- Only evaluate nodes we can actually reach (dist < INF)
-    if name ~= source and name ~= exclude_node and dist[name] < INF then
+    if name ~= source and (exclude_node == "" or not string.find(exclude_node, name)) and dist[name] < INF then
 
         local target_score
 

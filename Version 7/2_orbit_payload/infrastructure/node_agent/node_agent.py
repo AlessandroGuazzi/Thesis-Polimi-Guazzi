@@ -229,7 +229,9 @@ def query_floating_master(topology_redis, migration_type, exclude_node=""):
             migration_type, # ARGV[1] = "thermal" or "lateral"
             str(T_SAFE),    # ARGV[2] = safe temperature threshold
             str(T_FUSE),    # ARGV[3] = fuse temperature threshold
-            exclude_node    # ARGV[4] = force split routing
+            str(B_SAFE),    # ARGV[4] = safe battery threshold
+            str(B_FUSE),    # ARGV[5] = fuse battery threshold
+            exclude_node    # ARGV[6] = force split routing
         )
         result = json.loads(raw)
 

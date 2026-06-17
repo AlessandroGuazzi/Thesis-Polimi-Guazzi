@@ -11,11 +11,25 @@
 -- ==============================================================================
 
 local source     = KEYS[1]
-local mig_type   = ARGV[1]   -- "thermal" → find coolest trailing satellite
-                              -- "lateral" → prefer adjacent parallel orbital plane
+local mig_type   = ARGV[1]   -- "thermal" / "energy" → joint health, "lateral" → orbit plane preference
 local T_safe     = tonumber(ARGV[2])
 local T_fuse     = tonumber(ARGV[3])
-local exclude_node = ARGV[4] or "" -- Parameter to split workloads during Double Evacuation
+
+-- Read dynamic battery thresholds or handle backwards compatibility if not passed
+local B_safe     = 15.0
+local B_fuse     = 5.0
+local exclude_node = ""
+
+if ARGV[4] then
+    local possible_b_safe = tonumber(ARGV[4])
+    if possible_b_safe then
+        B_safe = possible_b_safe
+        B_fuse = tonumber(ARGV[5]) or 5.0
+        exclude_node = ARGV[6] or ""
+    else
+        exclude_node = ARGV[4]
+    end
+end
 
 -- -----------------------------------------------------------------------
 -- STEP 1: Load all node telemetry from the Floating Master's Redis Hashes.
@@ -182,18 +196,6 @@ end
 local best_dest = nil
 local best_score = INF
 
--- Define dynamic weighting parameters (alpha, beta) based on the emergency trigger.
--- We bias heavily toward solving the immediate crisis, but retain a secondary
--- weight to prevent migrating into a different type of hardware failure.
-local w_temp, w_batt
-if mig_type == "thermal" then
-    w_temp, w_batt = 0.8, 0.2  -- Existential thermal threat: prioritize cold nodes
-elseif mig_type == "energy" then
-    w_temp, w_batt = 0.2, 0.8  -- Existential energy threat: prioritize charged nodes
-else
-    w_temp, w_batt = 0.5, 0.5  -- Lateral tracking: balance hardware evenly
-end
-
 for _, name in ipairs(all_nodes) do
     -- Only evaluate nodes we can actually reach (dist < INF)
     if name ~= source and name ~= exclude_node and dist[name] < INF then
@@ -205,16 +207,20 @@ for _, name in ipairs(all_nodes) do
             -- computed in Step 3 (which applies the 0.1 directional discount).
             target_score = dist[name]
         else
-            -- MULTI-OBJECTIVE SCALARIZATION (Thermal & Energy)
-            -- 1. Normalize Temperature: 0.0 (at T_safe) to 1.0 (at T_fuse)
-            local t_norm = math.max(0, (temps[name] - T_safe) / (T_fuse - T_safe))
+            -- JOINT MULTIPLICATIVE HEALTH INDEX (Thermal & Energy)
+            -- Normalize within the critical threat ranges: [T_safe, T_fuse] and [B_fuse, B_safe]
+            
+            -- 1. Temperature Health: 1.0 (nominal) to 0.001 (critical limit reached)
+            local t_penalty = math.min(1.0, math.max(0.0, (temps[name] - T_safe) / (T_fuse - T_safe)))
+            local h_temp = math.max(0.001, 1.0 - t_penalty)
 
-            -- 2. Normalize Battery: 0.0 (100% full) to 1.0 (0% dead)
-            local b_norm = 1.0 - (batts[name] / 100.0)
+            -- 2. Battery Health: 1.0 (nominal) to 0.001 (critical limit reached)
+            local b_penalty = math.min(1.0, math.max(0.0, (B_safe - batts[name]) / (B_safe - B_fuse)))
+            local h_batt = math.max(0.001, 1.0 - b_penalty)
 
-            -- 3. Composite Score: S(v) = (α * C_T) + (β * C_B) + (γ * D)
-            -- We use dist[name] * 0.1 as the small path penalty (γ)
-            target_score = (w_temp * t_norm) + (w_batt * b_norm) + (dist[name] * 0.1)
+            -- 3. Minimizing the negative log-utility: S = -ln(H_T) - ln(H_B) + (dist * 0.1)
+            -- Multi-Objective Optimization selection that avoids extreme weak links.
+            target_score = -math.log(h_temp) - math.log(h_batt) + (dist[name] * 0.1)
         end
 
         -- Pick the node with the lowest overall penalty score

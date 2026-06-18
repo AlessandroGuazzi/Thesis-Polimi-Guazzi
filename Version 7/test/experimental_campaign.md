@@ -30,8 +30,6 @@ Triggers a dual hardware crisis with randomized starting conditions to ensure va
 
 * **Evaluation:** This scenario specifically stresses Phase D (Log-Utility Dijkstra) and Phase E (Sequenced Migration), ensuring the system does not route the payload to a node that is thermally safe but critically low on battery.
 
-
-
 ---
 
 ## 2. The 6 Configuration Profiles (Ablation Study)
@@ -42,24 +40,17 @@ The campaign evaluates the system across 6 distinct configuration profiles to is
 
 * **System State:** All optimization phases (Predictive Twin, Cooldown Timer, State-Sidecar split, Log-Utility routing, and Sequenced Migration) are fully active.
 
-
 * **Goal:** Establish baseline performance where the system survives all stressors and maintains service continuity.
-
-
 
 ### Configuration 2: Reactive Migration Only ($\Delta$ Phase A)
 
 * **System State:** The predictive forecasting model is disabled; the system triggers migrations reactively only when absolute physical resource thresholds are breached.
 
-
 * **Goal:** Demonstrate that reactive-only migrations fail to initiate early enough to complete state transfers prior to hardware shutdown.
-
-
 
 ### Configuration 3: No Cooldown Damping ($\Delta$ Phase B)
 
 * **System State:** The global cooldown timer is disabled, allowing consecutive migrations to be triggered immediately.
-
 
 * **Goal:** Demonstrate that sequential thermal crises (Scenario 2) without cooldown limits trigger rapid, cyclic migration loops ("Ping-Pong Effect") between neighboring nodes, resulting in cluster exhaustion[cite: 3, 8].
 
@@ -67,28 +58,19 @@ The campaign evaluates the system across 6 distinct configuration profiles to is
 
 * **System State:** The state-sidecar split optimization is disabled; the system performs full monolithic checkpointing (transferring 160MB monolithic worker checkpoints instead of 24MB state-only checkpoints).
 
-
 * **Goal:** Prove that massive checkpoints over bandwidth-constrained LEO links cause timeout failures (Scenario 1).
-
-
 
 ### Configuration 5: Linear Routing Utility ($\Delta$ Phase D)
 
 * **System State:** The log-utility path planning algorithm is replaced with a standard linear routing metric.
 
-
 * **Goal:** Prove that linear utility functions allow moderate conditions in one metric to offset terminal risks in another (Scenario 3), leading to suboptimal routing.
-
-
 
 ### Configuration 6: Concurrent Evacuation ($\Delta$ Phase E)
 
 * **System State:** Sequenced migration logic is disabled; uncoordinated evacuations of containerized workloads are executed simultaneously.
 
-
 * **Goal:** Show that uncoordinated double-evacuations route multiple workloads to the same destination simultaneously, resulting in resource contention.
-
-
 
 ---
 
@@ -98,13 +80,9 @@ To ensure the evaluation is both comprehensive and clean, the campaign measures 
 
 1. **Workload Survival Rate (%)**: A binary metric tracking whether the system successfully migrates and maintains running instances of the SML and Master workloads (100% or 0%).
 
-
 2. **Migration Delay (Seconds)**: The total wall-clock duration from the initiation of the checkpointing process to the complete activation of the workload container on the destination node.
 
-
 3. **Constellation Bandwidth Footprint (MB)**: The total volume of data transmitted across LEO links, calculated as the product of the number of transmission hops and the checkpoint size.
-
-
 
 ---
 
@@ -129,13 +107,9 @@ To satisfy the underlying assumptions required for subsequent parametric analysi
 
 * **Adequate Replication ($N = 10$):** Each unique treatment combination $(A_i, E_j)$ is executed exactly 10 times, providing sufficient degrees of freedom to calculate pure experimental error variance ($\sigma^2$) for Analysis of Variance (ANOVA).
 
-
 * **Run-Order Randomization:** The execution sequence of all 180 runs is randomized to eliminate temporal biases such as memory leaks or disk storage degradation.
 
-
 * **Nuisance Blocking:** Non-experimental conditions (background cluster load, initial SML/Master states) are strictly held constant as blocking factors.
-
-
 
 ### 4.2. Experimental Run Matrix Breakdown
 

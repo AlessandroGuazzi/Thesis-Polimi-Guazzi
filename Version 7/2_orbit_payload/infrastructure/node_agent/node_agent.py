@@ -50,6 +50,9 @@ GRID_W = 128  # Width of the satellite's visual swath (matches the worker's GRID
 DELTA_TEMP    = 1.0   # Degrees Celsius
 DELTA_BATTERY = 5.0   # Percentage points
 
+# Global tracker for stay-local suppression window
+last_stay_local_time = 0.0
+
 # How long (seconds) to wait for the Guardian's flush_complete signal
 FLUSH_TIMEOUT_SECONDS = 25.0
 
@@ -236,7 +239,12 @@ def query_floating_master(topology_redis, migration_type, exclude_node=""):
         result = json.loads(raw)
 
         if "error" in result:
-            print(f"⚠️  AGENT: Lua returned error: {result['error']}", flush=True)
+            if result["error"] == "STAY_LOCAL":
+                global last_stay_local_time
+                last_stay_local_time = time.time()
+                print(f"⚠️  AGENT: Stay Local chosen. Current health (penalty: {result.get('source_score', 0):.3f}) is superior to best neighbor (penalty: {result.get('best_dest_score', 0):.3f}). Suppressing proactive migrations for 10s.", flush=True)
+            else:
+                print(f"⚠️  AGENT: Lua returned error: {result['error']}", flush=True)
             return None
 
         print(f"🗺️  AGENT: Route found ({migration_type}): {result['route']}", flush=True)
@@ -787,6 +795,7 @@ def main():
 
     last_mig_master = 0
     COOLDOWN_SEC = 15.0
+    had_workload = False
 
     channel = f"telemetry/{NODE_NAME}"
     print(f"📡 AGENT: Subscribing to {channel}...", flush=True)
@@ -813,8 +822,17 @@ def main():
                 # We trust the simulation environment's flags completely.
                 has_sml = local_state.get("is_working", False)
                 has_master = local_state.get("has_master", False)
+                current_workload = has_sml or has_master
 
-                if not has_sml and not has_master: continue
+                # Workload arrival detection: reset suppression timer to clean slate
+                if current_workload and not had_workload:
+                    global last_stay_local_time
+                    last_stay_local_time = 0.0
+                    print("ℹ️  AGENT: Workload arrived on node. Resetting stay-local suppression timer.", flush=True)
+
+                had_workload = current_workload
+
+                if not current_workload: continue
                 # FIX (Change 2.2): Removed migration_lock.locked() advisory check.
                 # It was a non-atomic read — not a real guard. The acquire(blocking=False)
                 # calls downstream are the correct atomic gates.
@@ -860,11 +878,15 @@ def main():
 
                 # 2. THE PROACTIVE MPC (Predictive forecast for the next 30 seconds)
                 else:
-                    twin = VirtualSatellite(local_state, has_sml, has_master)
-                    is_safe, pred_reason, routing_type = twin.predict_future(30)
-                    if not is_safe:
-                        should_migrate = True
-                        migration_reason = f"PROACTIVE MPC: {pred_reason}"
+                    if time.time() - last_stay_local_time < 10.0:
+                        # Skip proactive MPC checks during the stay-local suppression window
+                        pass
+                    else:
+                        twin = VirtualSatellite(local_state, has_sml, has_master)
+                        is_safe, pred_reason, routing_type = twin.predict_future(30)
+                        if not is_safe:
+                            should_migrate = True
+                            migration_reason = f"PROACTIVE MPC: {pred_reason}"
 
                 # ---- EXECUTE HARDWARE MIGRATION SCENARIOS ----
                 if should_migrate:

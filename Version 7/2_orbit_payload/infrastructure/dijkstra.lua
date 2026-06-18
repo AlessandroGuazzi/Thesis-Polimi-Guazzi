@@ -231,6 +231,32 @@ for _, name in ipairs(all_nodes) do
     end
 end
 
+-- Calculate source node health score for "STAY_LOCAL" evaluation
+local source_score = INF
+local is_failsafe = false
+if temps[source] and batts[source] then
+    is_failsafe = (temps[source] >= T_fuse) or (batts[source] <= B_fuse)
+    if not (mig_type == "lateral_east" or mig_type == "lateral_west") then
+        local t_penalty_src = math.min(1.0, math.max(0.0, (temps[source] - T_safe) / (T_fuse - T_safe)))
+        local h_temp_src = math.max(0.001, 1.0 - t_penalty_src)
+
+        local b_penalty_src = math.min(1.0, math.max(0.0, (B_safe - batts[source]) / (B_safe - B_fuse)))
+        local h_batt_src = math.max(0.001, 1.0 - b_penalty_src)
+
+        source_score = -math.log(h_temp_src) - math.log(h_batt_src)
+    end
+end
+
+-- If the best destination has a worse health penalty than the source, and we are not in a critical failsafe, stay local
+if not is_failsafe and best_dest and best_score >= source_score then
+    return cjson.encode({
+        error = "STAY_LOCAL",
+        source = source,
+        source_score = source_score,
+        best_dest_score = best_score
+    })
+end
+
 -- If no valid destination was found, return an error object
 if not best_dest then
     return cjson.encode({ error = "NO_ROUTE", source = source })

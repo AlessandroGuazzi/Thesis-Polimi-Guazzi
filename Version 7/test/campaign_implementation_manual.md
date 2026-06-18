@@ -1,48 +1,63 @@
 # Campaign Implementation & Automation Manual
 
-## Introduction: Campaign Automation Architecture
+## Introduction: The Deterministic Automation Architecture
 
-This document defines the automation architecture and implementation requirements designed to execute the [Thesis Experimental Campaign](file:///home/aless6/.gemini/antigravity-ide/brain/3694be95-a8a7-469c-90d0-fd93b338fd69/experimental_campaign.md) for the **Space Cloud V7** orchestration layer. 
+This document defines the automation architecture and implementation requirements designed to execute the 180-run Factorial Experimental Campaign for the **Space Cloud V7** orchestration layer.
 
-To ensure the statistical validity of the 180-run factorial design, the campaign execution is fully programmatic. This guarantees precise timing for environmental stress injection, enforces strict variance control on network delays, and removes manual telemetry collection steps.
+To ensure the statistical validity of the Design of Experiments (DoE) and to satisfy strict Analysis of Variance (ANOVA) assumptions, the campaign execution must be entirely programmatic and completely decoupled from stochastic environmental variance.
 
 This manual is structured into four core implementation areas:
-1. **ConfigMap Parameterization:** Dynamic configuration of edge agent ablation modes via Kubernetes ConfigMaps to prevent image rebuilding.
-2. **Orchestrator Automation:** The programmatic execution logic of the "Campaign Runner" to coordinate test setup, timing, stress injection, and teardown.
+
+1. **ConfigMap Parameterization:** Dynamic configuration of edge agent ablation modes.
+2. **The Deterministic Orchestrator:** The programmatic "God-Mode" runner that handles Sterile Baselines, Redis Ghost Publishing, and HTTP Ghost Worker injections.
 3. **CSV Telemetry Sinks:** Upgrading logging infrastructure to write response metrics directly to standardized datasets.
-4. **Factorial DoE Scaling:** Design adjustments to scale the campaign structure to a full Ablation-based factorial experiment.
+4. **Factorial DoE Scaling:** Multi-factor analysis setup.
 
 ---
 
 ## 1. Parameterize the Ablation via ConfigMaps
 
-To support rapid configuration changes without rebuilding container images, the system configurations are parameterized using Kubernetes resources.
+To support rapid configuration changes without rebuilding container images, the system configurations (Ablation levels) are parameterized using Kubernetes resources.
 
 ### Architectural Setup
-*   **Externalize Variables:** Modify agent and routing source code to read configuration flags from environment variables.
-    *   *Example in Python:* `ENABLE_PREDICTIVE_TWIN = os.getenv('ENABLE_PREDICTIVE_TWIN', 'true').lower() == 'true'`
-    *   *Example for Cooldown:* `COOLDOWN_SEC = float(os.getenv('COOLDOWN_SEC', '15.0'))`
-    *   *Example for Routing:* Read a `ROUTING_MODE` flag (e.g., `LOG_UTILITY` vs. `LINEAR`) to branch routing logic.
-*   **Create a ConfigMap:** Centralize all independent variables in a Kubernetes ConfigMap named `campaign-ablation-config`.
-*   **Mount to DaemonSet:** Map the ConfigMap fields into the `daemonset-agent.yaml` to dynamically inject these variables into edge agent pods.
-*   **Execution Strategy:** Configurations are modified on the fly by patching the ConfigMap (`kubectl patch configmap campaign-ablation-config ...`) and executing a rolling update of the DaemonSet (`kubectl rollout restart daemonset edge-node-agent`).
+
+* **Externalize Variables:** Modify agent and routing source code to read configuration flags from environment variables (e.g., `ENABLE_PREDICTIVE_TWIN`, `COOLDOWN_SEC`).
+* **Create a ConfigMap:** Centralize all independent variables in a Kubernetes ConfigMap named `campaign-ablation-config`.
+* **Execution Strategy:** Configurations are modified on the fly by the Orchestrator by patching the ConfigMap (`kubectl patch configmap...`) and executing a rolling update of the DaemonSet (`kubectl rollout restart daemonset space-node-agent`), polling the K8s API until the new state is ready.
 
 ---
 
 ## 2. Automate the Orchestrator (The "Campaign Runner")
 
-To ensure timing consistency and remove human-introduced variance during run setup and fault injection, execution is coordinated by a programmatic orchestrator.
+To eliminate temporal biases, confounding variables, and human error, all 180 runs are executed by a centralized Python Pod (`campaign-runner`) deployed directly within the cluster.
 
-### Runner Architecture (`run_campaign.py`)
-To bypass K8s port-forward instability during the 12-hour execution, the orchestrator and telemetry sink are **containerized and deployed as a K8s Pod** (`campaign-runner`) within the cluster. This allows native DNS resolution (e.g., `ground-redis.default.svc.cluster.local:6379`) for rock-solid communication.
+Crucially, to maintain strict variance control, the real-world stochastic components (`environment_sim.py` and `data_streamer.py`) are **deactivated** during the campaign. The Orchestrator assumes total control of the data and control planes using the following strategies:
 
-A master Python orchestrator loops through the 180 runs (6 Configurations $\times$ 3 Scenarios $\times$ 10 Repetitions) performing the following lifecycle for each run:
-1.  **Configure:** Patch the ConfigMap for the active configuration profile, restart the DaemonSet, and poll `kubectl rollout status daemonset/space-node-agent` to guarantee a fully initialized state.
-2.  **Network Setup:** Invoke the throttling scripts (e.g., `apply_tc_throttling.sh`) using Python's `subprocess` to configure scenario-specific bandwidth and delays.
-3.  **Adaptive Warm-Up:** Instead of a hard 90-second sleep, the runner actively polls the Redis telemetry bus. Once the target node reports 3-5 consecutive stable telemetry pings and the SML payload is `Ready`, the test proceeds immediately.
-4.  **Stress Injection:** Publish the scenario's physical stress values (temperature and battery overrides) to the target Redis command channel.
-5.  **Data Extraction & Sandbox Timeout:** Wait for migration completion within a strict ~60s timeout wrapper. If CRIU hangs due to socket state drift or PID collisions, kill the run, mark `Survival = 0%`, and forcefully delete the workload pod to prevent the entire batch from freezing.
-6.  **Teardown & Reset:** Clear active network filters, reset cluster states, and prepare the environment for the next iteration.
+### 2.1 The "Sterile Baseline" & Ghost Publisher (Hardware Limits)
+
+To test Phase A (Predictive Twin) and Phase B (Cooldown Damping) without background orbital noise triggering false migrations, the Orchestrator acts as a **Ghost Publisher**.
+
+* **Sterile Baseline:** At the start of every run, the Orchestrator publishes a mathematically flat "Nominal State" (e.g., exactly 45.0°C, 100% Battery) to all `telemetry/{NODE_NAME}` Redis channels. This prevents any autonomous migrations.
+* **Deterministic Injection:** At precise timestamps, the Orchestrator constructs exact JSON payloads and publishes them to the Redis bus, instantly forcing hardware states to targeted stress limits (e.g., 95°C) to validate migration responsiveness.
+
+### 2.2 The "Ghost Worker" (Visual Boundary Limits)
+
+To evaluate Phase B (Lateral Boundary Tracking) without relying on randomized Machine Learning fire datasets, the system employs **Data-Plane Decoupling**.
+
+* **Throttled Payload:** The active ML worker (`tinysml_worker.py`) is throttled to a static idle-load, fixing its thermal and memory footprint (ensuring exact 24MB/160MB CRIU checkpoints) but stopping random coordinate generation.
+* **HTTP Trajectory Injection:** The Orchestrator natively resolves the `space-mission-svc` K8s Service and executes `HTTP POST /state` requests directly to the Guardian Sidecar. It incrementally steps the synthetic Center of Mass (CoM) coordinates toward the swath edge (e.g., $X=128$) at a mathematically precise velocity ($v_{lat}$).
+* **Execution:** The Sidecar transparently commits this vector to its shared local volume (`/tmp/payload_state.json`), natively triggering the Node Agent to route laterally with millisecond precision.
+
+### 2.3 The Run Lifecycle
+
+For each of the 180 runs, the Orchestrator loops through:
+
+1. **Setup & Ablation Patch:** Roll out the specific K8s ConfigMap.
+2. **Network Throttle:** Apply scenario-specific `tc` constraints.
+3. **Sterilization:** Lock all hardware metrics to the flatlined baseline.
+4. **Injection:** Execute the scenario (e.g., Synthetic trajectory breach followed immediately by a thermal spike on the destination node).
+5. **Extraction:** Monitor Redis and K8s API for pod readiness, record metrics, and capture "Correct Failure" abort flags.
+6. **Teardown:** Clean up checkpoints and reset metrics.
 
 ---
 
@@ -51,17 +66,21 @@ A master Python orchestrator loops through the 180 runs (6 Configurations $\time
 To capture, structure, and store response variables systematically, the telemetry reporting writes directly to a structured dataset.
 
 ### Telemetry Sink Design
-*   **Decoupled Persistent Storage:** To prevent memory limits or data loss on a runner crash (e.g., at run 179), telemetry scripts flush results directly to disk immediately after each run using file-append mode, or write individual files per-run (e.g., `results/run_150.csv`) which are concatenated post-campaign.
-*   **Standardized Schema:** Output data is formatted with the following columns:
+
+* **Decoupled Persistent Storage:** Telemetry scripts flush results directly to an attached Persistent Volume in file-append mode immediately after each run.
+* **Standardized Schema:** Output data is formatted with the following columns:
     `Timestamp, Configuration_Block, Scenario, Repetition_ID, Hops, Survival_Rate, Migration_Delay_sec, Bandwidth_MB`
-*   **Dynamic Checkpoint Sizing:** The telemetry collector dynamically resolves the target configuration status via the Kubernetes API to compute accurate data transport metrics (e.g., logging 160MB for monolithic configurations and 24MB for optimized sidecar state configurations).
+* **Dynamic Checkpoint Sizing:** The telemetry collector dynamically resolves the target configuration status via the Kubernetes API to log accurate data transport metrics (e.g., 160MB for Control, 24MB for Sidecar).
+* **Correct Failure Tracking:** Captures specific Redis flags (e.g., `[ABORT_ACKNOWLEDGED: COOLDOWN_LOCK]`) to distinguish between a hardware system crash ($0\%$ Survival) and a safe system refusal ($100\%$ Survival).
 
 ---
 
-## 4. Shift to a Ablation-based Factorial Design
+## 4. Shift to an Ablation-Based Factorial Design
 
-With automated run coordination and parameterization, the campaign can scale to evaluate interactions between factors rather than treating them in isolation.
+With automated run coordination and deterministic fault injection, the campaign scales to evaluate interactions between factors rigorously.
 
 ### Factorial Analysis
-*   **Multi-Factor Interactions:** Instead of traditional one-factor-at-a-time (OFAT) testing, the configuration matrix evaluates all combinations of the optimizations (e.g., testing the combined effect of removing the predictive twin and changing routing behavior).
-*   **Analysis of Variance (ANOVA):** Output datasets support multi-way ANOVA and response surface analysis to quantify statistical significance and synergistic effects between different software architectural phases.
+
+* **Multi-Factor Orthogonality:** The configuration matrix evaluates $6 \text{ Configurations} \times 3 \text{ Scenarios} \times 10 \text{ Replications} = 180 \text{ Runs}$.
+* **Variance Control:** Run-order is mathematically randomized to prevent temporal sequence biases.
+* **Analysis of Variance (ANOVA):** Output datasets are perfectly formatted to support multi-way ANOVA and response surface analysis, quantifying the statistical significance of the orchestration layer's specific architectural features.

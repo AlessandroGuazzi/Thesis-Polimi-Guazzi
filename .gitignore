@@ -50,3 +50,5 @@ sample_fire_data.json
 Version 7/1_earth_training_facility/data/
 Version 7/3_ground_station/evaluation_data/
 build_notebook.py
+Version 7/1_earth_training_facility/models/wsts_model_final.onnx
+Version 7/2_orbit_payload/src/inference-workload/wsts_model.onnx

@@ -23,8 +23,9 @@ NC='\033[0m'
 
 # Only throttle the satellite nodes (not the ground station)
 SATELLITE_NODES=("minikube-m02" "minikube-m03" "minikube-m04")
+RATE="${1:-50}mbit"
 
-echo -e "${BLUE}>>> V6 ISL SIMULATION: Applying tc throttling to satellite nodes${NC}"
+echo -e "${BLUE}>>> V6 ISL SIMULATION: Applying tc throttling to satellite nodes ($RATE)${NC}"
 
 for NODE in "${SATELLITE_NODES[@]}"; do
     echo -e "${GREEN}[tc] Configuring node: ${NODE}${NC}"
@@ -38,7 +39,7 @@ for NODE in "${SATELLITE_NODES[@]}"; do
         # burst=32kbit allows short bursts above the rate limit (normal for TCP)
         # latency=400ms is the maximum time a packet can wait in the queue
         tc qdisc add dev eth0 root handle 1: tbf \
-            rate 50mbit \
+            rate $RATE \
             burst 32kbit \
             latency 400ms
 

@@ -9,7 +9,7 @@ To ensure the statistical validity of the Design of Experiments (DoE) and to sat
 This manual is structured into four core implementation areas:
 
 1. **ConfigMap Parameterization:** Dynamic configuration of edge agent ablation modes.
-2. **The Deterministic Orchestrator:** The programmatic "God-Mode" runner that handles Sterile Baselines, Redis Ghost Publishing, and HTTP Ghost Worker injections.
+2. **The Deterministic Orchestrator:** The programmatic "God-Mode" runner that handles Sterile Baselines, Redis Ghost Publishing, HTTP Ghost Worker injections, and pre-campaign smoke testing.
 3. **CSV Telemetry Sinks:** Upgrading logging infrastructure to write response metrics directly to standardized datasets.
 4. **Factorial DoE Scaling:** Multi-factor analysis setup.
 
@@ -48,7 +48,15 @@ To evaluate lateral boundary tracking capabilities without relying on randomized
 * **HTTP Trajectory Injection:** The Orchestrator natively resolves the `space-mission-svc` K8s Service and executes `HTTP POST /state` requests directly to the Guardian Sidecar. It incrementally steps the synthetic Center of Mass (CoM) coordinates toward the swath edge (e.g., $X=128$) at a mathematically precise velocity ($v_{lat}$).
 * **Execution:** The Sidecar transparently commits this vector to its shared local volume (`/tmp/payload_state.json`), natively triggering the Node Agent to route laterally with millisecond precision.
 
-### 2.3 The Run Lifecycle
+### 2.3 Pre-Campaign Smoke Testing (The Dry-Run Phase)
+
+To guarantee the programmatic validity of the campaign runner before initiating the extensive 540-run randomized execution, the Orchestrator includes a mandatory, non-randomized validation gate.
+
+* **Deterministic Single-Pass Matrix:** Before shuffling the execution order, the Orchestrator compiles a mini-matrix comprising exactly 1 sample run for each of the 54 unique treatment combinations (6 Configurations × 3 Scenarios × 3 Severity Levels = 54 dry-runs).
+* **Behavioral Assertion Gate:** During this phase, the execution sequence is sequential. The Orchestrator intercepts cluster states and validates that the underlying operating system and kernel tools respond exactly as specified (e.g., asserting that `tc` locks the link to exactly 6.4 Mbps and verifying that Redis registers a programmatic abort flag under `Correct Failure` profiles).
+* **Fail-Fast Hard Stop:** If any of the 54 dry-run passes fails to produce the expected telemetry schema or system response, the Orchestrator triggers an absolute execution halt, preventing the multi-hour factorial campaign from running on an unverified cluster environment.
+
+### 2.4 The Run Lifecycle
 
 For each of the 540 runs, the Orchestrator loops through:
 

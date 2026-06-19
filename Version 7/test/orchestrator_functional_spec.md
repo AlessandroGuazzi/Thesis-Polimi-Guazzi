@@ -35,7 +35,15 @@ To accurately validate the Predictive Twin optimization against the Reactive bas
 * **The Death Timer:** Upon injecting a critical temperature threshold, the Orchestrator must start an absolute countdown timer (e.g., 2.0 seconds).
 * **Execution of the Fuse:** If the Kubernetes cluster has not fully completed the workload migration and activated the destination pod before the timer expires, the Orchestrator must brutally terminate the origin pod. This simulates total power loss and records a deterministic system failure (0% survival).
 
-## 6. Strict Run Lifecycle Management
+## 6. Pre-Campaign Smoke Testing (Dry-Run Validation)
+
+Before releasing the Orchestrator into the massive 540-run randomized factorial loop, the controller must pass an automated, deterministic validation sequence to eliminate hidden infrastructure bugs.
+
+* **Sequential Smoke Screen:** The Orchestrator must generate a mini-pass execution matrix consisting of exactly 54 non-randomized, sequential runs—capturing precisely one replication for every unique combination of configuration, scenario, and severity level.
+* **Telemetry and Assertions Validation:** During each dry-run, the Orchestrator must explicitly assert that the injected fault (via Kernel Traffic Control or Redis Ghost Publishing) maps to the correct architectural phase and that the telemetry collectors successfully capture the outcome without hanging.
+* **Automated Execution Gate:** If a single dry-run fails to yield the exact expected behavioral state or log output, the Orchestrator must immediately raise a critical cluster exception, log the diagnostic snapshot, and refuse to proceed to the main randomized campaign.
+
+## 7. Strict Run Lifecycle Management
 
 For every single one of the 540 runs, the Orchestrator must strictly adhere to the following execution loop:
 
@@ -46,11 +54,11 @@ For every single one of the 540 runs, the Orchestrator must strictly adhere to t
 5. **Extraction Phase:** Actively poll the cluster's API to calculate the exact, wall-clock migration delay—measured from the moment of injection to the moment the destination node reports workload readiness.
 6. **Teardown Phase:** Clean up network throttles, clear temporary state files, and prepare the environment for the next randomized run.
 
-## 7. Intelligent Telemetry and Evaluation
+## 8. Intelligent Telemetry and Evaluation
 
 The Orchestrator is not just a test runner; it is the definitive data collector for the thesis evaluation.
 
 * **Direct File Sinking:** To avoid memory limits or data loss during the potentially multi-hour execution window, the Orchestrator must write all results directly to a persistent, locally mounted dataset after every single run.
 * **Standardized Schema Logging:** It must format all outputs according to a strict schema, capturing timestamps, configurations, scenarios, severity levels, repetition IDs, data transfer sizes, survival rates, and migration delays.
-* **"Correct Failure" Recognition:** The Orchestrator must be intelligent enough to differentiate between a system crash (a bug or timeout) and a safe "Correct Failure." If the system intelligently refuses to migrate into a dangerous situation (e.g., recognizing a cooldown lock or evaluating that the cost of moving to a dead battery node is worse than staying), the Orchestrator must log this as a 100% survival success, validating that the software correctly recognized its physical limitations.
+* **"Correct Failure" Recognition:** The Orchestrator must be intelligent enough to differentiate between a system crash (a bug or timeout) and a safe "Correct Failure". If the system intelligently refuses to migrate into a dangerous situation (e.g., recognizing a cooldown lock or evaluating that the cost of moving to a dead battery node is worse than staying), the Orchestrator must log this as a 100% survival success, validating that the software correctly recognized its physical limitations.
 * **Sandbox Timeout Protection:** If a specific architectural configuration causes the cluster runtime to hang indefinitely, the Orchestrator must enforce an absolute timeout wrapper. If the timeout is breached, the Orchestrator must kill the run, log a complete failure, forcefully clean the hung nodes, and seamlessly continue to the next run without freezing the overall campaign.

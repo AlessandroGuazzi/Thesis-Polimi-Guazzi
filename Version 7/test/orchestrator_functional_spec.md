@@ -8,8 +8,8 @@ The Campaign Orchestrator is the centralized, programmatic "God-Mode" controller
 
 The Orchestrator is the strict enforcer of the system's statistical validity. It must possess the following characteristics regarding experiment design:
 
-* **Factorial Matrix Generation:** It must dynamically generate the complete 180-run execution matrix, consisting of all combinations of the 6 architectural configurations, 3 environmental scenarios, and 10 absolute replications.
-* **Run-Order Randomization:** To prevent nuisance variables (such as memory leaks, hardware degradation, or caching) from skewing the results, the Orchestrator must mathematically shuffle the entire 180-run matrix before execution begins. It must never run tests sequentially by configuration or scenario.
+* **Factorial Matrix Generation:** It must dynamically generate the complete 540-run execution matrix, consisting of all combinations of the 6 architectural configurations, 3 environmental scenarios, 3 severity levels, and 10 absolute replications.
+* **Run-Order Randomization:** To prevent nuisance variables (such as memory leaks, hardware degradation, or caching) from skewing the results, the Orchestrator must mathematically shuffle the entire 540-run matrix before execution begins. It must never run tests sequentially by configuration or scenario.
 * **Ablation Management:** The Orchestrator must be capable of seamlessly transitioning the cluster between the 6 different architectural configurations. It achieves this by programmatically patching cluster configuration maps and orchestrating rolling restarts of the edge agents between runs.
 
 ## 3. Environmental Decoupling and State Control
@@ -37,7 +37,7 @@ To accurately validate the Predictive Twin optimization against the Reactive bas
 
 ## 6. Strict Run Lifecycle Management
 
-For every single one of the 180 runs, the Orchestrator must strictly adhere to the following execution loop:
+For every single one of the 540 runs, the Orchestrator must strictly adhere to the following execution loop:
 
 1. **Preparation Phase:** Apply the specific architectural ablation rules and reset all network constraints.
 2. **Sterilization Phase:** Enforce the Sterile Baseline across all satellite nodes and wait for the cluster to report absolute stability.
@@ -51,6 +51,6 @@ For every single one of the 180 runs, the Orchestrator must strictly adhere to t
 The Orchestrator is not just a test runner; it is the definitive data collector for the thesis evaluation.
 
 * **Direct File Sinking:** To avoid memory limits or data loss during the potentially multi-hour execution window, the Orchestrator must write all results directly to a persistent, locally mounted dataset after every single run.
-* **Standardized Schema Logging:** It must format all outputs according to a strict schema, capturing timestamps, configurations, scenarios, repetition IDs, data transfer sizes, survival rates, and migration delays.
-* **"Correct Failure" Recognition:** The Orchestrator must be intelligent enough to differentiate between a system crash (a bug or timeout) and a safe "Correct Failure." If the system intelligently refuses to migrate into a dangerous situation (e.g., recognizing a cooldown lock or avoiding a dead battery node), the Orchestrator must log this as a 100% survival success, validating that the software correctly recognized its physical limitations.
+* **Standardized Schema Logging:** It must format all outputs according to a strict schema, capturing timestamps, configurations, scenarios, severity levels, repetition IDs, data transfer sizes, survival rates, and migration delays.
+* **"Correct Failure" Recognition:** The Orchestrator must be intelligent enough to differentiate between a system crash (a bug or timeout) and a safe "Correct Failure." If the system intelligently refuses to migrate into a dangerous situation (e.g., recognizing a cooldown lock or evaluating that the cost of moving to a dead battery node is worse than staying), the Orchestrator must log this as a 100% survival success, validating that the software correctly recognized its physical limitations.
 * **Sandbox Timeout Protection:** If a specific architectural configuration causes the cluster runtime to hang indefinitely, the Orchestrator must enforce an absolute timeout wrapper. If the timeout is breached, the Orchestrator must kill the run, log a complete failure, forcefully clean the hung nodes, and seamlessly continue to the next run without freezing the overall campaign.

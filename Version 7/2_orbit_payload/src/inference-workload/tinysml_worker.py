@@ -189,6 +189,27 @@ def process_frame(frame_array, fire_id, day_id):
         pass
 
 def main():
+    # =========================================================================
+    # CAMPAIGN MODE GATE (Phase 2, Step 2.1)
+    # When CAMPAIGN_MODE=True, the worker bypasses all UDP networking and
+    # real inference. Instead, it eagerly loads the ONNX model to lock in the
+    # full ~160MB memory footprint (critical for MONOLITHIC_CHECKPOINT ablation
+    # accuracy), then idles indefinitely. No dummy math is needed — the
+    # environment simulator's thermal model uses the K8s 'has_sml' placement
+    # flag, not actual CPU utilization.
+    # =========================================================================
+    if os.getenv("CAMPAIGN_MODE", "False") == "True":
+        print("🧪 WORKER [CAMPAIGN MODE]: Activated — bypassing UDP receiver and live inference.", flush=True)
+        print("🧪 WORKER [CAMPAIGN MODE]: Force-loading ONNX session for deterministic memory footprint...", flush=True)
+        sess = _ensure_session()
+        if sess is not None:
+            print("🧪 WORKER [CAMPAIGN MODE]: ONNX session loaded. Memory footprint locked (~160MB).", flush=True)
+        else:
+            print("⚠️ WORKER [CAMPAIGN MODE]: ONNX session failed to load — memory footprint may be inaccurate.", flush=True)
+        print("🧪 WORKER [CAMPAIGN MODE]: Entering idle loop. Ghost Worker HTTP injections will drive the Guardian.", flush=True)
+        while True:
+            time.sleep(10)
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", UDP_PORT))
     print(f"📡 WORKER: UDP Telemetry Receiver attivo sulla porta {UDP_PORT}", flush=True)

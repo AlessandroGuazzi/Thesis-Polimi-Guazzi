@@ -14,6 +14,29 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# =============================================================================
+# CAMPAIGN MODE DETECTION (Phase 2, Step 2.4)
+# Pass --campaign to activate deterministic evaluation mode:
+#   - Exports CAMPAIGN_MODE=True for local Python processes
+#     (environment_sim.py, data_streamer.py will self-abort on startup)
+#   - Patches the K8s payload-phoenix container to set CAMPAIGN_MODE=True
+#     (tinysml_worker.py will idle with full ONNX memory footprint)
+# =============================================================================
+CAMPAIGN_MODE_FLAG="False"
+for arg in "$@"; do
+    if [ "$arg" = "--campaign" ]; then
+        CAMPAIGN_MODE_FLAG="True"
+    fi
+done
+
+if [ "$CAMPAIGN_MODE_FLAG" = "True" ]; then
+    export CAMPAIGN_MODE="True"
+    echo -e "${YELLOW}🧪 CAMPAIGN MODE ACTIVE — Stochastic subsystems will be deactivated.${NC}"
+    echo -e "${YELLOW}   • environment_sim.py → Ghost Publisher takes control${NC}"
+    echo -e "${YELLOW}   • data_streamer.py   → Ghost Worker takes control${NC}"
+    echo -e "${YELLOW}   • tinysml_worker.py  → Idle with locked memory footprint${NC}"
+fi
+
 # Confirm the script is run from the project root (2_orbit_payload)
 if [ ! -d "./infrastructure" ]; then
     echo -e "${RED}❌ Error: Run this script from the project root (2_orbit_payload)!${NC}"
@@ -83,6 +106,14 @@ kubectl apply -f infrastructure/daemonset-agent.yaml
 
 # Mission Pod — Guardian sidecar + tinySML Phoenix
 kubectl apply -f k8s/pod-dual-container.yaml
+
+# Campaign Mode K8s Injection (Phase 2, Step 2.4)
+# If --campaign was passed, patch the payload-phoenix container's CAMPAIGN_MODE
+# env var from "False" to "True" so the worker enters its idle gate in-cluster.
+if [ "$CAMPAIGN_MODE_FLAG" = "True" ]; then
+    echo -e "${YELLOW}🧪 Patching space-mission deployment for Campaign Mode...${NC}"
+    kubectl set env deployment/space-mission CAMPAIGN_MODE=True -c payload-phoenix
+fi
 
 # =============================================================================
 # BLOCK 4: WAIT FOR REDIS BUSES TO BE READY

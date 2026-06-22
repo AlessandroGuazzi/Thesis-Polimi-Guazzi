@@ -1,5 +1,7 @@
 import time
 import json
+import os
+import sys
 import redis
 import logging
 import threading
@@ -305,6 +307,20 @@ def get_active_workloads():
 # =============================================================================
 
 def main():
+    # =========================================================================
+    # CAMPAIGN MODE FAIL-SAFE (Phase 2, Step 2.3)
+    # If CAMPAIGN_MODE is active, the simulator must be entirely shut down.
+    # The Campaign Orchestrator's "Ghost Publisher" assumes total control of
+    # the telemetry/{NODE_NAME} Redis channels. If left running, this
+    # simulator's 1.0Hz physics loop would continuously overwrite the
+    # Orchestrator's deterministic flatlined baseline and targeted thermal
+    # injections, destroying the statistical validity of the DoE campaign.
+    # =========================================================================
+    if os.getenv("CAMPAIGN_MODE", "False") == "True":
+        print("⚠️ ENVIRONMENT SIM [CAMPAIGN MODE]: Campaign Orchestrator (Ghost Publisher) is assuming "
+              "total control of the telemetry bus. Environment Simulator deactivated.", flush=True)
+        sys.exit(0)
+
     print("\n🌍 ENVIRONMENT SIMULATOR V6 ONLINE (Simulation Oracle Active).")
     k8s_api = connect_k8s()
     redis_db = connect_redis()

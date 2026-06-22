@@ -132,6 +132,11 @@ spec:
           env:
             - name: STATE_ENDPOINT
               value: "http://localhost:80"
+            # Campaign Mode toggle (Phase 2, Step 2.4)
+            # When set to "True", the worker bypasses UDP/inference and idles
+            # with a fully loaded ONNX model for deterministic memory footprint.
+            - name: CAMPAIGN_MODE
+              value: "False"
 
           # === RESOURCE QUOTAS ===
           resources:

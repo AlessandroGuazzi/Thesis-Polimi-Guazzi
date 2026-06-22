@@ -43,6 +43,18 @@ def encode_frame(frame: np.ndarray) -> bytes:
     return zlib.compress(frame.astype('>f4').tobytes())
 
 def main():
+    # =========================================================================
+    # CAMPAIGN MODE FAIL-SAFE (Phase 2, Step 2.2)
+    # If CAMPAIGN_MODE is active, abort immediately to guarantee zero
+    # stochastic UDP packets reach the edge cluster. The Orchestrator's
+    # "Ghost Worker" HTTP trajectory injections are the sole data source
+    # during the evaluation campaign.
+    # =========================================================================
+    if os.getenv("CAMPAIGN_MODE", "False") == "True":
+        print("⚠️ STREAMER [CAMPAIGN MODE]: Campaign Mode active — Data stream deactivated. "
+              "All visual/lateral injections are handled by the Campaign Orchestrator's Ghost Worker.", flush=True)
+        sys.exit(0)
+
     print("🚀 STREAMER: Booting WSTS Uplink (LEO Orbital Interleave Edition)...")
     
     year_dir = os.path.join(WSTS_EVAL_DIR, "2021")

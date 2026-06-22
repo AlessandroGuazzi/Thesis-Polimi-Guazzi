@@ -23,7 +23,7 @@ To support rapid configuration changes without rebuilding container images, the 
 
 * **Externalize Variables:** Modify agent and routing source code to read configuration flags from environment variables (e.g., `ENABLE_PREDICTIVE_TWIN`, `COOLDOWN_SEC`).
 * **Create a ConfigMap:** Centralize all independent variables in a Kubernetes ConfigMap named `campaign-ablation-config`.
-* **Execution Strategy:** Configurations are modified on the fly by the Orchestrator by patching the ConfigMap (`kubectl patch configmap...`) and executing a rolling update of the DaemonSet (`kubectl rollout restart daemonset space-node-agent`), polling the K8s API until the new state is ready.
+* **Execution Strategy & Optimization:** To avoid the massive overhead of rolling DaemonSet restarts (~15-30 seconds per run, totaling 2.5 to 4.5 hours of overhead over the 540-run campaign), configurations are hot-reloaded. While the ConfigMap serves as the source of truth for initial setup, the Orchestrator publishes live configuration updates directly to the Node Agents via a dedicated Redis configuration channel or HTTP endpoint (e.g., `POST /config`), enabling sub-second, zero-restart runtime toggling of ablation flags.
 
 ---
 
@@ -56,16 +56,27 @@ To guarantee the programmatic validity of the campaign runner before initiating 
 * **Behavioral Assertion Gate:** During this phase, the execution sequence is sequential. The Orchestrator intercepts cluster states and validates that the underlying operating system and kernel tools respond exactly as specified (e.g., asserting that `tc` locks the link to exactly 6.4 Mbps and verifying that Redis registers a programmatic abort flag under `Correct Failure` profiles).
 * **Fail-Fast Hard Stop:** If any of the 54 dry-run passes fails to produce the expected telemetry schema or system response, the Orchestrator triggers an absolute execution halt, preventing the multi-hour factorial campaign from running on an unverified cluster environment.
 
-### 2.4 The Run Lifecycle
+### 2.4 Network Throttling, Sanitization, & Calibration
+
+To maintain absolute determinism and prevent resource leaks or cross-contamination between randomized runs, the Orchestrator manages the environment with the following mechanisms:
+
+* **Node-Agent Driven Network Throttling (`tc`):** Because the centralized Orchestrator pod lacks direct root/host namespace permissions to run traffic control (`tc`), the Orchestrator delegates network throttling commands to the privileged Node Agents (via Redis or HTTP). The Node Agents execute the local `tc qdisc` modifications to constrain Inter-Satellite Link (ISL) bandwidth on their respective host interfaces.
+* **Strict Run Sanitization & Teardown:** After each run (and before initiating the next run), the Orchestrator executes a cleanup protocol to restore a sterile environment:
+  * Removes all active `tc qdiscs` on all nodes (resets links to full bandwidth).
+  * Clears all snapshot folders, local checkpoint directories, and temporary state files (e.g., `/tmp/payload_state.json` on the sidecar).
+  * Verifies that all workload pods are fully running, stable, and have returned to their nominal state.
+* **Death Timer Calibration:** The Virtual Hardware Fuse (which simulates hardware meltdown if migration is too slow) is scenario-specific rather than a flat threshold. It is calibrated dynamically to allow borderline scenarios to execute near their physical limits without triggering false-positive system deaths due to transient container runtime (CRI-O) snapshot restoration overhead.
+
+### 2.5 The Run Lifecycle
 
 For each of the 540 runs, the Orchestrator loops through:
 
-1. **Setup & Ablation Patch:** Roll out the specific K8s ConfigMap.
-2. **Network Throttle:** Apply scenario-specific `tc` constraints.
+1. **Setup & Ablation Hot-Reload:** Publish dynamic configuration flags to Node Agents over Redis/HTTP (avoiding K8s rolling restarts).
+2. **Network Throttle:** Trigger the respective Node Agents to apply scenario-specific `tc` constraints.
 3. **Sterilization:** Lock all hardware metrics to the flatlined baseline.
 4. **Injection:** Execute the scenario (e.g., Synthetic trajectory breach followed immediately by a thermal spike on the destination node).
 5. **Extraction:** Monitor Redis and K8s API for pod readiness, record metrics, and capture "Correct Failure" abort flags.
-6. **Teardown:** Clean up checkpoints and reset metrics.
+6. **Teardown & Sanitization:** Clean up checkpoints, delete `tc` rules, reset sidecar temporary states, and assert cluster stability.
 
 ---
 

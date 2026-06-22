@@ -1,0 +1,78 @@
+# =============================================================================
+#  SPACE CLOUD V7 — CAMPAIGN ABLATION CONFIGMAP
+#  Description:
+#  Centralizes all independent variables for the 540-run DoE ablation campaign.
+#  This ConfigMap defines the Control Baseline (Configuration 1 / Full System),
+#  where every architectural optimization phase is fully active.
+#
+#  The Campaign Orchestrator (campaign_runner.py) hot-reloads these values
+#  at runtime via the Redis `campaign/config` channel to toggle between the
+#  6 Configuration profiles without triggering K8s rolling restarts.
+#
+#  CONSUMPTION:
+#   - The Node Agent DaemonSet mounts this ConfigMap via `envFrom: configMapRef`
+#     to seed initial values at pod startup.
+#   - The Dijkstra Lua script receives ENABLE_LOG_UTILITY as an extra ARGV.
+#   - Runtime overrides are published by the Orchestrator over Redis Pub/Sub.
+#
+#  IMPORTANT: All values are strings. Kubernetes ConfigMaps do not support
+#  native booleans or numerics. Consumers must parse/cast accordingly.
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: campaign-ablation-config
+  labels:
+    app: space-cloud
+    component: campaign
+data:
+  # ─── Architectural Ablation Toggles ────────────────────────────────────────
+  #
+  # Each toggle corresponds to one of the five architectural optimization phases.
+  # The Control Baseline enables all features. Individual ablation profiles
+  # disable exactly one toggle to isolate its contribution to system resilience.
+
+  # Phase A — Predictive Twin (30s lookahead thermal/energy forecasting model)
+  # When "False": bypasses VirtualSatellite.predict_future(), forcing purely
+  # reactive fuse-based migration triggers.
+  ENABLE_PREDICTIVE_TWIN: "True"
+
+  # Phase B — Global Cooldown Timer (ping-pong migration suppression)
+  # Duration in seconds of the post-migration lockout window.
+  # The Orchestrator varies this per-configuration: the full system uses 15.0s;
+  # the ΔPhase B ablation sets it to 0.0s to disable damping entirely.
+  COOLDOWN_SEC: "15.0"
+
+  # Phase C — State-Sidecar Split (lightweight CRIU checkpoint target)
+  # When "True": the Node Agent checkpoints the 160MB monolithic payload-phoenix
+  # container instead of the 24MB sidecar-guardian, simulating pre-V7 behaviour.
+  # The Control Baseline keeps this "False" (sidecar-only checkpoint).
+  MONOLITHIC_CHECKPOINT: "False"
+
+  # Phase D — Logarithmic Utility Routing (Dijkstra cost function)
+  # When "False": the Dijkstra script falls back to a standard linear cost
+  # equation, removing the log-based prioritization of extreme resource states.
+  ENABLE_LOG_UTILITY: "True"
+
+  # Phase E — Sequenced Migration (ordered dual-workload evacuation)
+  # When "False": _run_migration and _run_master_migration execute concurrently
+  # without the wait_for_sml_readiness blocking barrier.
+  ENABLE_SEQUENCED_MIGRATION: "True"
+
+  # ─── Hardware Safety Thresholds ────────────────────────────────────────────
+  #
+  # Physical boundary constants governing the reactive fuse triggers.
+  # These remain constant across all 6 configurations — they represent
+  # immutable hardware constraints, not software design choices.
+
+  # Temperature thresholds (°C)
+  T_SAFE: "80.0"     # Below this → no thermal threat (predictive trigger zone)
+  T_FUSE: "120.0"    # At or above this → critical danger (reactive hard fuse)
+
+  # Battery thresholds (%)
+  B_SAFE: "15.0"     # Below this → predictive energy threat
+  B_FUSE: "5.0"      # At or below this → critical shutdown danger
+
+  # Lateral boundary threshold (pixels from swath edge)
+  LATERAL_THRESHOLD: "8"

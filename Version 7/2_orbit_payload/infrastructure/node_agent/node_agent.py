@@ -1,10 +1,17 @@
 """
-SPACE CLOUD V6 - NODE AGENT (Distributed Edge MPC)
+SPACE CLOUD V7 - NODE AGENT (Distributed Edge MPC)
 ===================================================
 Role: Runs as a DaemonSet on every satellite node.
 Architecture: Uses the 'Simulation Oracle' pattern. It trusts the Ground Redis
               telemetry bus as the absolute source of truth for both hardware
               temperature and workload placement (has_sml, has_master).
+
+V7 Campaign Changes:
+  - Static thresholds replaced by ABLATION_CONFIG dictionary.
+  - Redis Pub/Sub listener on 'campaign/config' for hot-reload.
+  - Network throttling via tc (apply_network_throttle / clear_network_throttle).
+  - Conditional ablation toggles: ENABLE_PREDICTIVE_TWIN, COOLDOWN_SEC,
+    MONOLITHIC_CHECKPOINT, ENABLE_LOG_UTILITY, ENABLE_SEQUENCED_MIGRATION.
 """
 
 import os
@@ -33,17 +40,35 @@ TOPOLOGY_REDIS_PORT = 6379
 # Guardian HTTP endpoint (intra-Pod, localhost only)
 GUARDIAN_URL = "http://localhost:80"
 
-# Temperature thresholds for Trigger A (values in Celsius)
-T_SAFE = float(os.getenv("T_SAFE", "80.0"))   # Below this → no thermal threat
-T_FUSE = float(os.getenv("T_FUSE", "120.0"))  # At or above this → critical danger
+# =============================================================================
+# ABLATION CONFIGURATION (Campaign Hot-Reload Dictionary)
+# Seeded from environment variables at startup. The Campaign Orchestrator can
+# override any value at runtime via the Redis 'campaign/config' Pub/Sub channel.
+# =============================================================================
+ABLATION_CONFIG = {
+    # Hardware safety thresholds
+    "T_SAFE":           float(os.getenv("T_SAFE", "80.0")),    # Below this → no thermal threat
+    "T_FUSE":           float(os.getenv("T_FUSE", "120.0")),   # At or above → critical danger
+    "B_SAFE":           float(os.getenv("B_SAFE", "15.0")),    # Below this → predictive energy threat
+    "B_FUSE":           float(os.getenv("B_FUSE", "5.0")),     # At or below → critical shutdown danger
+    "LATERAL_THRESHOLD": int(os.getenv("LATERAL_THRESHOLD", "8")),
 
-# Battery thresholds for Trigger C (values in percentage)
-B_SAFE = float(os.getenv("B_SAFE", "15.0"))   # Below this → predictive energy threat
-B_FUSE = float(os.getenv("B_FUSE", "5.0"))    # At or below this → critical shutdown danger
+    # Architectural ablation toggles (Phase A–E)
+    "ENABLE_PREDICTIVE_TWIN":     os.getenv("ENABLE_PREDICTIVE_TWIN", "True") == "True",
+    "COOLDOWN_SEC":               float(os.getenv("COOLDOWN_SEC", "15.0")),
+    "MONOLITHIC_CHECKPOINT":      os.getenv("MONOLITHIC_CHECKPOINT", "False") == "True",
+    "ENABLE_LOG_UTILITY":         os.getenv("ENABLE_LOG_UTILITY", "True") == "True",
+    "ENABLE_SEQUENCED_MIGRATION": os.getenv("ENABLE_SEQUENCED_MIGRATION", "True") == "True",
+}
 
-# Lateral tracking threshold for Trigger B (pixels from grid edge)
-# If Center of Mass X coordinate goes below this OR above (128 - this), trigger
-LATERAL_THRESHOLD = int(os.getenv("LATERAL_THRESHOLD", "8"))
+# Legacy aliases — read from ABLATION_CONFIG for backward compatibility with
+# code that references these as module-level names.
+T_SAFE = ABLATION_CONFIG["T_SAFE"]
+T_FUSE = ABLATION_CONFIG["T_FUSE"]
+B_SAFE = ABLATION_CONFIG["B_SAFE"]
+B_FUSE = ABLATION_CONFIG["B_FUSE"]
+LATERAL_THRESHOLD = ABLATION_CONFIG["LATERAL_THRESHOLD"]
+
 GRID_W = 128  # Width of the satellite's visual swath (matches the worker's GRID_W)
 
 # Telemetry delta thresholds: only push to Floating Master if value changed enough
@@ -61,6 +86,131 @@ HEARTBEAT_INTERVAL = 10.0
 
 # Polling interval for the /tmp/relay_complete trigger file (seconds)
 RELAY_POLL_INTERVAL = 0.5
+
+
+# =============================================================================
+# SECTION 0.5: CAMPAIGN HOT-RELOAD & NETWORK THROTTLING
+# Redis Pub/Sub listener + tc wrapper functions for the campaign orchestrator.
+# =============================================================================
+
+def _refresh_module_aliases():
+    """Sync module-level aliases after an ABLATION_CONFIG hot-reload."""
+    global T_SAFE, T_FUSE, B_SAFE, B_FUSE, LATERAL_THRESHOLD
+    T_SAFE = ABLATION_CONFIG["T_SAFE"]
+    T_FUSE = ABLATION_CONFIG["T_FUSE"]
+    B_SAFE = ABLATION_CONFIG["B_SAFE"]
+    B_FUSE = ABLATION_CONFIG["B_FUSE"]
+    LATERAL_THRESHOLD = ABLATION_CONFIG["LATERAL_THRESHOLD"]
+
+
+def _campaign_config_listener(ground_redis_host):
+    """
+    Background thread: subscribes to Redis 'campaign/config' and hot-reloads
+    ABLATION_CONFIG in-memory when the Campaign Orchestrator publishes a JSON
+    message. Also handles network throttle commands.
+    """
+    while True:
+        try:
+            r = redis.Redis(host=ground_redis_host, port=6379,
+                            decode_responses=True, socket_connect_timeout=5)
+            r.ping()
+            ps = r.pubsub()
+            ps.subscribe("campaign/config")
+            print("✅ AGENT [CAMPAIGN]: Subscribed to 'campaign/config' for hot-reload.", flush=True)
+
+            for msg in ps.listen():
+                if msg["type"] != "message":
+                    continue
+                try:
+                    payload = json.loads(msg["data"])
+                except json.JSONDecodeError as e:
+                    print(f"⚠️  AGENT [CAMPAIGN]: Invalid JSON on campaign/config: {e}", flush=True)
+                    continue
+
+                # --- Network throttle commands ---
+                action = payload.get("action")
+                if action == "throttle":
+                    rate = payload.get("rate", 50)
+                    latency = payload.get("latency", 40)
+                    apply_network_throttle(rate, latency)
+                    continue
+                elif action == "clear_throttle":
+                    clear_network_throttle()
+                    continue
+
+                # --- Ablation config hot-reload ---
+                updated_keys = []
+                for key, value in payload.items():
+                    if key in ABLATION_CONFIG:
+                        # Cast to the same type as the current value
+                        current = ABLATION_CONFIG[key]
+                        if isinstance(current, bool):
+                            ABLATION_CONFIG[key] = str(value) == "True" if isinstance(value, str) else bool(value)
+                        elif isinstance(current, float):
+                            ABLATION_CONFIG[key] = float(value)
+                        elif isinstance(current, int):
+                            ABLATION_CONFIG[key] = int(value)
+                        else:
+                            ABLATION_CONFIG[key] = value
+                        updated_keys.append(key)
+
+                if updated_keys:
+                    _refresh_module_aliases()
+                    print(f"🔄 AGENT [CAMPAIGN]: Hot-reloaded config: {updated_keys}", flush=True)
+                    print(f"   Current ABLATION_CONFIG: {ABLATION_CONFIG}", flush=True)
+
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
+            time.sleep(3)
+        except Exception as e:
+            print(f"⚠️  AGENT [CAMPAIGN]: Config listener error: {e}", flush=True)
+            time.sleep(3)
+
+
+def apply_network_throttle(rate_mbit, latency_ms):
+    """
+    Applies Linux tc (traffic control) rules to throttle the host's eth0 interface.
+    Mirrors the logic from ops/apply_tc_throttling.sh.
+
+    rate_mbit:  bandwidth cap in Mbps (e.g. 50, 6.4, 4.0)
+    latency_ms: one-way propagation delay in ms (e.g. 40)
+    """
+    print(f"🌐 AGENT [TC]: Applying throttle: {rate_mbit}mbit / {latency_ms}ms latency", flush=True)
+
+    # Step 1: Remove any existing rules (idempotent)
+    subprocess.run(["tc", "qdisc", "del", "dev", "eth0", "root"],
+                   capture_output=True)  # Ignore errors if no rule exists
+
+    # Step 2: Token Bucket Filter — bandwidth cap
+    result = subprocess.run([
+        "tc", "qdisc", "add", "dev", "eth0", "root", "handle", "1:", "tbf",
+        "rate", f"{rate_mbit}mbit",
+        "burst", "32kbit",
+        "latency", "400ms"
+    ], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"❌ AGENT [TC]: TBF add failed: {result.stderr}", flush=True)
+        return
+
+    # Step 3: Network Emulator — propagation delay (child of TBF)
+    result = subprocess.run([
+        "tc", "qdisc", "add", "dev", "eth0", "parent", "1:1", "handle", "10:",
+        "netem", "delay", f"{latency_ms}ms"
+    ], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"❌ AGENT [TC]: netem add failed: {result.stderr}", flush=True)
+        return
+
+    print(f"✅ AGENT [TC]: Throttle applied — {rate_mbit}mbit / {latency_ms}ms", flush=True)
+
+
+def clear_network_throttle():
+    """Removes all tc qdisc rules from eth0, restoring full bandwidth."""
+    result = subprocess.run(["tc", "qdisc", "del", "dev", "eth0", "root"],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        print("✅ AGENT [TC]: All throttling rules cleared from eth0.", flush=True)
+    else:
+        print(f"⚠️  AGENT [TC]: tc qdisc del returned: {result.stderr.strip()}", flush=True)
 
 
 # =============================================================================
@@ -171,10 +321,10 @@ class VirtualSatellite:
             self.battery = max(0.0, min(100.0, self.battery))
 
             # Moderate early warnings (Threshold Evaluations)
-            if sim_temp >= T_SAFE:
-                return False, f"THERMAL_WARN: predicted {sim_temp:.1f}°C (safe limit: {T_SAFE}°C)", "thermal"
-            if self.battery <= B_SAFE:
-                return False, f"ENERGY_WARN: predicted {self.battery:.1f}% (safe limit: {B_SAFE}%)", "energy"
+            if sim_temp >= ABLATION_CONFIG["T_SAFE"]:
+                return False, f"THERMAL_WARN: predicted {sim_temp:.1f}°C (safe limit: {ABLATION_CONFIG['T_SAFE']}°C)", "thermal"
+            if self.battery <= ABLATION_CONFIG["B_SAFE"]:
+                return False, f"ENERGY_WARN: predicted {self.battery:.1f}% (safe limit: {ABLATION_CONFIG['B_SAFE']}%)", "energy"
 
             # Satellite will remain cool and charged throughout the forecast horizon
         return True, "NOMINAL", "none"
@@ -230,11 +380,12 @@ def query_floating_master(topology_redis, migration_type, exclude_node=""):
             1,              # Number of keys
             NODE_NAME,      # KEYS[1] = source node
             migration_type, # ARGV[1] = "thermal" or "lateral"
-            str(T_SAFE),    # ARGV[2] = safe temperature threshold
-            str(T_FUSE),    # ARGV[3] = fuse temperature threshold
-            str(B_SAFE),    # ARGV[4] = safe battery threshold
-            str(B_FUSE),    # ARGV[5] = fuse battery threshold
-            exclude_node    # ARGV[6] = force split routing
+            str(ABLATION_CONFIG["T_SAFE"]),    # ARGV[2] = safe temperature threshold
+            str(ABLATION_CONFIG["T_FUSE"]),    # ARGV[3] = fuse temperature threshold
+            str(ABLATION_CONFIG["B_SAFE"]),    # ARGV[4] = safe battery threshold
+            str(ABLATION_CONFIG["B_FUSE"]),    # ARGV[5] = fuse battery threshold
+            exclude_node,                      # ARGV[6] = force split routing
+            str(ABLATION_CONFIG["ENABLE_LOG_UTILITY"])  # ARGV[7] = log-utility toggle
         )
         result = json.loads(raw)
 
@@ -389,7 +540,12 @@ def trigger_local_migration(topology_redis, migration_type, exclude_node=""):
         time.sleep(0.5)
 
         # Use the consolidated checkpoint engine
-        checkpoint_path = _request_checkpoint("space-mission", "sidecar-guardian")
+        # Campaign Ablation: MONOLITHIC_CHECKPOINT selects the checkpoint target
+        if ABLATION_CONFIG["MONOLITHIC_CHECKPOINT"]:
+            checkpoint_container = "payload-phoenix"   # 160MB monolithic transfer
+        else:
+            checkpoint_container = "sidecar-guardian"   # 24MB state-sidecar split
+        checkpoint_path = _request_checkpoint("space-mission", checkpoint_container)
         if not checkpoint_path:
             print("❌ AGENT: Checkpoint failed. Aborting migration.", flush=True)
             try:
@@ -605,7 +761,11 @@ def _rebuild_and_deploy(tar_path):
     # FIX: Generate a unique, time-stamped image tag for the payload
     # This prevents Kubelet from using a stale cached image ID on multi-bounce migrations
     mig_id = int(time.time())
-    new_image_tag = f"localhost/space-sidecar:restored-{mig_id}"
+    # Campaign Ablation: Use the correct image name based on which container was checkpointed
+    if ABLATION_CONFIG["MONOLITHIC_CHECKPOINT"]:
+        new_image_tag = f"localhost/space-workload:restored-{mig_id}"
+    else:
+        new_image_tag = f"localhost/space-sidecar:restored-{mig_id}"
 
     # ---- STEP 1: Buildah — reconstruct the container image ----
     print("🔨 AGENT [BUILDAH]: Reconstructing container from checkpoint...", flush=True)
@@ -614,7 +774,7 @@ def _rebuild_and_deploy(tar_path):
     buildah from --name restoration-lab scratch
     buildah add restoration-lab {tar_path} /
     MNT=$(buildah mount restoration-lab) && rm -f $MNT/tmp/prepare_jump && buildah unmount restoration-lab
-    buildah config --annotation "io.kubernetes.cri-o.annotations.checkpoint.name=sidecar-guardian" restoration-lab
+    buildah config --annotation "io.kubernetes.cri-o.annotations.checkpoint.name={'payload-phoenix' if ABLATION_CONFIG['MONOLITHIC_CHECKPOINT'] else 'sidecar-guardian'}" restoration-lab
     buildah commit restoration-lab {new_image_tag}
     buildah rm restoration-lab
     """
@@ -632,12 +792,12 @@ def _rebuild_and_deploy(tar_path):
             "containers": [
                 {
                     "name": "sidecar-guardian",
-                    "image": new_image_tag,  # Use the new dynamic tag here
+                    "image": new_image_tag if ABLATION_CONFIG["MONOLITHIC_CHECKPOINT"] is False else "localhost/space-sidecar:latest",
                     "imagePullPolicy": "Never"
                 },
                 {
                     "name": "payload-phoenix",
-                    "image": "localhost/space-workload:latest",
+                    "image": new_image_tag if ABLATION_CONFIG["MONOLITHIC_CHECKPOINT"] else "localhost/space-workload:latest",
                     "imagePullPolicy": "Never"
                 }
             ]
@@ -760,7 +920,8 @@ def _rebuild_and_deploy_master(tar_path):
 # =============================================================================
 
 def main():
-    print(f"🚀 NODE AGENT V6 ONLINE — satellite: {NODE_NAME}", flush=True)
+    print(f"🚀 NODE AGENT V7 ONLINE — satellite: {NODE_NAME}", flush=True)
+    print(f"📋 ABLATION_CONFIG: {ABLATION_CONFIG}", flush=True)
 
     # Clean up stale IPC files from previous interrupted runs to guarantee a clean slate
     stale_files = [
@@ -790,11 +951,16 @@ def main():
     load_lua_script(topology_redis)
     threading.Thread(target=relay_receiver_loop, daemon=True).start()
 
+    # Start the campaign config hot-reload listener (Step 1.2)
+    threading.Thread(target=_campaign_config_listener, args=(GROUND_REDIS_HOST,), daemon=True).start()
+
     last_pushed = {"temp": -999, "battery": -999, "last_time": 0}
     migration_lock = threading.Lock()
 
     last_mig_master = 0
-    COOLDOWN_SEC = 15.0
+    # COOLDOWN_SEC is now read from ABLATION_CONFIG (hot-reloadable)
+    # Kept as a local reference for backward-compatible log messages
+    _ = ABLATION_CONFIG["COOLDOWN_SEC"]  # Validate key exists at startup
     had_workload = False
 
     channel = f"telemetry/{NODE_NAME}"
@@ -867,13 +1033,13 @@ def main():
                 # 1. THE REACTIVE FAILSAFE (Instant execution if melting or dying)
                 current_battery = local_state.get("battery", 100.0)
 
-                if current_temp >= T_FUSE:
+                if current_temp >= ABLATION_CONFIG["T_FUSE"]:
                     should_migrate = True
-                    migration_reason = f"CRITICAL FAILSAFE: Temp is {current_temp:.1f}°C (>= {T_FUSE}°C)"
+                    migration_reason = f"CRITICAL FAILSAFE: Temp is {current_temp:.1f}°C (>= {ABLATION_CONFIG['T_FUSE']}°C)"
                     routing_type = "thermal"
-                elif current_battery <= B_FUSE:
+                elif current_battery <= ABLATION_CONFIG["B_FUSE"]:
                     should_migrate = True
-                    migration_reason = f"CRITICAL FAILSAFE: Battery is {current_battery:.1f}% (<= {B_FUSE}%)"
+                    migration_reason = f"CRITICAL FAILSAFE: Battery is {current_battery:.1f}% (<= {ABLATION_CONFIG['B_FUSE']}%)"
                     routing_type = "energy"
 
                 # 2. THE PROACTIVE MPC (Predictive forecast for the next 30 seconds)
@@ -882,11 +1048,15 @@ def main():
                         # Skip proactive MPC checks during the stay-local suppression window
                         pass
                     else:
-                        twin = VirtualSatellite(local_state, has_sml, has_master)
-                        is_safe, pred_reason, routing_type = twin.predict_future(30)
-                        if not is_safe:
-                            should_migrate = True
-                            migration_reason = f"PROACTIVE MPC: {pred_reason}"
+                        # Campaign Ablation: Phase A — skip predictive twin if disabled
+                        if ABLATION_CONFIG["ENABLE_PREDICTIVE_TWIN"]:
+                            twin = VirtualSatellite(local_state, has_sml, has_master)
+                            is_safe, pred_reason, routing_type = twin.predict_future(30)
+                            if not is_safe:
+                                should_migrate = True
+                                migration_reason = f"PROACTIVE MPC: {pred_reason}"
+                        # If ENABLE_PREDICTIVE_TWIN is False, skip entirely —
+                        # rely purely on the reactive T_FUSE / B_FUSE failsafes above.
 
                 # ---- EXECUTE HARDWARE MIGRATION SCENARIOS ----
                 if should_migrate:
@@ -896,7 +1066,7 @@ def main():
                     # SCENARIO 1: DOUBLE EVACUATION
                     if has_sml and has_master:
                         # Ensure both the SML global cooldown and the Master local cooldown have passed
-                        if (time.time() - last_mig_master > COOLDOWN_SEC) and (time.time() - payload_last_migrated > COOLDOWN_SEC):
+                        if (time.time() - last_mig_master > ABLATION_CONFIG["COOLDOWN_SEC"]) and (time.time() - payload_last_migrated > ABLATION_CONFIG["COOLDOWN_SEC"]):
                             if migration_lock.acquire(blocking=False):
                                 print(f"🔥 HARDWARE TRIGGER FIRED: {migration_reason} (Double Evacuation Initiated)", flush=True)
                                 last_mig_master = time.time()
@@ -911,7 +1081,7 @@ def main():
 
                     # SCENARIO 2: ONLY SML PAYLOAD IS HERE
                     elif has_sml:
-                        if time.time() - payload_last_migrated > COOLDOWN_SEC:
+                        if time.time() - payload_last_migrated > ABLATION_CONFIG["COOLDOWN_SEC"]:
                             if migration_lock.acquire(blocking=False):
                                 print(f"🔥 HARDWARE TRIGGER FIRED: {migration_reason} (Payload Evacuation)", flush=True)
                                 threading.Thread(target=_run_migration, args=(topology_redis, routing_type, migration_lock),
@@ -924,7 +1094,7 @@ def main():
 
                     # SCENARIO 3: ONLY FLOATING MASTER IS HERE
                     elif has_master:
-                        if time.time() - last_mig_master > COOLDOWN_SEC:
+                        if time.time() - last_mig_master > ABLATION_CONFIG["COOLDOWN_SEC"]:
                             if migration_lock.acquire(blocking=False):
                                 print(f"🔥 HARDWARE TRIGGER FIRED: {migration_reason} (Master Evacuation)", flush=True)
                                 last_mig_master = time.time()
@@ -940,11 +1110,11 @@ def main():
                 # ==============================================================
                 # TRIGGER B: Lateral Fire Tracking (Async IPC)
                 # ==============================================================
-                if has_sml and (time.time() - payload_last_migrated > COOLDOWN_SEC) and fire_pixel_count > 0:
+                if has_sml and (time.time() - payload_last_migrated > ABLATION_CONFIG["COOLDOWN_SEC"]) and fire_pixel_count > 0:
                     current_plane = local_state.get("orbit_plane", "B")
 
                     # ESCAPING WEST (Left Edge)
-                    if com_x < LATERAL_THRESHOLD:
+                    if com_x < ABLATION_CONFIG["LATERAL_THRESHOLD"]:
                         if current_plane == "A":
                             print(f"⚠️ BOUNDARY LIMIT: Fire escaping WEST, but Plane A is the edge of coverage.", flush=True)
                         elif migration_lock.acquire(blocking=False):
@@ -954,7 +1124,7 @@ def main():
                                              daemon=True).start()
 
                     # ESCAPING EAST (Right Edge)
-                    elif com_x > (GRID_W - LATERAL_THRESHOLD):
+                    elif com_x > (GRID_W - ABLATION_CONFIG["LATERAL_THRESHOLD"]):
                         if current_plane == "C":
                             print(f"⚠️ BOUNDARY LIMIT: Fire escaping EAST, but Plane C is the edge of coverage.", flush=True)
                         elif migration_lock.acquire(blocking=False):
@@ -1002,16 +1172,32 @@ def _run_predictive_double_evacuation(topology_redis, routing_type, lock):
 
         print(f"🚨 CRITICAL: SML routed to {sml_destination}. Waiting for arrival...", flush=True)
 
-        # STEP 2: Deterministic Block
-        wait_for_sml_readiness()
-        print("🚨 CRITICAL: SML Arrived safely. Now routing master migration.", flush=True)
+        # Campaign Ablation: Phase E — ENABLE_SEQUENCED_MIGRATION
+        # If True (default): block on SML readiness before migrating the Master.
+        # If False: fire both migrations concurrently without the blocking barrier.
+        if ABLATION_CONFIG["ENABLE_SEQUENCED_MIGRATION"]:
+            # STEP 2: Deterministic Block (sequenced)
+            wait_for_sml_readiness()
+            print("🚨 CRITICAL: SML Arrived safely. Now routing master migration.", flush=True)
 
-        # STEP 3: Route and Migrate the Control Plane (Floating Master)
-        # CRITICAL: We pass the SML destination to force an architectural split!
-        trigger_master_migration(topology_redis, routing_type, exclude_node=sml_destination)
+            # STEP 3: Route and Migrate the Control Plane (Floating Master)
+            # CRITICAL: We pass the SML destination to force an architectural split!
+            trigger_master_migration(topology_redis, routing_type, exclude_node=sml_destination)
 
-        # STEP 4: Deterministic Block
-        wait_for_master_readiness()
+            # STEP 4: Deterministic Block
+            wait_for_master_readiness()
+        else:
+            # Concurrent (unsequenced) evacuation — no blocking barrier
+            print("⚡ CRITICAL [ABLATION]: ENABLE_SEQUENCED_MIGRATION=False → concurrent evacuation", flush=True)
+            master_thread = threading.Thread(
+                target=trigger_master_migration,
+                args=(topology_redis, routing_type),
+                kwargs={"exclude_node": sml_destination},
+                daemon=True
+            )
+            master_thread.start()
+            master_thread.join(timeout=120)  # Safety timeout
+
         print("✅ CRITICAL: Double Evacuation complete. Both workloads survived.", flush=True)
 
     finally:

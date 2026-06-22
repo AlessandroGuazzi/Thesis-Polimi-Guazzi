@@ -107,21 +107,13 @@ spec:
             - name: TOPOLOGY_REDIS_HOST
               value: "topology-master"
 
-            # Temperature thresholds for VirtualSatellite Trigger A prediction
-            - name: T_SAFE
-              value: "90.0"
-            - name: T_FUSE
-              value: "120.0"
-
-            # Battery thresholds for VirtualSatellite Trigger C prediction (%)
-            - name: B_SAFE
-              value: "5.0"
-            - name: B_FUSE
-              value: "2.0"
-
-            # Lateral tracking threshold for Trigger B CoM edge detection (pixels)
-            - name: LATERAL_THRESHOLD
-              value: "15"
+          # Campaign ablation config: inject all ConfigMap keys as environment variables.
+          # This provides T_SAFE, T_FUSE, B_SAFE, B_FUSE, LATERAL_THRESHOLD,
+          # ENABLE_PREDICTIVE_TWIN, COOLDOWN_SEC, MONOLITHIC_CHECKPOINT,
+          # ENABLE_LOG_UTILITY, and ENABLE_SEQUENCED_MIGRATION.
+          envFrom:
+            - configMapRef:
+                name: campaign-ablation-config
 
           volumeMounts:
             # Buildah needs the containers-storage to commit restored images

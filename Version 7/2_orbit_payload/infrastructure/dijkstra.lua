@@ -1,5 +1,5 @@
 -- ==============================================================================
--- SPACE CLOUD V6 - ATOMIC DIJKSTRA PATHFINDER (Floating Master Lua Script)
+-- SPACE CLOUD V7 - ATOMIC DIJKSTRA PATHFINDER (Floating Master Lua Script)
 -- Role: Runs entirely inside the Redis event loop to find the optimal escape
 --       route through the ISL mesh. Because Lua scripts are atomic in Redis,
 --       no telemetry update can race against this query mid-execution.
@@ -7,6 +7,10 @@
 -- ARGV[1] = migration_type: "thermal" or "lateral"
 -- ARGV[2] = T_safe: hardware temperature below which a node is considered healthy
 -- ARGV[3] = T_fuse: hardware temperature above which a node is excluded from routing
+-- ARGV[4] = B_safe: battery below which a node is considered energy-threatened
+-- ARGV[5] = B_fuse: battery at or below which a node is critical
+-- ARGV[6] = exclude_node: comma-separated list of nodes to exclude from routing
+-- ARGV[7] = enable_log_utility: "True" or "False" (Phase D ablation toggle)
 -- KEYS[1] = source node name (e.g. "minikube-m02")
 -- ==============================================================================
 
@@ -19,6 +23,7 @@ local T_fuse     = tonumber(ARGV[3])
 local B_safe     = 15.0
 local B_fuse     = 5.0
 local exclude_node = ""
+local enable_log_utility = true  -- Default: logarithmic utility (Phase D active)
 
 if ARGV[4] then
     local possible_b_safe = tonumber(ARGV[4])
@@ -26,6 +31,10 @@ if ARGV[4] then
         B_safe = possible_b_safe
         B_fuse = tonumber(ARGV[5]) or 5.0
         exclude_node = ARGV[6] or ""
+        -- ARGV[7]: Phase D ablation toggle (log-utility vs linear)
+        if ARGV[7] then
+            enable_log_utility = (ARGV[7] == "True")
+        end
     else
         exclude_node = ARGV[4]
     end
@@ -206,8 +215,8 @@ for _, name in ipairs(all_nodes) do
             -- LATERAL LOGIC: Rely entirely on the directional path cost
             -- computed in Step 3 (which applies the 0.1 directional discount).
             target_score = dist[name]
-        else
-            -- JOINT MULTIPLICATIVE HEALTH INDEX (Thermal & Energy)
+        elseif enable_log_utility then
+            -- LOGARITHMIC UTILITY (Phase D active — default)
             -- Normalize within the critical threat ranges: [T_safe, T_fuse] and [B_fuse, B_safe]
             
             -- 1. Temperature Health: 1.0 (nominal) to 0.001 (critical limit reached)
@@ -221,6 +230,13 @@ for _, name in ipairs(all_nodes) do
             -- 3. Minimizing the negative log-utility: S = -ln(H_T) - ln(H_B) + (dist * 0.1)
             -- Multi-Objective Optimization selection that avoids extreme weak links.
             target_score = -math.log(h_temp) - math.log(h_batt) + (dist[name] * 0.1)
+        else
+            -- LINEAR COST (Phase D ablation — ENABLE_LOG_UTILITY=False)
+            -- Simple weighted sum that allows moderate conditions in one metric
+            -- to offset terminal risks in another, leading to suboptimal routing.
+            local t_penalty = math.min(1.0, math.max(0.0, (temps[name] - T_safe) / (T_fuse - T_safe)))
+            local b_penalty = math.min(1.0, math.max(0.0, (B_safe - batts[name]) / (B_safe - B_fuse)))
+            target_score = t_penalty + b_penalty + (dist[name] * 0.1)
         end
 
         -- Pick the node with the lowest overall penalty score
@@ -237,13 +253,20 @@ local is_failsafe = false
 if temps[source] and batts[source] then
     is_failsafe = (temps[source] >= T_fuse) or (batts[source] <= B_fuse)
     if not (mig_type == "lateral_east" or mig_type == "lateral_west") then
-        local t_penalty_src = math.min(1.0, math.max(0.0, (temps[source] - T_safe) / (T_fuse - T_safe)))
-        local h_temp_src = math.max(0.001, 1.0 - t_penalty_src)
+        if enable_log_utility then
+            local t_penalty_src = math.min(1.0, math.max(0.0, (temps[source] - T_safe) / (T_fuse - T_safe)))
+            local h_temp_src = math.max(0.001, 1.0 - t_penalty_src)
 
-        local b_penalty_src = math.min(1.0, math.max(0.0, (B_safe - batts[source]) / (B_safe - B_fuse)))
-        local h_batt_src = math.max(0.001, 1.0 - b_penalty_src)
+            local b_penalty_src = math.min(1.0, math.max(0.0, (B_safe - batts[source]) / (B_safe - B_fuse)))
+            local h_batt_src = math.max(0.001, 1.0 - b_penalty_src)
 
-        source_score = -math.log(h_temp_src) - math.log(h_batt_src)
+            source_score = -math.log(h_temp_src) - math.log(h_batt_src)
+        else
+            -- LINEAR COST for source (Phase D ablation)
+            local t_penalty_src = math.min(1.0, math.max(0.0, (temps[source] - T_safe) / (T_fuse - T_safe)))
+            local b_penalty_src = math.min(1.0, math.max(0.0, (B_safe - batts[source]) / (B_safe - B_fuse)))
+            source_score = t_penalty_src + b_penalty_src
+        end
     end
 end
 

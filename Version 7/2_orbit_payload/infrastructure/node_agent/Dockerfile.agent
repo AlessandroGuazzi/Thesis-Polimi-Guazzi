@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     buildah \
     bash \
     openssh-client \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Kubectl — required for patch/scale operations and CRIU checkpoint API calls

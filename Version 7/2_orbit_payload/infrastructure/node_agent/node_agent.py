@@ -394,6 +394,21 @@ def query_floating_master(topology_redis, migration_type, exclude_node=""):
                 global last_stay_local_time
                 last_stay_local_time = time.time()
                 print(f"⚠️  AGENT: Stay Local chosen. Current health (penalty: {result.get('source_score', 0):.3f}) is superior to best neighbor (penalty: {result.get('best_dest_score', 0):.3f}). Suppressing proactive migrations for 10s.", flush=True)
+                # ── CAMPAIGN ABORT FLAG (Phase 3, Step 3.5 Integration) ──────
+                # Publish explicit abort acknowledgement to the campaign/aborts
+                # Redis channel so the orchestrator's AbortFlagListener can
+                # detect Correct Failures in real-time.
+                try:
+                    _abort_redis = redis.Redis(host=GROUND_REDIS_HOST, port=6379,
+                                              decode_responses=True, socket_connect_timeout=1)
+                    _abort_redis.publish("campaign/aborts", json.dumps({
+                        "flag": "ABORT_ACKNOWLEDGED: SURVIVAL_PROBABILITY_LOWER_AT_DESTINATION",
+                        "node": NODE_NAME,
+                        "source_score": result.get("source_score", 0),
+                        "best_dest_score": result.get("best_dest_score", 0),
+                    }))
+                except Exception:
+                    pass  # Non-critical: campaign listener may not be active
             else:
                 print(f"⚠️  AGENT: Lua returned error: {result['error']}", flush=True)
             return None
@@ -1078,6 +1093,15 @@ def main():
                                 print(f"⏳ HARDWARE TRIGGER BLOCKED: {migration_reason} (Double Evacuation on Cooldown)",
                                   flush=True)
                                 last_cooldown_log = time.time()
+                                # ── CAMPAIGN ABORT FLAG ──
+                                try:
+                                    ground_redis.publish("campaign/aborts", json.dumps({
+                                        "flag": "ABORT_ACKNOWLEDGED: COOLDOWN_LOCK",
+                                        "node": NODE_NAME,
+                                        "reason": "Double Evacuation on Cooldown",
+                                    }))
+                                except Exception:
+                                    pass
 
                     # SCENARIO 2: ONLY SML PAYLOAD IS HERE
                     elif has_sml:
@@ -1090,6 +1114,15 @@ def main():
                             if time.time() - last_cooldown_log > 2.0:  # Only print once every 2 seconds
                                 print(f"⏳ HARDWARE TRIGGER BLOCKED: {migration_reason} (Payload Evacuation on Cooldown)", flush=True)
                                 last_cooldown_log = time.time()
+                                # ── CAMPAIGN ABORT FLAG ──
+                                try:
+                                    ground_redis.publish("campaign/aborts", json.dumps({
+                                        "flag": "ABORT_ACKNOWLEDGED: COOLDOWN_LOCK",
+                                        "node": NODE_NAME,
+                                        "reason": "Payload Evacuation on Cooldown",
+                                    }))
+                                except Exception:
+                                    pass
 
 
                     # SCENARIO 3: ONLY FLOATING MASTER IS HERE
@@ -1104,6 +1137,15 @@ def main():
                             if time.time() - last_cooldown_log > 2.0:  # Only print once every 2 seconds
                                 print(f"⏳ HARDWARE TRIGGER BLOCKED: {migration_reason} (Master Evacuation on Cooldown)", flush=True)
                                 last_cooldown_log = time.time()
+                                # ── CAMPAIGN ABORT FLAG ──
+                                try:
+                                    ground_redis.publish("campaign/aborts", json.dumps({
+                                        "flag": "ABORT_ACKNOWLEDGED: COOLDOWN_LOCK",
+                                        "node": NODE_NAME,
+                                        "reason": "Master Evacuation on Cooldown",
+                                    }))
+                                except Exception:
+                                    pass
 
                     continue  # Skip lateral evaluation if hardware is in danger
 

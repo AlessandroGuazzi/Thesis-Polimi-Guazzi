@@ -213,9 +213,15 @@ NUM_REPS = 10
 
 def generate_run_matrix(seed=SHUFFLE_SEED, num_reps=NUM_REPS):
     """
-    Generates the complete 540-run DoE matrix.
-    Crosses: 6 Configs × 3 Scenarios × 3 Severities × 10 Reps.
-    Returns a list of run descriptor dicts, shuffled with a fixed seed.
+    Generates the DoE run matrix.
+    Crosses: 6 Configs × 3 Scenarios × 3 Severities × num_reps Reps.
+
+    Args:
+        seed: Random seed for shuffle. If None, matrix is NOT shuffled
+              (used by the 54-run dry-run gate for sequential execution).
+        num_reps: Number of replications per treatment combination.
+
+    Returns a list of run descriptor dicts.
     """
     matrix = []
     for config_name, config_patch in CONFIGURATIONS.items():
@@ -236,9 +242,12 @@ def generate_run_matrix(seed=SHUFFLE_SEED, num_reps=NUM_REPS):
                 f"({len(CONFIGURATIONS)} configs × {len(SCENARIOS)} scenarios × "
                 f"3 severities × {num_reps} reps)")
 
-    random.seed(seed)
-    random.shuffle(matrix)
-    logger.info(f"Matrix shuffled with seed={seed} for reproducibility.")
+    if seed is not None:
+        random.seed(seed)
+        random.shuffle(matrix)
+        logger.info(f"Matrix shuffled with seed={seed} for reproducibility.")
+    else:
+        logger.info("Matrix NOT shuffled (sequential mode for dry-run gate).")
 
     return matrix
 
@@ -597,13 +606,13 @@ def _find_origin_pod(k8s_api, label_selector="app=space-mission"):
 # RUN EXECUTION ENGINE
 # =============================================================================
 # Orchestrates the complete lifecycle of a single experimental run.
-# Follows the strict 6-phase lifecycle from the automation specification:
-#   1. Setup & Ablation Hot-Reload
-#   2. Network Throttle
-#   3. Sterilization
-#   4. Injection
-#   5. Extraction
-#   6. Teardown & Sanitization
+# Follows the strict 6-phase lifecycle from orchestrator_functional_spec.md §7:
+#   1. Preparation — Apply ablation rules and reset network constraints
+#   2. Sterilization — Enforce Sterile Baseline (zero-variance flat state)
+#   3. Stress Initialization — Apply scenario-specific network bottlenecks
+#   4. Injection — Execute Ghost Publisher / Ghost Worker fault vectors
+#   5. Extraction — Poll K8s API for migration delay and survival metrics
+#   6. Teardown & Sanitization — Clean up and assert cluster stability
 # =============================================================================
 
 def apply_configuration(redis_conn, config_patch):
@@ -672,12 +681,18 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
     }
 
     try:
-        # ── PHASE 1: Setup & Ablation Hot-Reload ────────────────────────────
+        # ── PHASE 1: Preparation — Apply ablation rules & reset constraints ─
         logger.info("📋 Phase 1/6: Applying ablation configuration...")
         apply_configuration(redis_conn, run["config_patch"])
 
-        # ── PHASE 2: Network Throttle (scenario-specific) ───────────────────
-        logger.info("📋 Phase 2/6: Applying network constraints...")
+        # ── PHASE 2: Sterilization — Enforce Sterile Baseline ───────────────
+        # Must happen BEFORE network throttle so the baseline telemetry
+        # propagates at full bandwidth (spec: orchestrator_functional_spec §7).
+        logger.info("📋 Phase 2/6: Sterilizing cluster...")
+        sterilize_cluster(redis_conn)
+
+        # ── PHASE 3: Stress Initialization — Network Throttle ───────────────
+        logger.info("📋 Phase 3/6: Applying network constraints...")
         if scenario == "slow_internet":
             params = run["scenario_params"]
             apply_network_throttle(
@@ -687,13 +702,13 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
             )
         # Other scenarios don't require network throttling
 
-        # ── PHASE 3: Sterilization ──────────────────────────────────────────
-        logger.info("📋 Phase 3/6: Sterilizing cluster...")
-        sterilize_cluster(redis_conn)
-
-        # ── PHASE 4: Injection ──────────────────────────────────────────────
+        # ── PHASE 4: Injection — Execute fault vectors ──────────────────────
         logger.info("📋 Phase 4/6: Executing fault injection...")
         injection_timestamp = time.time()
+
+        # Start the Redis abort listener for explicit "Correct Failure" detection
+        abort_listener = AbortFlagListener(redis_conn)
+        abort_listener.start()
 
         # Find origin pod for the hardware fuse
         origin_pod = _find_origin_pod(k8s_api)
@@ -702,6 +717,20 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
             fuse_timeout_sec=run["fuse_timeout"],
             origin_pod_name=origin_pod or "unknown",
         )
+
+        # Launch the Ghost Worker as a concurrent daemon thread so that
+        # synthetic lateral CoM data is actively flowing during the thermal
+        # injections — simulating real data-plane activity.
+        lateral_threshold = run["config_patch"].get(
+            "LATERAL_THRESHOLD",
+            int(STERILE_BASELINE.get("lateral_threshold", 8)),
+        )
+        ghost_worker_thread = threading.Thread(
+            target=inject_ghost_trajectory,
+            args=(lateral_threshold,),
+            daemon=True,
+        )
+        ghost_worker_thread.start()
 
         if scenario == "slow_internet":
             # Scenario 1: inject thermal spike to trigger migration under bandwidth constraint
@@ -740,12 +769,16 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         # ── PHASE 5: Extraction ──────────────────────────────────────────────
         logger.info("📋 Phase 5/6: Monitoring cluster response...")
         extraction_result = _extract_metrics(
-            k8s_api, redis_conn, injection_timestamp, fuse, run
+            k8s_api, redis_conn, injection_timestamp, fuse, run,
+            abort_listener=abort_listener,
         )
         result.update(extraction_result)
 
         # Defuse the hardware fuse if it hasn't already triggered
         fuse.cancel()
+
+        # Stop the abort listener and ghost worker
+        abort_listener.stop()
 
     except Exception as e:
         logger.error(f"❌ Run execution error: {e}")
@@ -762,13 +795,15 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
     return result
 
 
-def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run):
+def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
+                     abort_listener=None):
     """
     Monitor the cluster after fault injection to extract the response metrics.
 
-    Polls the K8s API to detect:
+    Polls the K8s API and the Redis abort channel to detect:
     - Pod migration (destination pod becoming Ready)
-    - Correct Failure (intentional abort — cooldown lock or destination rejection)
+    - Correct Failure via explicit abort flags (COOLDOWN_LOCK,
+      SURVIVAL_PROBABILITY_LOWER_AT_DESTINATION) — spec: automation §3
     - Hardware fuse expiration (simulated meltdown)
 
     Returns a dict with hops, survival_rate, migration_delay_sec, bandwidth_mb.
@@ -783,54 +818,31 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run):
     is_monolithic = run["config_patch"].get("MONOLITHIC_CHECKPOINT", False)
     checkpoint_size_mb = 160.0 if is_monolithic else 24.0
 
-    # Special case: Sequential Thermal "Correct Failure" at Δt=5s
-    # The system should REFUSE to migrate (cooldown lock active).
-    # This is a software success → 100% survival, 0s delay.
-    if (run["scenario"] == "sequential_thermal"
-            and run["severity"] == "correct_failure"):
-        # Wait for the injection sequence to complete, then check if migration
-        # was correctly blocked by the cooldown timer.
-        logger.info("   🔍 Monitoring for Correct Failure (cooldown lock expected)...")
-        time.sleep(run["scenario_params"]["delta_t_stress_sec"] + 3.0)
-
-        # If the fuse hasn't triggered and the original pod is still alive,
-        # the system correctly refused to migrate.
-        origin_pod = _find_origin_pod(k8s_api)
-        if origin_pod and not fuse.fuse_triggered:
-            logger.info("   ✅ CORRECT FAILURE: System refused migration (cooldown lock). "
-                        "Survival = 100%")
-            result["survival_rate"] = 1.0
-            result["migration_delay_sec"] = 0.0
-            return result
-
-    # Special case: Double Trouble "Correct Failure" (2% neighbor battery)
-    # The routing algorithm should determine destination is worse → stay local.
-    if (run["scenario"] == "double_trouble"
-            and run["severity"] == "correct_failure"):
-        logger.info("   🔍 Monitoring for Correct Failure (destination rejection expected)...")
-        time.sleep(5.0)
-
-        origin_pod = _find_origin_pod(k8s_api)
-        if origin_pod and not fuse.fuse_triggered:
-            logger.info("   ✅ CORRECT FAILURE: System refused migration "
-                        "(survival probability lower at destination). Survival = 100%")
-            result["survival_rate"] = 1.0
-            result["migration_delay_sec"] = 0.0
-            return result
-
-    # General case: poll for migration completion or fuse expiration
+    # General case: poll for migration, abort flags, or fuse expiration
     poll_deadline = time.time() + RUN_TIMEOUT_SEC
     poll_interval = 0.5
 
     while time.time() < poll_deadline:
-        # Check if the hardware fuse triggered (simulated meltdown)
+        # ── Check 1: Explicit Correct Failure via Redis abort flags ──────
+        # The Node Agent publishes abort acknowledgement flags to the Redis
+        # channel when it intentionally refuses to migrate. This is the
+        # spec-compliant way to detect Correct Failures (automation §3).
+        if abort_listener and abort_listener.abort_detected:
+            reason = abort_listener.abort_reason
+            logger.info(f"   ✅ CORRECT FAILURE: Node Agent refused migration "
+                        f"(abort flag: {reason}). Survival = 100%")
+            result["survival_rate"] = 1.0
+            result["migration_delay_sec"] = 0.0
+            return result
+
+        # ── Check 2: Hardware fuse triggered (simulated meltdown) ────────
         if fuse.fuse_triggered:
             logger.info("   💥 Hardware fuse triggered — 0% survival")
             result["survival_rate"] = 0.0
             result["migration_delay_sec"] = time.time() - injection_timestamp
             return result
 
-        # Check for successful migration: destination pod Running + Ready
+        # ── Check 3: Successful migration (destination pod Running+Ready) ─
         try:
             pods = k8s_api.list_namespaced_pod(
                 namespace="default",
@@ -854,6 +866,21 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run):
 
         time.sleep(poll_interval)
 
+    # ── Fallback: Correct Failure heuristic for scenarios with expected abort ─
+    # If we reach the timeout on a severity=correct_failure run and the origin
+    # pod is still alive (no migration happened, no fuse triggered), the system
+    # likely correctly refused to migrate but the Node Agent didn't publish an
+    # explicit abort flag. Log it as a Correct Failure with a warning.
+    if run["severity"] == "correct_failure" and not fuse.fuse_triggered:
+        origin_pod = _find_origin_pod(k8s_api)
+        if origin_pod:
+            logger.warning("   ⚠️ CORRECT FAILURE (heuristic): No explicit abort flag "
+                           "received, but origin pod survived and no migration occurred. "
+                           "Recording as software success (100% survival).")
+            result["survival_rate"] = 1.0
+            result["migration_delay_sec"] = 0.0
+            return result
+
     # Timeout reached — no migration detected
     logger.warning(f"   ⏱️ Run timeout ({RUN_TIMEOUT_SEC}s) — recording as failure")
     result["survival_rate"] = 0.0
@@ -862,11 +889,220 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run):
 
 
 # =============================================================================
+# ABORT FLAG LISTENER (Explicit "Correct Failure" Detection)
+# =============================================================================
+# Subscribes to the Node Agent's log channel on Redis to detect explicit
+# abort acknowledgement flags. This is the spec-compliant mechanism for
+# distinguishing between a system crash (0% survival) and a safe,
+# intentional refusal to migrate (100% survival).
+# Spec: campaign_automation_specification.md §3, orchestrator_functional_spec.md §8
+# =============================================================================
+
+# Known abort flag patterns emitted by the Node Agent
+ABORT_FLAG_PATTERNS = [
+    "ABORT_ACKNOWLEDGED: COOLDOWN_LOCK",
+    "ABORT_ACKNOWLEDGED: SURVIVAL_PROBABILITY_LOWER_AT_DESTINATION",
+    "HARDWARE TRIGGER BLOCKED",
+    "Stay Local chosen",
+]
+
+
+class AbortFlagListener:
+    """
+    Subscribes to the Node Agent's log output on Redis to detect explicit
+    abort flags indicating an intentional refusal to migrate.
+
+    The Node Agent prints these flags to stdout, which are captured by the
+    K8s logging infrastructure. For the campaign, we also monitor the Redis
+    telemetry bus for STAY_LOCAL responses from the Dijkstra Lua script.
+    """
+
+    def __init__(self, redis_conn):
+        self._redis_host = redis_conn.connection_pool.connection_kwargs.get("host", GROUND_REDIS_HOST)
+        self._redis_port = redis_conn.connection_pool.connection_kwargs.get("port", GROUND_REDIS_PORT)
+        self.abort_detected = False
+        self.abort_reason = ""
+        self._thread = None
+        self._stop_event = threading.Event()
+
+    def start(self):
+        """Start the background listener thread."""
+        self.abort_detected = False
+        self.abort_reason = ""
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._listen, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stop the background listener."""
+        self._stop_event.set()
+
+    def _listen(self):
+        """
+        Subscribe to 'campaign/aborts' Redis channel.
+        The Node Agent publishes abort events here when it intentionally
+        refuses to migrate (cooldown lock, destination score worse, etc.).
+        """
+        try:
+            r = redis.Redis(
+                host=self._redis_host,
+                port=self._redis_port,
+                decode_responses=True,
+                socket_connect_timeout=3,
+            )
+            ps = r.pubsub()
+            ps.subscribe("campaign/aborts")
+
+            while not self._stop_event.is_set():
+                msg = ps.get_message(timeout=0.5)
+                if msg and msg["type"] == "message":
+                    data = msg["data"]
+                    for pattern in ABORT_FLAG_PATTERNS:
+                        if pattern in data:
+                            self.abort_detected = True
+                            self.abort_reason = pattern
+                            logger.info(f"   🔍 Abort flag detected: {pattern}")
+                            return
+
+            ps.unsubscribe("campaign/aborts")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Abort listener error: {e}")
+
+
+# =============================================================================
+# DRY-RUN GATE (Pre-Campaign Smoke Test)
+# =============================================================================
+# Spec: campaign_automation_specification.md §2.3
+# Spec: orchestrator_functional_spec.md §6
+#
+# Before the full 540-run randomized campaign, the orchestrator must execute
+# a non-shuffled, sequential mini-matrix of exactly 54 unique treatment
+# combinations (6 Configs × 3 Scenarios × 3 Severities × 1 Rep).
+# If any dry-run fails validation, the orchestrator triggers a hard stop.
+# =============================================================================
+
+def execute_dry_run_gate(redis_conn, k8s_api):
+    """
+    Execute the mandatory 54-run pre-campaign smoke test.
+
+    Generates a deterministic, sequential (non-shuffled) mini-matrix covering
+    every unique treatment combination exactly once. Each dry-run is executed
+    through the full run lifecycle and validated for basic behavioral correctness.
+
+    Returns True if all 54 dry-runs pass, False if any fail validation.
+    """
+    logger.info("=" * 70)
+    logger.info("🧪 DRY-RUN GATE: Starting 54-run pre-campaign smoke test...")
+    logger.info("=" * 70)
+
+    # Generate the 54-run mini-matrix (1 rep per combination, NOT shuffled)
+    dry_run_matrix = generate_run_matrix(seed=None, num_reps=1)
+    # Override: do NOT shuffle — execute sequentially for deterministic validation
+    dry_run_matrix.sort(key=lambda r: (r["configuration"], r["scenario"], r["severity"]))
+
+    total_dry = len(dry_run_matrix)
+    logger.info(f"🧪 Dry-Run matrix: {total_dry} sequential treatment combinations")
+
+    passed = 0
+    failed_runs = []
+
+    for idx, run in enumerate(dry_run_matrix, start=1):
+        logger.info(f"\n🧪 DRY-RUN {idx}/{total_dry}: {run['configuration']} | "
+                    f"{run['scenario']} | {run['severity']}")
+
+        try:
+            result = execute_run(run, idx, total_dry, redis_conn, k8s_api)
+
+            # ── Behavioral Assertion Gate ──────────────────────────────────
+            # Validate that the system responded as expected for this
+            # configuration × scenario × severity combination.
+            valid = _validate_dry_run_result(run, result)
+
+            if valid:
+                passed += 1
+                logger.info(f"   ✅ DRY-RUN {idx}: PASSED")
+            else:
+                failed_runs.append({
+                    "index": idx,
+                    "run": f"{run['configuration']}|{run['scenario']}|{run['severity']}",
+                    "result": result,
+                })
+                logger.error(f"   ❌ DRY-RUN {idx}: FAILED validation")
+
+        except Exception as e:
+            logger.error(f"   ❌ DRY-RUN {idx}: EXCEPTION — {e}")
+            failed_runs.append({
+                "index": idx,
+                "run": f"{run['configuration']}|{run['scenario']}|{run['severity']}",
+                "error": str(e),
+            })
+
+    # ── Summary ────────────────────────────────────────────────────────────
+    logger.info(f"\n{'='*70}")
+    logger.info(f"🧪 DRY-RUN GATE RESULTS: {passed}/{total_dry} passed")
+
+    if failed_runs:
+        logger.error(f"🧪 {len(failed_runs)} dry-run(s) FAILED:")
+        for fail in failed_runs:
+            logger.error(f"   • Run {fail['index']}: {fail['run']}")
+        logger.error("🧪 FAIL-FAST HARD STOP: The campaign will NOT proceed.")
+        return False
+
+    logger.info("🧪 All 54 smoke tests passed — campaign infrastructure verified.")
+    logger.info(f"{'='*70}")
+    return True
+
+
+def _validate_dry_run_result(run, result):
+    """
+    Validate that a dry-run result matches the expected behavioral state
+    for the given configuration × scenario × severity combination.
+
+    Behavioral assertions:
+    - Correct Failure runs should have survival_rate == 1.0 (safe refusal)
+    - Nominal runs should have survival_rate == 1.0 (successful migration)
+    - CSV schema fields should be non-empty
+    - Hardware fuse should NOT fire on nominal severity
+
+    Returns True if the result passes validation.
+    """
+    severity = run["severity"]
+    survival = result.get("survival_rate", -1)
+
+    # Basic schema validation: essential fields must be present
+    if result.get("timestamp") is None:
+        logger.warning("   ⚠️ Validation: missing timestamp")
+        return False
+
+    # Severity-specific behavioral assertions
+    if severity == "nominal":
+        # Nominal: migration should always succeed (100% survival)
+        if survival != 1.0:
+            logger.warning(f"   ⚠️ Validation: nominal severity expected 100% survival, "
+                           f"got {survival*100:.0f}%")
+            return False
+
+    elif severity == "correct_failure":
+        # Correct Failure: system should refuse to migrate (100% survival)
+        # OR the fuse triggers legitimately (0% survival is also valid for
+        # slow_internet correct_failure where transfer physically cannot complete)
+        if run["scenario"] in ("sequential_thermal", "double_trouble"):
+            if survival != 1.0:
+                logger.warning(f"   ⚠️ Validation: correct_failure for {run['scenario']} "
+                               f"expected safe refusal (100%), got {survival*100:.0f}%")
+                return False
+
+    # Borderline: no strict assertion — outcome is probabilistic by design
+
+    return True
+
+
+# =============================================================================
 # CSV TELEMETRY SINK (Phase 4 preview — atomic append)
 # =============================================================================
 
 CSV_HEADER = [
-    "Timestamp", "Configuration", "Scenario", "Severity", "Rep_ID",
+    "Timestamp", "Configuration_Block", "Scenario", "Severity_Level", "Repetition_ID",
     "Hops", "Survival_Rate", "Migration_Delay_sec", "Bandwidth_MB",
 ]
 
@@ -934,6 +1170,20 @@ def main():
         logger.critical("❌ Pre-flight FAILED: Cluster is not stable. Aborting campaign.")
         sys.exit(1)
     logger.info("✅ Pre-flight: Cluster is stable and ready.")
+
+    # ── Mandatory Dry-Run Gate (54-run smoke test) ─────────────────────────
+    # Spec: campaign_automation_specification.md §2.3
+    # Spec: orchestrator_functional_spec.md §6
+    # Execute a non-shuffled, sequential mini-matrix of 54 unique treatment
+    # combinations (6 Configs × 3 Scenarios × 3 Severities × 1 Rep) before
+    # the full randomized campaign. If any dry-run fails to produce the
+    # expected behavioral state, the orchestrator triggers a hard stop.
+    if not execute_dry_run_gate(redis_conn, k8s_api):
+        logger.critical("❌ DRY-RUN GATE FAILED: One or more smoke tests did not "
+                        "produce the expected system response. Refusing to proceed "
+                        "with the 540-run campaign. Fix the cluster and re-run.")
+        sys.exit(1)
+    logger.info("✅ Dry-Run Gate passed — all 54 smoke tests verified.")
 
     # ── Execute the campaign ───────────────────────────────────────────────
     campaign_start = time.time()

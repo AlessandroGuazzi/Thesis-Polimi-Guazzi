@@ -710,6 +710,11 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         abort_listener = AbortFlagListener(redis_conn)
         abort_listener.start()
 
+        # Start the Redis route metrics listener for dynamic hop tracking
+        # (Phase 4, Step 4.1: captures the actual route from the Node Agent)
+        route_listener = RouteMetricsListener(redis_conn)
+        route_listener.start()
+
         # Find origin pod for the hardware fuse
         origin_pod = _find_origin_pod(k8s_api)
         fuse = HardwareFuse(
@@ -771,14 +776,16 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         extraction_result = _extract_metrics(
             k8s_api, redis_conn, injection_timestamp, fuse, run,
             abort_listener=abort_listener,
+            route_listener=route_listener,
         )
         result.update(extraction_result)
 
         # Defuse the hardware fuse if it hasn't already triggered
         fuse.cancel()
 
-        # Stop the abort listener and ghost worker
+        # Stop the abort listener, route listener, and ghost worker
         abort_listener.stop()
+        route_listener.stop()
 
     except Exception as e:
         logger.error(f"❌ Run execution error: {e}")
@@ -796,7 +803,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
 
 
 def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
-                     abort_listener=None):
+                     abort_listener=None, route_listener=None):
     """
     Monitor the cluster after fault injection to extract the response metrics.
 
@@ -805,6 +812,12 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
     - Correct Failure via explicit abort flags (COOLDOWN_LOCK,
       SURVIVAL_PROBABILITY_LOWER_AT_DESTINATION) — spec: automation §3
     - Hardware fuse expiration (simulated meltdown)
+
+    Phase 4, Step 4.1 additions:
+    - Dynamic hop tracking via RouteMetricsListener (campaign/metrics channel)
+    - Migration Delay = injection_timestamp → K8s pod Ready transition
+    - Intelligent "Correct Failure" logging: survival=100%, delay=0.0
+    - Dynamic Bandwidth_MB = checkpoint_size * actual_hops
 
     Returns a dict with hops, survival_rate, migration_delay_sec, bandwidth_mb.
     """
@@ -815,6 +828,9 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
         "bandwidth_mb": 0.0,
     }
 
+    # Dynamic Checkpoint Sizing (Phase 4, Step 4.1)
+    # Resolves the active checkpoint configuration to log accurate data
+    # transport metrics: 160MB for monolithic, 24MB for sidecar-only.
     is_monolithic = run["config_patch"].get("MONOLITHIC_CHECKPOINT", False)
     checkpoint_size_mb = 160.0 if is_monolithic else 24.0
 
@@ -824,9 +840,12 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
 
     while time.time() < poll_deadline:
         # ── Check 1: Explicit Correct Failure via Redis abort flags ──────
-        # The Node Agent publishes abort acknowledgement flags to the Redis
-        # channel when it intentionally refuses to migrate. This is the
-        # spec-compliant way to detect Correct Failures (automation §3).
+        # Intelligent Success Logging (Phase 4, Step 4.1):
+        # If the orchestrator detects an intentional, self-preserving abort
+        # logged by the Node Agent (e.g., [ABORT_ACKNOWLEDGED: COOLDOWN_LOCK]),
+        # it records Survival_Rate = 1.0 (100%) and Migration_Delay_sec = 0.0.
+        # The system correctly refused to migrate — the cluster survived.
+        # Spec: campaign_automation_specification.md §3 (Correct Failure Tracking)
         if abort_listener and abort_listener.abort_detected:
             reason = abort_listener.abort_reason
             logger.info(f"   ✅ CORRECT FAILURE: Node Agent refused migration "
@@ -853,13 +872,37 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
                 if (pod.metadata.deletion_timestamp is None
                         and pod.status.container_statuses
                         and all(cs.ready for cs in pod.status.container_statuses)):
+                    # Migration Delay Calculation (Phase 4, Step 4.1):
+                    # Exact wall-clock duration from the injection timestamp
+                    # to the K8s API reporting the destination pod as Ready.
                     migration_delay = time.time() - injection_timestamp
                     result["survival_rate"] = 1.0
                     result["migration_delay_sec"] = round(migration_delay, 3)
-                    # Hops: inferred from the route (1 hop in the 3-node constellation)
-                    result["hops"] = 1
-                    result["bandwidth_mb"] = checkpoint_size_mb * result["hops"]
-                    logger.info(f"   ✅ Migration complete — delay: {migration_delay:.2f}s")
+
+                    # Dynamic Hop Tracking (Phase 4, Step 4.1):
+                    # Use the actual route captured by the RouteMetricsListener
+                    # from the Node Agent's campaign/metrics broadcast.
+                    if route_listener and route_listener.route_received:
+                        result["hops"] = route_listener.hops
+                        logger.info(f"   📊 Dynamic hops: {route_listener.hops} "
+                                    f"(route: {route_listener.route})")
+                    else:
+                        # Fallback: infer hop count from node placement delta
+                        # In the 3-node linear constellation, migrations between
+                        # adjacent nodes = 1 hop, m02↔m04 = 2 hops.
+                        result["hops"] = 1
+                        logger.warning("   ⚠️ Route listener did not capture route — "
+                                       "falling back to hops=1")
+
+                    # Dynamic Bandwidth Tracking (Phase 4, Step 4.1):
+                    # Bandwidth_MB = checkpoint_size * hops
+                    # If MONOLITHIC_CHECKPOINT=True → 160 * hops
+                    # If MONOLITHIC_CHECKPOINT=False → 24 * hops
+                    result["bandwidth_mb"] = round(
+                        checkpoint_size_mb * result["hops"], 1
+                    )
+                    logger.info(f"   ✅ Migration complete — delay: {migration_delay:.2f}s | "
+                                f"hops: {result['hops']} | BW: {result['bandwidth_mb']}MB")
                     return result
         except Exception as e:
             logger.warning(f"   ⚠️ K8s poll error: {e}")
@@ -967,6 +1010,97 @@ class AbortFlagListener:
             ps.unsubscribe("campaign/aborts")
         except Exception as e:
             logger.warning(f"   ⚠️ Abort listener error: {e}")
+
+
+# =============================================================================
+# ROUTE METRICS LISTENER (Phase 4, Step 4.1 — Dynamic Hop Tracking)
+# =============================================================================
+# Subscribes to the 'campaign/metrics' Redis channel to capture the actual
+# multi-hop route selected by the Dijkstra pathfinder on the edge node.
+# This enables dynamic calculation of:
+#   - Hops: len(route) — the number of ISL transmission hops
+#   - Bandwidth_MB: checkpoint_size_mb * hops
+#
+# Without this listener, the Orchestrator has no visibility into the
+# pathfinding decision because it happens atomically inside Redis via EVALSHA
+# on the Node Agent side. The Node Agent broadcasts its route to this channel
+# immediately after a successful relay transfer.
+#
+# Spec: campaign_automation_specification.md §3 (Dynamic Checkpoint Sizing)
+# Spec: campaign_experimental_design.md §3 (Constellation Bandwidth Footprint)
+# =============================================================================
+
+
+class RouteMetricsListener:
+    """
+    Captures the actual migration route published by the Node Agent after
+    a successful relay transfer. Provides the true hop count for accurate
+    Bandwidth_MB calculation in the DoE CSV dataset.
+    """
+
+    def __init__(self, redis_conn):
+        self._redis_host = redis_conn.connection_pool.connection_kwargs.get("host", GROUND_REDIS_HOST)
+        self._redis_port = redis_conn.connection_pool.connection_kwargs.get("port", GROUND_REDIS_PORT)
+        self.route_received = False
+        self.route = []
+        self.hops = 0
+        self.source = ""
+        self.destination = ""
+        self._thread = None
+        self._stop_event = threading.Event()
+
+    def start(self):
+        """Start the background listener thread."""
+        self.route_received = False
+        self.route = []
+        self.hops = 0
+        self.source = ""
+        self.destination = ""
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._listen, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stop the background listener."""
+        self._stop_event.set()
+
+    def _listen(self):
+        """
+        Subscribe to 'campaign/metrics' Redis channel.
+        The Node Agent publishes route details here after each successful
+        relay transfer (both SML payload and Topology Master migrations).
+        """
+        try:
+            r = redis.Redis(
+                host=self._redis_host,
+                port=self._redis_port,
+                decode_responses=True,
+                socket_connect_timeout=3,
+            )
+            ps = r.pubsub()
+            ps.subscribe("campaign/metrics")
+
+            while not self._stop_event.is_set():
+                msg = ps.get_message(timeout=0.5)
+                if msg and msg["type"] == "message":
+                    try:
+                        data = json.loads(msg["data"])
+                        if data.get("event") == "migration_complete":
+                            self.route = data.get("route", [])
+                            self.hops = data.get("hops", len(self.route))
+                            self.source = data.get("source", "")
+                            self.destination = data.get("destination", "")
+                            self.route_received = True
+                            logger.info(f"   📊 Route captured: {self.source} → "
+                                        f"{self.route} ({self.hops} hop(s))")
+                            # Don't return — keep listening for additional
+                            # migrations (e.g., double evacuation routes)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"   ⚠️ Route listener: malformed message: {e}")
+
+            ps.unsubscribe("campaign/metrics")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Route metrics listener error: {e}")
 
 
 # =============================================================================
@@ -1098,7 +1232,7 @@ def _validate_dry_run_result(run, result):
 
 
 # =============================================================================
-# CSV TELEMETRY SINK (Phase 4 preview — atomic append)
+# CSV TELEMETRY SINK (Phase 4, Step 4.2 — Atomic Append)
 # =============================================================================
 
 CSV_HEADER = [

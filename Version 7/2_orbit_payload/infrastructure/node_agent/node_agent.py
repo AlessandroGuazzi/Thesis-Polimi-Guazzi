@@ -576,6 +576,24 @@ def trigger_local_migration(topology_redis, migration_type, exclude_node=""):
 
         if res.returncode == 0:
             print(f"✅ AGENT: Relay transfer succeeded to {destination}.", flush=True)
+            # ── CAMPAIGN METRICS BROADCAST (Phase 4, Step 4.1) ──────────
+            # Publish the actual route to the campaign/metrics Redis channel
+            # so the Orchestrator can dynamically calculate the true hop count
+            # and accurate Bandwidth_MB for the DoE CSV dataset.
+            try:
+                _metric_redis = redis.Redis(host=GROUND_REDIS_HOST, port=6379,
+                                            decode_responses=True, socket_connect_timeout=1)
+                _metric_redis.publish("campaign/metrics", json.dumps({
+                    "event": "migration_complete",
+                    "workload": "sml",
+                    "source": NODE_NAME,
+                    "destination": destination,
+                    "route": route_result["route"],
+                    "hops": len(route_result["route"]),
+                    "migration_type": migration_type,
+                }))
+            except Exception:
+                pass  # Non-critical: campaign listener may not be active
             break
         else:
             print(f"⚠️ AGENT: Relay transfer to {destination} failed (code {res.returncode}). Retrying path calculation...", flush=True)
@@ -640,6 +658,22 @@ def trigger_master_migration(topology_redis, migration_type, exclude_node=""):
 
         if res.returncode == 0:
             print(f"✅ AGENT: Master relay transfer succeeded to {destination}.", flush=True)
+            # ── CAMPAIGN METRICS BROADCAST (Phase 4, Step 4.1) ──────────
+            # Publish the actual master route for dynamic hop tracking.
+            try:
+                _metric_redis = redis.Redis(host=GROUND_REDIS_HOST, port=6379,
+                                            decode_responses=True, socket_connect_timeout=1)
+                _metric_redis.publish("campaign/metrics", json.dumps({
+                    "event": "migration_complete",
+                    "workload": "master",
+                    "source": NODE_NAME,
+                    "destination": destination,
+                    "route": route_result["route"],
+                    "hops": len(route_result["route"]),
+                    "migration_type": migration_type,
+                }))
+            except Exception:
+                pass  # Non-critical: campaign listener may not be active
             break
         else:
             print(f"⚠️ AGENT: Master relay transfer to {destination} failed (code {res.returncode}). Retrying path calculation...", flush=True)

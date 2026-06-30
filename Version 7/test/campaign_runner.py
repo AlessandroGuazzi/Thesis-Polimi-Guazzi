@@ -455,10 +455,10 @@ def inject_ghost_trajectory(lateral_threshold, stop_event=None, step_size=4.0, s
                 )
                 logger.debug(f"      [DEBUG] HTTP POST {GUARDIAN_SVC_URL}/state response: code={resp.status_code}, content={resp.text[:150]}")
                 if resp.status_code == 200:
-                    logger.info(f"   → CoM_x={current_x:.1f} injected successfully (response: {resp.text.strip()})")
+                    logger.debug(f"   → CoM_x={current_x:.1f} injected successfully (response: {resp.text.strip()})")
                     break
                 else:
-                    logger.warning(f"   → CoM_x={current_x:.1f} HTTP {resp.status_code} response={resp.text} (attempt {attempt+1}/{max_retries})")
+                    logger.debug(f"   → CoM_x={current_x:.1f} HTTP {resp.status_code} response={resp.text} (attempt {attempt+1}/{max_retries})")
             except requests.exceptions.RequestException as e:
                 # Connection drops (e.g. RemoteDisconnected, ConnectionRefused) are normal and expected
                 # here. During SML migration, the source pod is frozen by CRIU and scaled down by the Node
@@ -469,7 +469,7 @@ def inject_ghost_trajectory(lateral_threshold, stop_event=None, step_size=4.0, s
                     clean_err = "Pod offline (migration in progress)"
                 else:
                     clean_err = err_str.split(":")[-1].strip() if ":" in err_str else err_str
-                logger.warning(f"   → CoM_x={current_x:.1f} telemetry dropped: {clean_err} (attempt {attempt+1}/{max_retries})")
+                logger.debug(f"   → CoM_x={current_x:.1f} telemetry dropped: {clean_err} (attempt {attempt+1}/{max_retries})")
             if attempt < max_retries - 1:
                 time.sleep(1.0)
         else:
@@ -511,7 +511,7 @@ class HardwareFuse:
     def start(self):
         """Launch the asynchronous death timer."""
         if self.timeout is None:
-            logger.info("💣 Hardware Fuse: DISABLED (nominal severity — no fuse)")
+            logger.debug("💣 Hardware Fuse: DISABLED (nominal severity — no fuse)")
             return
         logger.info(f"💣 Hardware Fuse: ARMED — {self.timeout}s until simulated meltdown "
                      f"(origin: {self.origin_pod})")
@@ -547,9 +547,9 @@ class HardwareFuse:
             )
             status_details = "unknown"
             if delete_status:
-                if hasattr(delete_status, 'status'):
-                    status_details = f"status={delete_status.status}"
-                elif hasattr(delete_status, 'metadata'):
+                if hasattr(delete_status, 'status') and hasattr(delete_status.status, 'phase'):
+                    status_details = f"status.phase={delete_status.status.phase}"
+                elif hasattr(delete_status, 'metadata') and hasattr(delete_status.metadata, 'uid'):
                     status_details = f"uid={delete_status.metadata.uid}"
             logger.warning(f"💥 Origin pod {self.origin_pod} TERMINATED — "
                            f"simulated silicon melt (0% survival). API Response: {status_details}")
@@ -576,14 +576,14 @@ def sanitize_run(redis_conn, k8s_api):
     2. State Wipe: clear /tmp/payload_state.json inside the sidecar
     3. Stability Assertion: poll K8s until workload pods are Running + Ready
     """
-    logger.info("🧹 SANITIZE: Beginning post-run cleanup...")
+    logger.debug("🧹 SANITIZE: Beginning post-run cleanup...")
 
     # ── 1. Network Reset ──────────────────────────────────────────────────────
     # Publish clear_throttle command to the campaign/config channel.
     # All Node Agents subscribed to this channel will execute tc qdisc del.
-    logger.info("🧹 SANITIZE [1/3]: Clearing network throttles on all nodes...")
+    logger.debug("🧹 SANITIZE [1/3]: Clearing network throttles on all nodes...")
     subscribers = redis_conn.publish("campaign/config", json.dumps({"action": "clear_throttle"}))
-    logger.info(f"   → Published clear_throttle. Subscribers reached: {subscribers}")
+    logger.debug(f"   → Published clear_throttle. Subscribers reached: {subscribers}")
     time.sleep(1.0)  # Brief settle for tc commands to propagate
 
     # Direct fallback: check and delete tc rules on all agent pods
@@ -604,7 +604,7 @@ def sanitize_run(redis_conn, k8s_api):
                         stderr=True,
                         stdout=True,
                     )
-                    logger.info(f"   ✅ Force-cleared tc on {pod.metadata.name}. Exec output: {str(res).strip()}")
+                    logger.debug(f"   ✅ Force-cleared tc on {pod.metadata.name}. Exec output: {str(res).strip()}")
                 except Exception as e:
                     # Ignore errors if the root qdisc is already empty/deleted
                     logger.debug(f"   ℹ️ Exec force-clear failed (possibly already cleared): {e}")
@@ -615,7 +615,7 @@ def sanitize_run(redis_conn, k8s_api):
     # ── 2. State Wipe ─────────────────────────────────────────────────────────
     # Clear the Guardian's /tmp/payload_state.json via K8s exec.
     # This prevents stale CoM coordinates from triggering phantom lateral migrations.
-    logger.info("🧹 SANITIZE [2/3]: Wiping sidecar state files...")
+    logger.debug("🧹 SANITIZE [2/3]: Wiping sidecar state files...")
     # 2.1 Wipe state on the active mission pod (recreates it fresh to clear in-memory cooldowns)
     try:
         pods = k8s_api.list_namespaced_pod(
@@ -630,7 +630,7 @@ def sanitize_run(redis_conn, k8s_api):
                     namespace="default",
                     body=client.V1DeleteOptions(grace_period_seconds=0),
                 )
-                logger.info(f"   ✅ Deleted mission pod {pod.metadata.name} to reset startup cooldown state.")
+                logger.debug(f"   ✅ Deleted mission pod {pod.metadata.name} to reset startup cooldown state.")
             except Exception as e:
                 logger.warning(f"   ⚠️ Could not delete mission pod {pod.metadata.name}: {e}")
     except Exception as e:
@@ -654,7 +654,7 @@ def sanitize_run(redis_conn, k8s_api):
                         stderr=True,
                         stdout=True,
                     )
-                    logger.info(f"   ✅ Wiped state on node agent {pod.metadata.name}.")
+                    logger.debug(f"   ✅ Wiped state on node agent {pod.metadata.name}.")
                 except Exception as e:
                     logger.debug(f"   ℹ️ State wipe failed on agent {pod.metadata.name}: {e}")
     except Exception as e:
@@ -662,10 +662,10 @@ def sanitize_run(redis_conn, k8s_api):
 
     # ── 3. Stability Assertion ────────────────────────────────────────────────
     # Block until exactly 1 SML pod + 1 Master pod are Running and Ready.
-    logger.info("🧹 SANITIZE [3/3]: Asserting cluster stability...")
+    logger.debug("🧹 SANITIZE [3/3]: Asserting cluster stability...")
     _assert_cluster_stability(k8s_api)
 
-    logger.info("🧹 SANITIZE: Cleanup complete — cluster is pristine.")
+    logger.debug("🧹 SANITIZE: Cleanup complete — cluster is pristine.")
 
 
 def _assert_cluster_stability(k8s_api, timeout_sec=None):
@@ -712,10 +712,10 @@ def _assert_cluster_stability(k8s_api, timeout_sec=None):
             )
 
             if sml_ready == 1 and sml_total == 1 and master_ready == 1 and master_total == 1:
-                logger.info(f"   ✅ Cluster stable: 1 SML pod, 1 Master pod Ready (no rolling/terminating pods)")
+                logger.debug(f"   ✅ Cluster stable: 1 SML pod, 1 Master pod Ready (no rolling/terminating pods)")
                 return True
 
-            logger.info(
+            logger.debug(
                 f"   ⏳ Waiting for rollout completion: "
                 f"SML={sml_ready}/1 (total: {sml_total}), "
                 f"Master={master_ready}/1 (total: {master_total})"
@@ -825,6 +825,28 @@ def apply_network_throttle(redis_conn, rate_mbit, latency_ms):
     time.sleep(1.0)  # Brief settle for tc rules to propagate
 
 
+CONFIG_DESCRIPTIONS = {
+    "C1_Full_System": "Control baseline (all optimizations active: predictive twin, 15s cooldown, sequenced migrations/compaction)",
+    "C2_No_Predictive_Twin": "Ablation: Predictive Twin disabled (reactive local state only)",
+    "C3_No_Cooldown": "Ablation: Cooldown Guard disabled (high risk of migration ping-pong/thrashing)",
+    "C4_Monolithic_Checkpoint": "Ablation: Monolithic Checkpoint (transferring uncompressed 160MB memory dumps instead of 24MB sidecar pages)",
+    "C5_Linear_Routing": "Ablation: Linear Routing disabled (forcing direct node-to-node transfers, no multi-hop Dijkstra routing)",
+    "C6_Concurrent_Evacuation": "Ablation: Concurrent Evacuation enabled (multiple pods migrate simultaneously, fighting for network bandwidth)",
+}
+
+SCENARIO_DESCRIPTIONS = {
+    "slow_internet": "Degraded Inter-Satellite Link bandwidth",
+    "sequential_thermal": "Cascading/sequential node overheating (primary and destination spikes)",
+    "double_trouble": "Local thermal spike coupled with neighboring node battery degradation",
+}
+
+SEVERITY_DESCRIPTIONS = {
+    "nominal": "Nominal stress (easy migration/evacuation expected)",
+    "borderline": "Borderline stress (tight safety margin; migration is difficult but possible)",
+    "correct_failure": "Extreme stress (meltdown is expected, or edge Dijkstra should safely refuse to migrate)",
+}
+
+
 def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
     """
     Execute a single experimental run through the full 6-phase lifecycle.
@@ -844,9 +866,16 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
     severity = run["severity"]
     rep_id = run["rep_id"]
 
+    config_desc = CONFIG_DESCRIPTIONS.get(config_name, "Custom profile")
+    scenario_desc = SCENARIO_DESCRIPTIONS.get(scenario, "Custom scenario")
+    severity_desc = SEVERITY_DESCRIPTIONS.get(severity, "Custom severity")
+
     logger.info(f"\n{'='*70}")
-    logger.info(f"🏃 RUN {run_index}/{total_runs}: {config_name} | "
-                f"{scenario} | {severity} | Rep {rep_id}")
+    logger.info(f"🏃 RUN {run_index}/{total_runs}: {config_name} | {scenario} | {severity} | Rep {rep_id}")
+    logger.info(f"{'-'*70}")
+    logger.info(f"📋 Ablation Profile: {config_desc}")
+    logger.info(f"🌐 Fault Context:    {scenario_desc}")
+    logger.info(f"⚠️ Severity Level:   {severity_desc}")
     logger.info(f"{'='*70}")
 
     result = {
@@ -863,7 +892,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
 
     try:
         # ── PHASE 1: Preparation — Apply ablation rules & reset constraints ─
-        logger.info("📋 Phase 1/6: Applying ablation configuration...")
+        logger.debug("📋 Phase 1/6: Applying ablation configuration...")
         apply_configuration(redis_conn, run["config_patch"])
 
         # Resolve the current SML and Master placement first to write an accurate baseline
@@ -886,11 +915,11 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         # ── PHASE 2: Sterilization — Enforce Sterile Baseline ───────────────
         # Must happen BEFORE network throttle so the baseline telemetry
         # propagates at full bandwidth (spec: orchestrator_functional_spec §7).
-        logger.info("📋 Phase 2/6: Sterilizing cluster...")
+        logger.debug("📋 Phase 2/6: Sterilizing cluster...")
         sterilize_cluster(redis_conn, k8s_api, origin_node=origin_node, master_node=master_node)
 
         # ── PHASE 3: Stress Initialization — Network Throttle ───────────────
-        logger.info("📋 Phase 3/6: Applying network constraints...")
+        logger.debug("📋 Phase 3/6: Applying network constraints...")
         if scenario == "slow_internet":
             params = run["scenario_params"]
             apply_network_throttle(
@@ -901,7 +930,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         # Other scenarios don't require network throttling
 
         # ── PHASE 4: Injection — Execute fault vectors ──────────────────────
-        logger.info("📋 Phase 4/6: Executing fault injection...")
+        logger.debug("📋 Phase 4/6: Executing fault injection...")
         injection_timestamp = time.time()
 
         # Start the Redis abort listener for explicit "Correct Failure" detection
@@ -922,7 +951,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
             origin_node = SATELLITE_NODES[0]
             logger.warning(f"⚠️ Could not find node for pod {origin_pod}. Defaulting to {origin_node}")
         else:
-            logger.info(f"📍 Resolved origin pod: {origin_pod} running on node: {origin_node}")
+            logger.debug(f"📍 Resolved origin pod: {origin_pod} running on node: {origin_node}")
 
         fuse = HardwareFuse(
             k8s_api=k8s_api,
@@ -947,6 +976,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
 
         if scenario == "slow_internet":
             # Scenario 1: inject thermal spike to trigger migration under bandwidth constraint
+            logger.info(f"🔥 Fault Injected: Thermal spike (95°C) on node {origin_node}")
             inject_thermal_spike(redis_conn, origin_node, 95.0)
             fuse.start()
 
@@ -963,6 +993,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
                 fuse.timeout = None
 
             # Spike Node A (primary) → triggers migration to Node B
+            logger.info(f"🔥 Fault Injected: Primary thermal spike ({spike_temp}°C) on node {origin_node}")
             inject_thermal_spike(redis_conn, origin_node, spike_temp)
             fuse.start()
 
@@ -1035,15 +1066,16 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
                     inject_battery_crisis(redis_conn, neighbor, neighbor_battery)
 
             # Settle briefly to let neighbor agents push their telemetry updates to Floating Master
-            logger.info("   ⏳ Waiting 1.5s for neighbor battery updates to propagate...")
+            logger.debug("   ⏳ Waiting 1.5s for neighbor battery updates to propagate...")
             time.sleep(1.5)
 
             # Finally, spike local node temperature to trigger migration pathfinding
+            logger.info(f"🔥 Fault Injected: Spiked temp ({local_temp}°C) on {origin_node} + degraded neighbor batteries to {neighbor_battery}%")
             inject_thermal_spike(redis_conn, origin_node, local_temp)
             fuse.start()
 
         # ── PHASE 5: Extraction ──────────────────────────────────────────────
-        logger.info("📋 Phase 5/6: Monitoring cluster response...")
+        logger.debug("📋 Phase 5/6: Monitoring cluster response...")
         extraction_result = _extract_metrics(
             k8s_api, redis_conn, injection_timestamp, fuse, run,
             origin_pod=origin_pod,
@@ -1070,7 +1102,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
             pass
 
     # ── PHASE 6: Teardown & Sanitization ────────────────────────────────────
-    logger.info("📋 Phase 6/6: Sanitizing cluster...")
+    logger.debug("📋 Phase 6/6: Sanitizing cluster...")
     sanitize_run(redis_conn, k8s_api)
 
     logger.info(f"✅ Run {run_index} complete — Survival: {result['survival_rate']*100:.0f}% | "
@@ -1119,8 +1151,8 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
     while time.time() < poll_deadline:
         iterations += 1
         elapsed = time.time() - injection_timestamp
-        # Log status every 3 seconds (6 iterations) to keep terminal logs clean
-        show_log = (iterations == 1 or iterations % 6 == 0)
+        # Log status every 10 seconds (20 iterations) to keep terminal logs clean
+        show_log = (iterations == 1 or iterations % 20 == 0)
         
         if show_log:
             logger.info(f"   ⏳ [Poll #{iterations} | elapsed={elapsed:.1f}s] Checking status (Abort flag: {abort_listener.abort_detected if abort_listener else False}, Route recvd: {route_listener.route_received if route_listener else False}, Fuse: {fuse.fuse_triggered})...")
@@ -1155,14 +1187,14 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
             )
             running_pods = [p.metadata.name for p in pods.items]
             if show_log:
-                logger.info(f"      → Running space-mission pods: {running_pods}")
+                logger.debug(f"      → Running space-mission pods: {running_pods}")
             for pod in pods.items:
                 if pod.metadata.name != origin_pod and pod.metadata.deletion_timestamp is None:
                     container_readiness = []
                     if pod.status.container_statuses:
                         container_readiness = [f"{cs.name}:ready={cs.ready}" for cs in pod.status.container_statuses]
                     if show_log:
-                        logger.info(f"      → Destination candidate '{pod.metadata.name}' readiness statuses: {container_readiness}")
+                        logger.debug(f"      → Destination candidate '{pod.metadata.name}' readiness statuses: {container_readiness}")
                     
                     if pod.status.container_statuses and all(cs.ready for cs in pod.status.container_statuses):
                         # Migration Delay Calculation (Phase 4, Step 4.1):
@@ -1275,12 +1307,12 @@ class AbortFlagListener:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._listen, daemon=True)
         self._thread.start()
-        logger.info("   🔍 AbortFlagListener: Background thread started.")
+        logger.debug("   🔍 AbortFlagListener: Background thread started.")
 
     def stop(self):
         """Stop the background listener."""
         self._stop_event.set()
-        logger.info("   🔍 AbortFlagListener: Background thread stopping...")
+        logger.debug("   🔍 AbortFlagListener: Background thread stopping...")
 
     def _listen(self):
         """
@@ -1297,7 +1329,7 @@ class AbortFlagListener:
             )
             ps = r.pubsub()
             ps.subscribe("campaign/aborts")
-            logger.info("   🔍 AbortFlagListener: Subscribed to 'campaign/aborts' Redis channel.")
+            logger.debug("   🔍 AbortFlagListener: Subscribed to 'campaign/aborts' Redis channel.")
 
             while not self._stop_event.is_set():
                 msg = ps.get_message(timeout=0.5)
@@ -1314,7 +1346,7 @@ class AbortFlagListener:
                             return
 
             ps.unsubscribe("campaign/aborts")
-            logger.info("   🔍 AbortFlagListener: Unsubscribed from 'campaign/aborts'.")
+            logger.debug("   🔍 AbortFlagListener: Unsubscribed from 'campaign/aborts'.")
         except Exception as e:
             logger.warning(f"   ⚠️ Abort listener error: {e}")
 
@@ -1366,12 +1398,12 @@ class RouteMetricsListener:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._listen, daemon=True)
         self._thread.start()
-        logger.info("   📊 RouteMetricsListener: Background thread started.")
+        logger.debug("   📊 RouteMetricsListener: Background thread started.")
 
     def stop(self):
         """Stop the background listener."""
         self._stop_event.set()
-        logger.info("   📊 RouteMetricsListener: Background thread stopping...")
+        logger.debug("   📊 RouteMetricsListener: Background thread stopping...")
 
     def _listen(self):
         """
@@ -1388,7 +1420,7 @@ class RouteMetricsListener:
             )
             ps = r.pubsub()
             ps.subscribe("campaign/metrics")
-            logger.info("   📊 RouteMetricsListener: Subscribed to 'campaign/metrics' Redis channel.")
+            logger.debug("   📊 RouteMetricsListener: Subscribed to 'campaign/metrics' Redis channel.")
 
             while not self._stop_event.is_set():
                 msg = ps.get_message(timeout=0.5)
@@ -1396,7 +1428,7 @@ class RouteMetricsListener:
                     logger.debug(f"      [DEBUG] RouteMetricsListener: Received raw Redis message: {msg}")
                 if msg and msg["type"] == "message":
                     try:
-                        logger.info(f"   📊 RouteMetricsListener: Received message: {msg['data']}")
+                        logger.debug(f"   📊 RouteMetricsListener: Received message: {msg['data']}")
                         data = json.loads(msg["data"])
                         if data.get("event") == "migration_complete":
                             self.route = data.get("route", [])
@@ -1412,7 +1444,7 @@ class RouteMetricsListener:
                         logger.warning(f"   ⚠️ Route listener: malformed message: {e}")
 
             ps.unsubscribe("campaign/metrics")
-            logger.info("   📊 RouteMetricsListener: Unsubscribed from 'campaign/metrics'.")
+            logger.debug("   📊 RouteMetricsListener: Unsubscribed from 'campaign/metrics'.")
         except Exception as e:
             logger.warning(f"   ⚠️ Route metrics listener error: {e}")
 

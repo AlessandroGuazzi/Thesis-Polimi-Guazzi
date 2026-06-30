@@ -29,13 +29,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: topology-master   # This hostname is baked into node_agent.py as TOPOLOGY_REDIS_HOST
+  name: topology-master # This hostname is baked into node_agent.py as TOPOLOGY_REDIS_HOST
   labels:
     app: topology-master
 spec:
   ports:
-    - name:       redis
-      port:       6379
+    - name: redis
+      port: 6379
       targetPort: 6379
   selector:
     app: topology-master
@@ -50,10 +50,10 @@ metadata:
   labels:
     app: topology-master
 spec:
-  type: NodePort   # Accessible from the host via minikube service topology-dashboard
+  type: NodePort # Accessible from the host via minikube service topology-dashboard
   ports:
-    - name:       dashboard
-      port:       8081
+    - name: dashboard
+      port: 8081
       targetPort: 8081
   selector:
     app: topology-master
@@ -84,6 +84,8 @@ spec:
       nodeSelector:
         type: satellite
 
+      terminationGracePeriodSeconds: 0
+
       # === PHASE 1: QoS PREVENTION (SOFT ANTI-AFFINITY) ===
       # Instructs K8s to avoid placing the Brain on the same node as the Brawn.
       affinity:
@@ -100,59 +102,58 @@ spec:
                 topologyKey: kubernetes.io/hostname
 
       containers:
+        # ────────────────────────────────────────────────────────────────────────
+        # Container 1: topology-redis
+        # The topology engine — RAM-only Redis that holds the live ISL graph.
+        # Node Agents push HSET node:<name> and SADD adj:<name> to this instance.
+        # The Lua Dijkstra script is loaded here at agent startup via SCRIPT LOAD.
+        # ────────────────────────────────────────────────────────────────────────
+        - name: topology-redis
+          # FIX: Pinned to 6.2 to disable io_uring and ensure CRIU compatibility
+          image: docker.io/library/redis:6.2-alpine
 
-      # ────────────────────────────────────────────────────────────────────────
-      # Container 1: topology-redis
-      # The topology engine — RAM-only Redis that holds the live ISL graph.
-      # Node Agents push HSET node:<name> and SADD adj:<name> to this instance.
-      # The Lua Dijkstra script is loaded here at agent startup via SCRIPT LOAD.
-      # ────────────────────────────────────────────────────────────────────────
-      - name: topology-redis
-        # FIX: Pinned to 6.2 to disable io_uring and ensure CRIU compatibility
-        image: docker.io/library/redis:6.2-alpine
+          # === INJECT THIS MISSING CRIU SECURITY CONTEXT ===
+          securityContext:
+            privileged: true
+            appArmorProfile:
+              type: Unconfined
 
-        # === INJECT THIS MISSING CRIU SECURITY CONTEXT ===
-        securityContext:
-          privileged: true
-          appArmorProfile:
-            type: Unconfined
+          ports:
+            - containerPort: 6379
+              name: redis
+          # Disable ALL disk persistence — this must be a pure RAM store.
+          # The topology graph is ephemeral: Node Agents repopulate it after any restart.
+          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
 
-        ports:
-          - containerPort: 6379
-            name: redis
-        # Disable ALL disk persistence — this must be a pure RAM store.
-        # The topology graph is ephemeral: Node Agents repopulate it after any restart.
-        args: ["redis-server", "--save", "", "--appendonly", "no"]
-        resources:
-          requests:
-            cpu:    "50m"
-            memory: "64Mi"
-          limits:
-            cpu:    "200m"
-            memory: "128Mi"
-
-      # ────────────────────────────────────────────────────────────────────────
-      # Container 2: topology-dashboard
-      # The ISL mesh graph visualizer — reads co-located Redis via localhost:6379
-      # and serves a live D3-style canvas graph with edge weights on port 8081.
-      # Shares the Pod network namespace: no networking config needed.
-      # ────────────────────────────────────────────────────────────────────────
-      - name: topology-dashboard
-        image: localhost/space-topology-dashboard:latest
-        imagePullPolicy: Never
-        ports:
-          - containerPort: 8081
-            name: dashboard
-        env:
-          # Temperature thresholds for the edge weight computation display
-          - name: T_SAFE
-            value: "80.0"
-          - name: T_FUSE
-            value: "120.0"
-        resources:
-          requests:
-            cpu:    "50m"
-            memory: "64Mi"
-          limits:
-            cpu:    "200m"
-            memory: "128Mi"
+        # ────────────────────────────────────────────────────────────────────────
+        # Container 2: topology-dashboard
+        # The ISL mesh graph visualizer — reads co-located Redis via localhost:6379
+        # and serves a live D3-style canvas graph with edge weights on port 8081.
+        # Shares the Pod network namespace: no networking config needed.
+        # ────────────────────────────────────────────────────────────────────────
+        - name: topology-dashboard
+          image: localhost/space-topology-dashboard:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8081
+              name: dashboard
+          env:
+            # Temperature thresholds for the edge weight computation display
+            - name: T_SAFE
+              value: "80.0"
+            - name: T_FUSE
+              value: "120.0"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"

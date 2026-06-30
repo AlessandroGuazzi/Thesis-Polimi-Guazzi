@@ -94,8 +94,8 @@ local function edge_weight(from_name, to_name)
     local T_v = temps[to_name]
     local B_v = batts[to_name]
 
-    -- Exclude nodes that are critically overheating
-    if T_v >= T_fuse then
+    -- Exclude nodes that are critically overheating or have dead batteries
+    if T_v >= T_fuse or B_v <= B_fuse then
         return math.huge   -- Infinite cost = node is impassable
     end
 

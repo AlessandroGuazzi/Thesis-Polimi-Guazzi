@@ -49,6 +49,8 @@ spec:
       # Anchored to the ground station — survives all satellite migrations
       nodeSelector:
         type: ground-station
+
+      terminationGracePeriodSeconds: 0
       containers:
         - name: redis
           # FIX: Pinned to 6.2 to disable io_uring and ensure CRIU compatibility

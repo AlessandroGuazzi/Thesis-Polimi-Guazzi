@@ -38,6 +38,8 @@ spec:
       nodeSelector:
         type: satellite
 
+      terminationGracePeriodSeconds: 0
+
       # === PROCESS NAMESPACE ISOLATION (Change 3.1) ===
       # Explicit declaration that containers do NOT share a process namespace.
       # This is the K8s default, but is set explicitly to document the CRIU

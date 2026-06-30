@@ -62,7 +62,7 @@ let dirWatcher = null;
 let fleetState = {};
 let sseClients = [];
 let redisSubscriber = null;
-let payloadLastLandedTime = Date.now() / 1000;
+let payloadLastLandedTime = 0;
 
 // ---------------------------------------------------------------------------
 // GROUND TELEMETRY (REDIS BUS)
@@ -71,7 +71,9 @@ function initRedisSub() {
     if (redisSubscriber) {
         redisSubscriber.quit();
     }
-    const client = redis.createClient({ url: 'redis://ground-redis.default.svc.cluster.local:6379' });
+    const redisHost = process.env.GROUND_REDIS_SERVICE_HOST || 'ground-redis.default.svc.cluster.local';
+    const redisPort = process.env.GROUND_REDIS_SERVICE_PORT || '6379';
+    const client = redis.createClient({ url: `redis://${redisHost}:${redisPort}` });
     redisSubscriber = client;
     client.on('error', (err) => console.log('Redis Client Error', err));
     client.connect().then(() => {

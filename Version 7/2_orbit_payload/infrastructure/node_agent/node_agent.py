@@ -48,7 +48,7 @@ GUARDIAN_URL = "http://localhost:80"
 ABLATION_CONFIG = {
     # Hardware safety thresholds
     "T_SAFE":           float(os.getenv("T_SAFE", "80.0")),    # Below this → no thermal threat
-    "T_FUSE":           float(os.getenv("T_FUSE", "120.0")),   # At or above → critical danger
+    "T_FUSE":           float(os.getenv("T_FUSE", "95.0")),   # At or above → critical danger
     "B_SAFE":           float(os.getenv("B_SAFE", "15.0")),    # Below this → predictive energy threat
     "B_FUSE":           float(os.getenv("B_FUSE", "5.0")),     # At or below → critical shutdown danger
     "LATERAL_THRESHOLD": int(os.getenv("LATERAL_THRESHOLD", "8")),
@@ -156,8 +156,11 @@ def _campaign_config_listener(ground_redis_host):
 
                 if updated_keys:
                     _refresh_module_aliases()
+                    global last_stay_local_time
+                    last_stay_local_time = 0.0
                     print(f"🔄 AGENT [CAMPAIGN]: Hot-reloaded config: {updated_keys}", flush=True)
                     print(f"   Current ABLATION_CONFIG: {ABLATION_CONFIG}", flush=True)
+                    print("🔄 AGENT [CAMPAIGN]: Reset stay-local suppression window for new run.", flush=True)
 
         except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
             time.sleep(3)
@@ -406,6 +409,17 @@ def query_floating_master(topology_redis, migration_type, exclude_node=""):
                         "node": NODE_NAME,
                         "source_score": result.get("source_score", 0),
                         "best_dest_score": result.get("best_dest_score", 0),
+                    }))
+                except Exception:
+                    pass  # Non-critical: campaign listener may not be active
+            elif result["error"] == "NO_ROUTE":
+                print(f"⚠️  AGENT: Lua returned error: NO_ROUTE (no path to any active destination)", flush=True)
+                try:
+                    _abort_redis = redis.Redis(host=GROUND_REDIS_HOST, port=6379,
+                                              decode_responses=True, socket_connect_timeout=1)
+                    _abort_redis.publish("campaign/aborts", json.dumps({
+                        "flag": "ABORT_ACKNOWLEDGED: NO_ROUTE_FOUND",
+                        "node": NODE_NAME,
                     }))
                 except Exception:
                     pass  # Non-critical: campaign listener may not be active
@@ -783,9 +797,10 @@ def relay_receiver_loop():
             # Binary Inspection Demultiplexer
             is_master = False
             try:
-                subprocess.check_call(f"grep -a 'sidecar-guardian' {tar_path}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except subprocess.CalledProcessError:
+                subprocess.check_call(f"grep -a 'topology-redis' {tar_path}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 is_master = True
+            except subprocess.CalledProcessError:
+                is_master = False
 
             if is_master: _rebuild_and_deploy_master(tar_path)
             else: _rebuild_and_deploy(tar_path)

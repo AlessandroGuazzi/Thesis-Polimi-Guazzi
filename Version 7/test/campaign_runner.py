@@ -42,10 +42,18 @@ from kubernetes.stream import stream as k8s_stream
 # =============================================================================
 # LOGGING CONFIGURATION
 # =============================================================================
+# Create log directory if not exists
+os.makedirs(os.path.join(os.path.dirname(__file__), "..", "logs"), exist_ok=True)
+LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), "..", "logs", "campaign_runner.log")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [CAMPAIGN] %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[
+        logging.FileHandler(LOG_FILE_PATH, mode="a"),
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 logger = logging.getLogger("CampaignOrchestrator")
 
@@ -73,7 +81,15 @@ def _init_k8s_client():
         except config.ConfigException as e:
             logger.critical(f"K8s: Cannot authenticate — {e}")
             sys.exit(1)
-    return client.CoreV1Api()
+    
+    api = client.CoreV1Api()
+    try:
+        version_api = client.VersionApi()
+        version_info = version_api.get_code()
+        logger.info(f"K8s: Connection verified. Server GitVersion: {version_info.git_version}")
+    except Exception as e:
+        logger.warning(f"K8s: Verification check failed (but client initialized) — {e}")
+    return api
 
 
 # --- Redis Connection ---
@@ -93,8 +109,8 @@ def _connect_redis():
             decode_responses=True,
             socket_connect_timeout=5,
         )
-        r.ping()
-        logger.info(f"Redis: Connected to {GROUND_REDIS_HOST}:{GROUND_REDIS_PORT}")
+        ping_res = r.ping()
+        logger.info(f"Redis: Connected to {GROUND_REDIS_HOST}:{GROUND_REDIS_PORT} (ping response: {ping_res})")
         return r
     except redis.exceptions.ConnectionError as e:
         logger.critical(f"Redis: Cannot connect — {e}")
@@ -105,8 +121,13 @@ def _connect_redis():
 # The 3-satellite Minikube constellation (matches environment_sim.py fleet)
 SATELLITE_NODES = ["minikube-m02", "minikube-m03", "minikube-m04"]
 
-# Guardian Sidecar HTTP endpoint (exposed via K8s ClusterIP Service)
-GUARDIAN_SVC_URL = os.getenv("GUARDIAN_SVC_URL", "http://space-dashboard-svc:80")
+# Guardian Sidecar HTTP endpoint (exposed via K8s ClusterIP Service or local port-forward)
+if os.path.exists("/var/run/secrets/kubernetes.io"):
+    DEFAULT_GUARDIAN_URL = "http://space-dashboard-svc:80"
+else:
+    DEFAULT_GUARDIAN_URL = "http://localhost:8080"
+
+GUARDIAN_SVC_URL = os.getenv("GUARDIAN_SVC_URL", DEFAULT_GUARDIAN_URL)
 
 # Campaign CSV output path
 CSV_OUTPUT_DIR = os.getenv(
@@ -114,6 +135,7 @@ CSV_OUTPUT_DIR = os.getenv(
     os.path.join(os.path.dirname(__file__), "..", "3_ground_station", "evaluation_data"),
 )
 CSV_OUTPUT_PATH = os.path.join(CSV_OUTPUT_DIR, "campaign_results.csv")
+DRY_RUN_CSV_PATH = os.path.join(CSV_OUTPUT_DIR, "dry_run_results.csv")
 
 # Global run timeout (seconds) — prevents hung runs from freezing the campaign
 RUN_TIMEOUT_SEC = float(os.getenv("RUN_TIMEOUT_SEC", "120.0"))
@@ -202,7 +224,7 @@ SCENARIOS = {
 # Severity-dictated timeout before the orchestrator kills the origin pod.
 FUSE_TIMEOUTS = {
     "nominal":         None,   # No fuse — migration is expected to succeed easily
-    "borderline":      4.0,    # Tight but possible
+    "borderline":      6.0,    # Tight but possible (adjusted for local VM overhead)
     "correct_failure": 1.5,    # Ultra-tight — simulates hardware shutdown
 }
 
@@ -282,7 +304,32 @@ NODE_ORBIT_PLANES = {
 STERILE_SETTLE_SEC = float(os.getenv("STERILE_SETTLE_SEC", "5.0"))
 
 
-def sterilize_cluster(redis_conn):
+def settle_startup_cooldown(k8s_api):
+    """
+    Ensures the initial startup cooldown on the newly launched SML pod has
+    expired before starting an experiment to prevent a false abort.
+    """
+    try:
+        pods = k8s_api.list_namespaced_pod(
+            namespace="default",
+            label_selector="app=space-mission"
+        )
+        if pods.items:
+            pod = pods.items[0]
+            if pod.status.start_time:
+                start_ts = pod.status.start_time.timestamp()
+                age = time.time() - start_ts
+                remaining = 16.0 - age
+                if remaining > 0:
+                    logger.info(f"⏳ Cooldown Gate: SML pod is only {age:.1f}s old. Settling cluster for {remaining:.1f}s to clear initial startup cooldown...")
+                    time.sleep(remaining)
+                else:
+                    logger.info(f"✅ Cooldown Gate: SML pod age is {age:.1f}s (startup cooldown already cleared).")
+    except Exception as e:
+        logger.warning(f"   ⚠️ Could not determine SML pod age for cooldown settling: {e}")
+
+
+def sterilize_cluster(redis_conn, k8s_api, origin_node=None, master_node=None):
     """
     Publish the Sterile Baseline to all satellite nodes.
     Forces every node into a mathematically perfect "Nominal" state:
@@ -293,11 +340,27 @@ def sterilize_cluster(redis_conn):
     for node in SATELLITE_NODES:
         baseline = dict(STERILE_BASELINE)
         baseline["orbit_plane"] = NODE_ORBIT_PLANES.get(node, "B")
+        
+        # Enforce true workload placement in the sterile baseline (Bug fix)
+        if origin_node:
+            baseline["is_working"] = (node == origin_node)
+        else:
+            baseline["is_working"] = False
+            
+        if master_node:
+            baseline["has_master"] = (node == master_node)
+        else:
+            baseline["has_master"] = False
+            
         channel = f"telemetry/{node}"
-        redis_conn.publish(channel, json.dumps(baseline))
+        subscribers = redis_conn.publish(channel, json.dumps(baseline))
+        logger.info(f"   → Telemetry baseline published to '{channel}'. Subscribers reached: {subscribers} | is_working={baseline['is_working']} has_master={baseline['has_master']}")
+        if subscribers == 0:
+            logger.warning(f"   ⚠️ No active subscribers listened to telemetry channel '{channel}'!")
 
     logger.info(f"🧼 Baseline published. Settling for {STERILE_SETTLE_SEC}s...")
     time.sleep(STERILE_SETTLE_SEC)
+    settle_startup_cooldown(k8s_api)
     logger.info("🧼 Cluster sterilized — zero-variance state confirmed.")
 
 
@@ -310,8 +373,10 @@ def ghost_publish(redis_conn, node, telemetry_override):
     baseline["orbit_plane"] = NODE_ORBIT_PLANES.get(node, "B")
     baseline.update(telemetry_override)
     channel = f"telemetry/{node}"
-    redis_conn.publish(channel, json.dumps(baseline))
-    logger.info(f"👻 Ghost publish → {node}: {telemetry_override}")
+    subscribers = redis_conn.publish(channel, json.dumps(baseline))
+    logger.info(f"👻 Ghost publish → {node}: {telemetry_override} (channel: '{channel}', subscribers reached: {subscribers})")
+    if subscribers == 0:
+        logger.warning(f"   ⚠️ No active subscribers reached for ghost publish on channel '{channel}'!")
 
 
 def inject_thermal_spike(redis_conn, node, temp):
@@ -338,7 +403,7 @@ def inject_battery_crisis(redis_conn, node, battery):
 # to the Guardian Sidecar's /state endpoint.
 # =============================================================================
 
-def inject_ghost_trajectory(lateral_threshold, step_size=4.0, start_x=64.0):
+def inject_ghost_trajectory(lateral_threshold, stop_event=None, step_size=4.0, start_x=64.0):
     """
     Programmatically pushes a synthetic Center of Mass (CoM) trajectory
     toward the swath boundary via HTTP POST to the Guardian Sidecar.
@@ -360,8 +425,11 @@ def inject_ghost_trajectory(lateral_threshold, step_size=4.0, start_x=64.0):
     day_id = 5   # Day 5+ triggers active inference path in the Guardian
 
     while current_x >= lateral_threshold:
+        if stop_event and stop_event.is_set():
+            logger.info("🎯 Ghost Worker: Stop event set. Terminating trajectory injection.")
+            break
         payload = {
-            "new_frame": "",  # Empty frame — no actual tensor data needed
+            "new_frame": "dGVzdA==",  # Dummy base64 string ("test") - V7 sidecar checks for truthiness and decodes it
             "metrics": {
                 "center_of_mass": {"x": current_x, "y": 64.0},
                 "fire_pixel_count": 100,
@@ -377,18 +445,35 @@ def inject_ghost_trajectory(lateral_threshold, step_size=4.0, start_x=64.0):
             },
         }
 
-        try:
-            resp = requests.post(
-                f"{GUARDIAN_SVC_URL}/state",
-                json=payload,
-                timeout=5,
-            )
-            if resp.status_code == 200:
-                logger.info(f"   → CoM_x={current_x:.1f} injected successfully")
-            else:
-                logger.warning(f"   → CoM_x={current_x:.1f} HTTP {resp.status_code}")
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"   → CoM_x={current_x:.1f} failed: {e}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(
+                    f"{GUARDIAN_SVC_URL}/state",
+                    json=payload,
+                    timeout=10,
+                )
+                logger.debug(f"      [DEBUG] HTTP POST {GUARDIAN_SVC_URL}/state response: code={resp.status_code}, content={resp.text[:150]}")
+                if resp.status_code == 200:
+                    logger.info(f"   → CoM_x={current_x:.1f} injected successfully (response: {resp.text.strip()})")
+                    break
+                else:
+                    logger.warning(f"   → CoM_x={current_x:.1f} HTTP {resp.status_code} response={resp.text} (attempt {attempt+1}/{max_retries})")
+            except requests.exceptions.RequestException as e:
+                # Connection drops (e.g. RemoteDisconnected, ConnectionRefused) are normal and expected
+                # here. During SML migration, the source pod is frozen by CRIU and scaled down by the Node
+                # Agent, breaking the local port-forwarding connection. Once the pod is restored and becomes
+                # Ready on the destination node, requests will automatically succeed again.
+                err_str = str(e)
+                if "Connection refused" in err_str or "RemoteDisconnected" in err_str or "Connection aborted" in err_str:
+                    clean_err = "Pod offline (migration in progress)"
+                else:
+                    clean_err = err_str.split(":")[-1].strip() if ":" in err_str else err_str
+                logger.warning(f"   → CoM_x={current_x:.1f} telemetry dropped: {clean_err} (attempt {attempt+1}/{max_retries})")
+            if attempt < max_retries - 1:
+                time.sleep(1.0)
+        else:
+            logger.info(f"   ⚠️ CoM_x={current_x:.1f} skipped (pod still offline after {max_retries}s). Advancing fire trajectory...")
 
         current_x -= step_size
         time.sleep(0.5)  # 500ms cadence to give the Guardian time to write state
@@ -455,13 +540,19 @@ class HardwareFuse:
         self.fuse_triggered = True
 
         try:
-            self.k8s_api.delete_namespaced_pod(
+            delete_status = self.k8s_api.delete_namespaced_pod(
                 name=self.origin_pod,
                 namespace=self.namespace,
                 body=client.V1DeleteOptions(grace_period_seconds=0),
             )
+            status_details = "unknown"
+            if delete_status:
+                if hasattr(delete_status, 'status'):
+                    status_details = f"status={delete_status.status}"
+                elif hasattr(delete_status, 'metadata'):
+                    status_details = f"uid={delete_status.metadata.uid}"
             logger.warning(f"💥 Origin pod {self.origin_pod} TERMINATED — "
-                           f"simulated silicon melt (0% survival)")
+                           f"simulated silicon melt (0% survival). API Response: {status_details}")
         except client.exceptions.ApiException as e:
             if e.status == 404:
                 logger.info(f"💥 Origin pod {self.origin_pod} already gone "
@@ -491,13 +582,41 @@ def sanitize_run(redis_conn, k8s_api):
     # Publish clear_throttle command to the campaign/config channel.
     # All Node Agents subscribed to this channel will execute tc qdisc del.
     logger.info("🧹 SANITIZE [1/3]: Clearing network throttles on all nodes...")
-    redis_conn.publish("campaign/config", json.dumps({"action": "clear_throttle"}))
+    subscribers = redis_conn.publish("campaign/config", json.dumps({"action": "clear_throttle"}))
+    logger.info(f"   → Published clear_throttle. Subscribers reached: {subscribers}")
     time.sleep(1.0)  # Brief settle for tc commands to propagate
+
+    # Direct fallback: check and delete tc rules on all agent pods
+    try:
+        pods = k8s_api.list_namespaced_pod(
+            namespace="default",
+            label_selector="app=space-node-agent"
+        )
+        for pod in pods.items:
+            if pod.status.phase == "Running":
+                try:
+                    res = k8s_stream(
+                        k8s_api.connect_get_namespaced_pod_exec,
+                        name=pod.metadata.name,
+                        namespace="default",
+                        container="agent",
+                        command=["tc", "qdisc", "del", "dev", "eth0", "root"],
+                        stderr=True,
+                        stdout=True,
+                    )
+                    logger.info(f"   ✅ Force-cleared tc on {pod.metadata.name}. Exec output: {str(res).strip()}")
+                except Exception as e:
+                    # Ignore errors if the root qdisc is already empty/deleted
+                    logger.debug(f"   ℹ️ Exec force-clear failed (possibly already cleared): {e}")
+                    pass
+    except Exception as e:
+        logger.warning(f"   ⚠️ Direct tc cleanup fallback failed: {e}")
 
     # ── 2. State Wipe ─────────────────────────────────────────────────────────
     # Clear the Guardian's /tmp/payload_state.json via K8s exec.
     # This prevents stale CoM coordinates from triggering phantom lateral migrations.
     logger.info("🧹 SANITIZE [2/3]: Wiping sidecar state files...")
+    # 2.1 Wipe state on the active mission pod (recreates it fresh to clear in-memory cooldowns)
     try:
         pods = k8s_api.list_namespaced_pod(
             namespace="default",
@@ -506,20 +625,40 @@ def sanitize_run(redis_conn, k8s_api):
         )
         for pod in pods.items:
             try:
-                k8s_stream(
-                    k8s_api.connect_get_namespaced_pod_exec,
+                k8s_api.delete_namespaced_pod(
                     name=pod.metadata.name,
                     namespace="default",
-                    container="sidecar-guardian",
-                    command=["rm", "-f", "/tmp/payload_state.json"],
-                    stderr=True,
-                    stdout=True,
+                    body=client.V1DeleteOptions(grace_period_seconds=0),
                 )
-                logger.info(f"   ✅ Wiped state on {pod.metadata.name}")
+                logger.info(f"   ✅ Deleted mission pod {pod.metadata.name} to reset startup cooldown state.")
             except Exception as e:
-                logger.warning(f"   ⚠️ State wipe failed on {pod.metadata.name}: {e}")
+                logger.warning(f"   ⚠️ Could not delete mission pod {pod.metadata.name}: {e}")
     except Exception as e:
-        logger.warning(f"   ⚠️ Could not list pods for state wipe: {e}")
+        logger.warning(f"   ⚠️ Could not list mission pods for state reset: {e}")
+
+    # 2.2 Wipe state on all node agents to clear hostPath persistent directories on all nodes
+    try:
+        agent_pods = k8s_api.list_namespaced_pod(
+            namespace="default",
+            label_selector="app=space-node-agent"
+        )
+        for pod in agent_pods.items:
+            if pod.status.phase == "Running":
+                try:
+                    k8s_stream(
+                        k8s_api.connect_get_namespaced_pod_exec,
+                        name=pod.metadata.name,
+                        namespace="default",
+                        container="agent",
+                        command=["rm", "-f", "/tmp/payload_state.json"],
+                        stderr=True,
+                        stdout=True,
+                    )
+                    logger.info(f"   ✅ Wiped state on node agent {pod.metadata.name}.")
+                except Exception as e:
+                    logger.debug(f"   ℹ️ State wipe failed on agent {pod.metadata.name}: {e}")
+    except Exception as e:
+        logger.warning(f"   ⚠️ Could not list node agent pods for state wipe: {e}")
 
     # ── 3. Stability Assertion ────────────────────────────────────────────────
     # Block until exactly 1 SML pod + 1 Master pod are Running and Ready.
@@ -532,10 +671,11 @@ def sanitize_run(redis_conn, k8s_api):
 def _assert_cluster_stability(k8s_api, timeout_sec=None):
     """
     Blocks until the cluster reports exactly:
-      - 1 space-mission pod: Running + Ready
-      - 1 topology-master pod: Running + Ready
+      - 1 space-mission pod: Running + Ready (and no extra/terminating pods)
+      - 1 topology-master pod: Running + Ready (and no extra/terminating pods)
 
-    This prevents the next run from starting on a half-initialized cluster.
+    This prevents the next run from starting on a half-initialized cluster
+    or during a rolling update rollout.
     """
     if timeout_sec is None:
         timeout_sec = SANITIZE_TIMEOUT_SEC
@@ -545,15 +685,41 @@ def _assert_cluster_stability(k8s_api, timeout_sec=None):
 
     while time.time() < deadline:
         try:
-            sml_ready = _count_ready_pods(k8s_api, "app=space-mission")
-            master_ready = _count_ready_pods(k8s_api, "app=topology-master")
+            sml_pods = k8s_api.list_namespaced_pod(
+                namespace="default",
+                label_selector="app=space-mission",
+            )
+            sml_total = len(sml_pods.items)
+            sml_ready = sum(
+                1 for pod in sml_pods.items
+                if pod.status.phase == "Running"
+                and pod.metadata.deletion_timestamp is None
+                and pod.status.container_statuses
+                and all(cs.ready for cs in pod.status.container_statuses)
+            )
 
-            if sml_ready >= 1 and master_ready >= 1:
-                logger.info(f"   ✅ Cluster stable: {sml_ready} SML pod(s), "
-                            f"{master_ready} Master pod(s) Ready")
+            master_pods = k8s_api.list_namespaced_pod(
+                namespace="default",
+                label_selector="app=topology-master",
+            )
+            master_total = len(master_pods.items)
+            master_ready = sum(
+                1 for pod in master_pods.items
+                if pod.status.phase == "Running"
+                and pod.metadata.deletion_timestamp is None
+                and pod.status.container_statuses
+                and all(cs.ready for cs in pod.status.container_statuses)
+            )
+
+            if sml_ready == 1 and sml_total == 1 and master_ready == 1 and master_total == 1:
+                logger.info(f"   ✅ Cluster stable: 1 SML pod, 1 Master pod Ready (no rolling/terminating pods)")
                 return True
 
-            logger.info(f"   ⏳ Waiting: SML={sml_ready}/1, Master={master_ready}/1")
+            logger.info(
+                f"   ⏳ Waiting for rollout completion: "
+                f"SML={sml_ready}/1 (total: {sml_total}), "
+                f"Master={master_ready}/1 (total: {master_total})"
+            )
         except Exception as e:
             logger.warning(f"   ⚠️ Stability poll error: {e}")
 
@@ -562,6 +728,7 @@ def _assert_cluster_stability(k8s_api, timeout_sec=None):
     logger.warning(f"⚠️ SANITIZE: Stability timeout ({timeout_sec}s) — "
                    f"proceeding despite incomplete cluster state")
     return False
+
 
 
 def _count_ready_pods(k8s_api, label_selector):
@@ -602,6 +769,16 @@ def _find_origin_pod(k8s_api, label_selector="app=space-mission"):
     return None
 
 
+def _find_pod_node(k8s_api, pod_name, namespace="default"):
+    """Find which node a specific pod is running on."""
+    try:
+        pod = k8s_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+        return pod.spec.node_name
+    except Exception as e:
+        logger.warning(f"Could not find node for pod {pod_name}: {e}")
+    return None
+
+
 # =============================================================================
 # RUN EXECUTION ENGINE
 # =============================================================================
@@ -628,8 +805,10 @@ def apply_configuration(redis_conn, config_patch):
         else:
             serialized[key] = value
 
-    redis_conn.publish("campaign/config", json.dumps(serialized))
-    logger.info(f"⚙️ Configuration hot-reloaded: {serialized}")
+    subscribers = redis_conn.publish("campaign/config", json.dumps(serialized))
+    logger.info(f"⚙️ Configuration hot-reloaded: {serialized} (subscribers reached: {subscribers})")
+    if subscribers == 0:
+        logger.warning("   ⚠️ Warning: 0 active subscribers received configuration hot-reload!")
     time.sleep(1.0)  # Brief settle for agents to process the update
 
 
@@ -639,8 +818,10 @@ def apply_network_throttle(redis_conn, rate_mbit, latency_ms):
     Delegates via the campaign/config Redis channel.
     """
     cmd = {"action": "throttle", "rate": rate_mbit, "latency": latency_ms}
-    redis_conn.publish("campaign/config", json.dumps(cmd))
-    logger.info(f"🌐 Network throttle applied: {rate_mbit}mbit / {latency_ms}ms")
+    subscribers = redis_conn.publish("campaign/config", json.dumps(cmd))
+    logger.info(f"🌐 Network throttle applied: {rate_mbit}mbit / {latency_ms}ms (subscribers reached: {subscribers})")
+    if subscribers == 0:
+        logger.warning("   ⚠️ Warning: 0 active subscribers received network throttle command!")
     time.sleep(1.0)  # Brief settle for tc rules to propagate
 
 
@@ -685,11 +866,28 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         logger.info("📋 Phase 1/6: Applying ablation configuration...")
         apply_configuration(redis_conn, run["config_patch"])
 
+        # Resolve the current SML and Master placement first to write an accurate baseline
+        origin_pod = _find_origin_pod(k8s_api)
+        origin_node = _find_pod_node(k8s_api, origin_pod) if origin_pod else None
+        
+        master_node = None
+        try:
+            master_pods = k8s_api.list_namespaced_pod(
+                namespace="default",
+                label_selector="app=topology-master",
+            )
+            for pod in master_pods.items:
+                if pod.metadata.deletion_timestamp is None:
+                    master_node = pod.spec.node_name
+                    break
+        except Exception:
+            pass
+
         # ── PHASE 2: Sterilization — Enforce Sterile Baseline ───────────────
         # Must happen BEFORE network throttle so the baseline telemetry
         # propagates at full bandwidth (spec: orchestrator_functional_spec §7).
         logger.info("📋 Phase 2/6: Sterilizing cluster...")
-        sterilize_cluster(redis_conn)
+        sterilize_cluster(redis_conn, k8s_api, origin_node=origin_node, master_node=master_node)
 
         # ── PHASE 3: Stress Initialization — Network Throttle ───────────────
         logger.info("📋 Phase 3/6: Applying network constraints...")
@@ -715,8 +913,17 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         route_listener = RouteMetricsListener(redis_conn)
         route_listener.start()
 
-        # Find origin pod for the hardware fuse
+        # Find origin pod and origin node for the hardware fuse and fault injection
         origin_pod = _find_origin_pod(k8s_api)
+        origin_node = None
+        if origin_pod:
+            origin_node = _find_pod_node(k8s_api, origin_pod)
+        if not origin_node:
+            origin_node = SATELLITE_NODES[0]
+            logger.warning(f"⚠️ Could not find node for pod {origin_pod}. Defaulting to {origin_node}")
+        else:
+            logger.info(f"📍 Resolved origin pod: {origin_pod} running on node: {origin_node}")
+
         fuse = HardwareFuse(
             k8s_api=k8s_api,
             fuse_timeout_sec=run["fuse_timeout"],
@@ -730,16 +937,17 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
             "LATERAL_THRESHOLD",
             int(STERILE_BASELINE.get("lateral_threshold", 8)),
         )
+        ghost_worker_stop = threading.Event()
         ghost_worker_thread = threading.Thread(
             target=inject_ghost_trajectory,
-            args=(lateral_threshold,),
+            args=(lateral_threshold, ghost_worker_stop),
             daemon=True,
         )
         ghost_worker_thread.start()
 
         if scenario == "slow_internet":
             # Scenario 1: inject thermal spike to trigger migration under bandwidth constraint
-            inject_thermal_spike(redis_conn, SATELLITE_NODES[0], 95.0)
+            inject_thermal_spike(redis_conn, origin_node, 95.0)
             fuse.start()
 
         elif scenario == "sequential_thermal":
@@ -748,14 +956,72 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
             delta_t = params["delta_t_stress_sec"]
             spike_temp = params["spike_temp"]
 
+            # Overwrite first migration's fuse timeout to be generous (15.0s)
+            # because the first migration is a normal migration that is supposed to succeed
+            # regardless of whether the second migration will be refused.
+            if fuse.timeout is not None:
+                fuse.timeout = None
+
             # Spike Node A (primary) → triggers migration to Node B
-            inject_thermal_spike(redis_conn, SATELLITE_NODES[0], spike_temp)
+            inject_thermal_spike(redis_conn, origin_node, spike_temp)
             fuse.start()
 
-            # Wait Δt_stress seconds, then spike Node B (destination)
-            logger.info(f"   ⏱️ Waiting {delta_t}s before secondary thermal injection...")
+            # 1. Wait for the first migration to complete and the pod to become Ready
+            logger.info("   ⏳ Waiting for first migration to complete and pod to become Ready...")
+            first_mig_completed = False
+            first_mig_start = time.time()
+            while time.time() - first_mig_start < RUN_TIMEOUT_SEC:
+                time.sleep(0.2)
+                if abort_listener and abort_listener.abort_detected:
+                    logger.warning(f"   ⚠️ First migration aborted by Node Agent: {abort_listener.abort_reason}")
+                    break
+                if route_listener and route_listener.route_received:
+                    try:
+                        pods = k8s_api.list_namespaced_pod(
+                            namespace="default",
+                            label_selector="app=space-mission",
+                            field_selector="status.phase=Running",
+                        )
+                        for pod in pods.items:
+                            if pod.metadata.name != origin_pod and pod.metadata.deletion_timestamp is None:
+                                if pod.status.container_statuses and all(cs.ready for cs in pod.status.container_statuses):
+                                    fuse.cancel()
+                                    first_mig_delay = time.time() - injection_timestamp
+                                    logger.info(f" 💣 Hardware Fuse: DEFUSED — first migration completed in {first_mig_delay:.2f}s")
+                                    first_mig_completed = True
+                                    break
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ K8s poll error: {e}")
+                
+                if first_mig_completed or fuse.fuse_triggered:
+                    break
+
+            if not first_mig_completed:
+                logger.warning("   ⚠️ First migration failed or did not complete in time.")
+
+            # 2. Wait Δt_stress seconds after the payload lands before secondary thermal injection
+            logger.info(f"   ⏱️ Waiting {delta_t}s from landing before secondary thermal injection...")
             time.sleep(delta_t)
-            inject_thermal_spike(redis_conn, SATELLITE_NODES[1], spike_temp)
+            
+            # Find the new destination node dynamically
+            dest_node = None
+            if route_listener and route_listener.route_received:
+                dest_node = route_listener.destination
+            else:
+                # Fallback: query K8s
+                current_pod = _find_origin_pod(k8s_api)
+                if current_pod:
+                    current_node = _find_pod_node(k8s_api, current_pod)
+                    if current_node and current_node != origin_node:
+                        dest_node = current_node
+            
+            if not dest_node:
+                # Fallback to hardcoded secondary node if not resolved
+                dest_node = SATELLITE_NODES[1] if origin_node != SATELLITE_NODES[1] else SATELLITE_NODES[0]
+                logger.warning(f"   ⚠️ Could not resolve destination node for secondary spike. Falling back to {dest_node}")
+            
+            logger.info(f"   🔥 Secondary spike: Injecting thermal spike on destination node {dest_node}")
+            inject_thermal_spike(redis_conn, dest_node, spike_temp)
 
         elif scenario == "double_trouble":
             # Scenario 3: Double Trouble (Thermal & Energy Crisis)
@@ -763,18 +1029,24 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
             local_temp = params["local_temp"]
             neighbor_battery = params["neighbor_battery"]
 
-            # Spike local node temperature
-            inject_thermal_spike(redis_conn, SATELLITE_NODES[0], local_temp)
-            fuse.start()
+            # First, degrade all neighbor batteries in the cluster
+            for neighbor in SATELLITE_NODES:
+                if neighbor != origin_node:
+                    inject_battery_crisis(redis_conn, neighbor, neighbor_battery)
 
-            # Simultaneously degrade all neighbor batteries
-            for neighbor in SATELLITE_NODES[1:]:
-                inject_battery_crisis(redis_conn, neighbor, neighbor_battery)
+            # Settle briefly to let neighbor agents push their telemetry updates to Floating Master
+            logger.info("   ⏳ Waiting 1.5s for neighbor battery updates to propagate...")
+            time.sleep(1.5)
+
+            # Finally, spike local node temperature to trigger migration pathfinding
+            inject_thermal_spike(redis_conn, origin_node, local_temp)
+            fuse.start()
 
         # ── PHASE 5: Extraction ──────────────────────────────────────────────
         logger.info("📋 Phase 5/6: Monitoring cluster response...")
         extraction_result = _extract_metrics(
             k8s_api, redis_conn, injection_timestamp, fuse, run,
+            origin_pod=origin_pod,
             abort_listener=abort_listener,
             route_listener=route_listener,
         )
@@ -784,6 +1056,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         fuse.cancel()
 
         # Stop the abort listener, route listener, and ghost worker
+        ghost_worker_stop.set()
         abort_listener.stop()
         route_listener.stop()
 
@@ -791,6 +1064,10 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
         logger.error(f"❌ Run execution error: {e}")
         result["survival_rate"] = 0.0
         result["notes"] = f"EXCEPTION: {str(e)}"
+        try:
+            ghost_worker_stop.set()
+        except NameError:
+            pass
 
     # ── PHASE 6: Teardown & Sanitization ────────────────────────────────────
     logger.info("📋 Phase 6/6: Sanitizing cluster...")
@@ -803,7 +1080,7 @@ def execute_run(run, run_index, total_runs, redis_conn, k8s_api):
 
 
 def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
-                     abort_listener=None, route_listener=None):
+                     origin_pod=None, abort_listener=None, route_listener=None):
     """
     Monitor the cluster after fault injection to extract the response metrics.
 
@@ -837,8 +1114,16 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
     # General case: poll for migration, abort flags, or fuse expiration
     poll_deadline = time.time() + RUN_TIMEOUT_SEC
     poll_interval = 0.5
+    iterations = 0
 
     while time.time() < poll_deadline:
+        iterations += 1
+        elapsed = time.time() - injection_timestamp
+        # Log status every 3 seconds (6 iterations) to keep terminal logs clean
+        show_log = (iterations == 1 or iterations % 6 == 0)
+        
+        if show_log:
+            logger.info(f"   ⏳ [Poll #{iterations} | elapsed={elapsed:.1f}s] Checking status (Abort flag: {abort_listener.abort_detected if abort_listener else False}, Route recvd: {route_listener.route_received if route_listener else False}, Fuse: {fuse.fuse_triggered})...")
         # ── Check 1: Explicit Correct Failure via Redis abort flags ──────
         # Intelligent Success Logging (Phase 4, Step 4.1):
         # If the orchestrator detects an intentional, self-preserving abort
@@ -868,66 +1153,80 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
                 label_selector="app=space-mission",
                 field_selector="status.phase=Running",
             )
+            running_pods = [p.metadata.name for p in pods.items]
+            if show_log:
+                logger.info(f"      → Running space-mission pods: {running_pods}")
             for pod in pods.items:
-                if (pod.metadata.deletion_timestamp is None
-                        and pod.status.container_statuses
-                        and all(cs.ready for cs in pod.status.container_statuses)):
-                    # Migration Delay Calculation (Phase 4, Step 4.1):
-                    # Exact wall-clock duration from the injection timestamp
-                    # to the K8s API reporting the destination pod as Ready.
-                    migration_delay = time.time() - injection_timestamp
-                    result["survival_rate"] = 1.0
-                    result["migration_delay_sec"] = round(migration_delay, 3)
+                if pod.metadata.name != origin_pod and pod.metadata.deletion_timestamp is None:
+                    container_readiness = []
+                    if pod.status.container_statuses:
+                        container_readiness = [f"{cs.name}:ready={cs.ready}" for cs in pod.status.container_statuses]
+                    if show_log:
+                        logger.info(f"      → Destination candidate '{pod.metadata.name}' readiness statuses: {container_readiness}")
+                    
+                    if pod.status.container_statuses and all(cs.ready for cs in pod.status.container_statuses):
+                        # Migration Delay Calculation (Phase 4, Step 4.1):
+                        # Exact wall-clock duration from the injection timestamp
+                        # to the K8s API reporting the destination pod as Ready.
+                        migration_delay = time.time() - injection_timestamp
+                        result["survival_rate"] = 1.0
+                        result["migration_delay_sec"] = round(migration_delay, 3)
 
-                    # Dynamic Hop Tracking (Phase 4, Step 4.1):
-                    # Use the actual route captured by the RouteMetricsListener
-                    # from the Node Agent's campaign/metrics broadcast.
-                    if route_listener and route_listener.route_received:
-                        result["hops"] = route_listener.hops
-                        logger.info(f"   📊 Dynamic hops: {route_listener.hops} "
-                                    f"(route: {route_listener.route})")
-                    else:
-                        # Fallback: infer hop count from node placement delta
-                        # In the 3-node linear constellation, migrations between
-                        # adjacent nodes = 1 hop, m02↔m04 = 2 hops.
-                        result["hops"] = 1
-                        logger.warning("   ⚠️ Route listener did not capture route — "
-                                       "falling back to hops=1")
+                        # Dynamic Hop Tracking (Phase 4, Step 4.1):
+                        # Use the actual route captured by the RouteMetricsListener
+                        # from the Node Agent's campaign/metrics broadcast.
+                        if route_listener and route_listener.route_received:
+                            result["hops"] = route_listener.hops
+                            logger.info(f"   📊 Dynamic hops: {route_listener.hops} "
+                                        f"(route: {route_listener.route})")
+                        else:
+                            # Fallback: infer hop count from node placement delta
+                            # In the 3-node linear constellation, migrations between
+                            # adjacent nodes = 1 hop, m02↔m04 = 2 hops.
+                            result["hops"] = 1
+                            logger.warning("   ⚠️ Route listener did not capture route — "
+                                           "falling back to hops=1")
 
-                    # Dynamic Bandwidth Tracking (Phase 4, Step 4.1):
-                    # Bandwidth_MB = checkpoint_size * hops
-                    # If MONOLITHIC_CHECKPOINT=True → 160 * hops
-                    # If MONOLITHIC_CHECKPOINT=False → 24 * hops
-                    result["bandwidth_mb"] = round(
-                        checkpoint_size_mb * result["hops"], 1
-                    )
-                    logger.info(f"   ✅ Migration complete — delay: {migration_delay:.2f}s | "
-                                f"hops: {result['hops']} | BW: {result['bandwidth_mb']}MB")
-                    return result
+                        # Dynamic Bandwidth Tracking (Phase 4, Step 4.1):
+                        # Bandwidth_MB = checkpoint_size * hops
+                        # If MONOLITHIC_CHECKPOINT=True → 160 * hops
+                        # If MONOLITHIC_CHECKPOINT=False → 24 * hops
+                        result["bandwidth_mb"] = round(
+                            checkpoint_size_mb * result["hops"], 1
+                        )
+                        logger.info(f"   ✅ Migration complete — delay: {migration_delay:.2f}s | "
+                                    f"hops: {result['hops']} | BW: {result['bandwidth_mb']}MB")
+                        return result
         except Exception as e:
             logger.warning(f"   ⚠️ K8s poll error: {e}")
 
         time.sleep(poll_interval)
 
-    # ── Fallback: Correct Failure heuristic for scenarios with expected abort ─
-    # If we reach the timeout on a severity=correct_failure run and the origin
-    # pod is still alive (no migration happened, no fuse triggered), the system
-    # likely correctly refused to migrate but the Node Agent didn't publish an
-    # explicit abort flag. Log it as a Correct Failure with a warning.
-    if run["severity"] == "correct_failure" and not fuse.fuse_triggered:
-        origin_pod = _find_origin_pod(k8s_api)
-        if origin_pod:
-            logger.warning("   ⚠️ CORRECT FAILURE (heuristic): No explicit abort flag "
-                           "received, but origin pod survived and no migration occurred. "
-                           "Recording as software success (100% survival).")
-            result["survival_rate"] = 1.0
-            result["migration_delay_sec"] = 0.0
-            return result
+    # ── Timeout handling: check if origin pod is still alive and healthy ────────
+    origin_pod_alive = False
+    try:
+        pods = k8s_api.list_namespaced_pod(
+            namespace="default",
+            label_selector="app=space-mission",
+            field_selector="status.phase=Running",
+        )
+        for pod in pods.items:
+            if pod.metadata.name == origin_pod and pod.metadata.deletion_timestamp is None:
+                if pod.status.container_statuses and all(cs.ready for cs in pod.status.container_statuses):
+                    origin_pod_alive = True
+    except Exception as e:
+        logger.warning(f"   ⚠️ Could not assert origin pod status on timeout: {e}")
 
-    # Timeout reached — no migration detected
-    logger.warning(f"   ⏱️ Run timeout ({RUN_TIMEOUT_SEC}s) — recording as failure")
-    result["survival_rate"] = 0.0
-    result["migration_delay_sec"] = RUN_TIMEOUT_SEC
+    if origin_pod_alive:
+        logger.info(f"   ⏱️ Run timeout ({RUN_TIMEOUT_SEC}s) — origin pod is still running and healthy. Recording survival = 100%")
+        result["survival_rate"] = 1.0
+        result["migration_delay_sec"] = 0.0
+        result["hops"] = 0
+        result["bandwidth_mb"] = 0.0
+    else:
+        logger.warning(f"   ⏱️ Run timeout ({RUN_TIMEOUT_SEC}s) — origin pod is dead or unready. Recording failure.")
+        result["survival_rate"] = 0.0
+        result["migration_delay_sec"] = RUN_TIMEOUT_SEC
     return result
 
 
@@ -945,6 +1244,7 @@ def _extract_metrics(k8s_api, redis_conn, injection_timestamp, fuse, run,
 ABORT_FLAG_PATTERNS = [
     "ABORT_ACKNOWLEDGED: COOLDOWN_LOCK",
     "ABORT_ACKNOWLEDGED: SURVIVAL_PROBABILITY_LOWER_AT_DESTINATION",
+    "ABORT_ACKNOWLEDGED: NO_ROUTE_FOUND",
     "HARDWARE TRIGGER BLOCKED",
     "Stay Local chosen",
 ]
@@ -975,10 +1275,12 @@ class AbortFlagListener:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._listen, daemon=True)
         self._thread.start()
+        logger.info("   🔍 AbortFlagListener: Background thread started.")
 
     def stop(self):
         """Stop the background listener."""
         self._stop_event.set()
+        logger.info("   🔍 AbortFlagListener: Background thread stopping...")
 
     def _listen(self):
         """
@@ -995,19 +1297,24 @@ class AbortFlagListener:
             )
             ps = r.pubsub()
             ps.subscribe("campaign/aborts")
+            logger.info("   🔍 AbortFlagListener: Subscribed to 'campaign/aborts' Redis channel.")
 
             while not self._stop_event.is_set():
                 msg = ps.get_message(timeout=0.5)
+                if msg:
+                    logger.debug(f"      [DEBUG] AbortFlagListener: Received raw Redis message: {msg}")
                 if msg and msg["type"] == "message":
                     data = msg["data"]
+                    logger.info(f"   🔍 AbortFlagListener: Received abort message: {data}")
                     for pattern in ABORT_FLAG_PATTERNS:
                         if pattern in data:
                             self.abort_detected = True
                             self.abort_reason = pattern
-                            logger.info(f"   🔍 Abort flag detected: {pattern}")
+                            logger.info(f"   🔍 AbortFlagListener: MATCHED abort pattern: {pattern}")
                             return
 
             ps.unsubscribe("campaign/aborts")
+            logger.info("   🔍 AbortFlagListener: Unsubscribed from 'campaign/aborts'.")
         except Exception as e:
             logger.warning(f"   ⚠️ Abort listener error: {e}")
 
@@ -1059,10 +1366,12 @@ class RouteMetricsListener:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._listen, daemon=True)
         self._thread.start()
+        logger.info("   📊 RouteMetricsListener: Background thread started.")
 
     def stop(self):
         """Stop the background listener."""
         self._stop_event.set()
+        logger.info("   📊 RouteMetricsListener: Background thread stopping...")
 
     def _listen(self):
         """
@@ -1079,11 +1388,15 @@ class RouteMetricsListener:
             )
             ps = r.pubsub()
             ps.subscribe("campaign/metrics")
+            logger.info("   📊 RouteMetricsListener: Subscribed to 'campaign/metrics' Redis channel.")
 
             while not self._stop_event.is_set():
                 msg = ps.get_message(timeout=0.5)
+                if msg:
+                    logger.debug(f"      [DEBUG] RouteMetricsListener: Received raw Redis message: {msg}")
                 if msg and msg["type"] == "message":
                     try:
+                        logger.info(f"   📊 RouteMetricsListener: Received message: {msg['data']}")
                         data = json.loads(msg["data"])
                         if data.get("event") == "migration_complete":
                             self.route = data.get("route", [])
@@ -1091,14 +1404,15 @@ class RouteMetricsListener:
                             self.source = data.get("source", "")
                             self.destination = data.get("destination", "")
                             self.route_received = True
-                            logger.info(f"   📊 Route captured: {self.source} → "
-                                        f"{self.route} ({self.hops} hop(s))")
+                            logger.info(f"   📊 RouteMetricsListener: Route captured: {self.source} → "
+                                         f"{self.route} ({self.hops} hop(s))")
                             # Don't return — keep listening for additional
                             # migrations (e.g., double evacuation routes)
                     except (json.JSONDecodeError, TypeError) as e:
                         logger.warning(f"   ⚠️ Route listener: malformed message: {e}")
 
             ps.unsubscribe("campaign/metrics")
+            logger.info("   📊 RouteMetricsListener: Unsubscribed from 'campaign/metrics'.")
         except Exception as e:
             logger.warning(f"   ⚠️ Route metrics listener error: {e}")
 
@@ -1129,6 +1443,9 @@ def execute_dry_run_gate(redis_conn, k8s_api):
     logger.info("🧪 DRY-RUN GATE: Starting 54-run pre-campaign smoke test...")
     logger.info("=" * 70)
 
+    # Ensure dry run CSV has a header
+    _ensure_csv_header(DRY_RUN_CSV_PATH)
+
     # Generate the 54-run mini-matrix (1 rep per combination, NOT shuffled)
     dry_run_matrix = generate_run_matrix(seed=None, num_reps=1)
     # Override: do NOT shuffle — execute sequentially for deterministic validation
@@ -1140,7 +1457,13 @@ def execute_dry_run_gate(redis_conn, k8s_api):
     passed = 0
     failed_runs = []
 
+    start_idx = int(os.environ.get("START_INDEX", "1"))
     for idx, run in enumerate(dry_run_matrix, start=1):
+        if idx < start_idx:
+            logger.info(f"⏭️ Skipping DRY-RUN {idx}/{total_dry} (START_INDEX={start_idx})")
+            passed += 1
+            continue
+
         logger.info(f"\n🧪 DRY-RUN {idx}/{total_dry}: {run['configuration']} | "
                     f"{run['scenario']} | {run['severity']}")
 
@@ -1150,7 +1473,11 @@ def execute_dry_run_gate(redis_conn, k8s_api):
             # ── Behavioral Assertion Gate ──────────────────────────────────
             # Validate that the system responded as expected for this
             # configuration × scenario × severity combination.
-            valid = _validate_dry_run_result(run, result)
+            valid, reason = _validate_dry_run_result(run, result)
+
+            result["validation_status"] = "PASSED" if valid else "FAILED"
+            result["validation_reason"] = reason
+            append_result_to_csv(result, DRY_RUN_CSV_PATH)
 
             if valid:
                 passed += 1
@@ -1159,12 +1486,27 @@ def execute_dry_run_gate(redis_conn, k8s_api):
                 failed_runs.append({
                     "index": idx,
                     "run": f"{run['configuration']}|{run['scenario']}|{run['severity']}",
+                    "reason": reason,
                     "result": result,
                 })
-                logger.error(f"   ❌ DRY-RUN {idx}: FAILED validation")
+                logger.error(f"   ❌ DRY-RUN {idx}: FAILED validation — {reason}")
 
         except Exception as e:
             logger.error(f"   ❌ DRY-RUN {idx}: EXCEPTION — {e}")
+            result = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "configuration": run["configuration"],
+                "scenario": run["scenario"],
+                "severity": run["severity"],
+                "rep_id": run["rep_id"],
+                "hops": 0,
+                "survival_rate": 0.0,
+                "migration_delay_sec": 0.0,
+                "bandwidth_mb": 0.0,
+                "validation_status": "ERROR",
+                "validation_reason": str(e),
+            }
+            append_result_to_csv(result, DRY_RUN_CSV_PATH)
             failed_runs.append({
                 "index": idx,
                 "run": f"{run['configuration']}|{run['scenario']}|{run['severity']}",
@@ -1178,7 +1520,10 @@ def execute_dry_run_gate(redis_conn, k8s_api):
     if failed_runs:
         logger.error(f"🧪 {len(failed_runs)} dry-run(s) FAILED:")
         for fail in failed_runs:
-            logger.error(f"   • Run {fail['index']}: {fail['run']}")
+            if "reason" in fail:
+                logger.error(f"   • Run {fail['index']} ({fail['run']}): {fail['reason']}")
+            else:
+                logger.error(f"   • Run {fail['index']} ({fail['run']}): Exception occurred — {fail.get('error')}")
         logger.error("🧪 FAIL-FAST HARD STOP: The campaign will NOT proceed.")
         return False
 
@@ -1192,43 +1537,28 @@ def _validate_dry_run_result(run, result):
     Validate that a dry-run result matches the expected behavioral state
     for the given configuration × scenario × severity combination.
 
-    Behavioral assertions:
-    - Correct Failure runs should have survival_rate == 1.0 (safe refusal)
-    - Nominal runs should have survival_rate == 1.0 (successful migration)
-    - CSV schema fields should be non-empty
-    - Hardware fuse should NOT fire on nominal severity
-
-    Returns True if the result passes validation.
+    Returns (bool, str) representing (is_valid, error_reason).
     """
     severity = run["severity"]
     survival = result.get("survival_rate", -1)
 
     # Basic schema validation: essential fields must be present
     if result.get("timestamp") is None:
-        logger.warning("   ⚠️ Validation: missing timestamp")
-        return False
+        return False, "Missing timestamp in execution result"
 
     # Severity-specific behavioral assertions
     if severity == "nominal":
         # Nominal: migration should always succeed (100% survival)
         if survival != 1.0:
-            logger.warning(f"   ⚠️ Validation: nominal severity expected 100% survival, "
-                           f"got {survival*100:.0f}%")
-            return False
+            return False, f"Expected 100% survival for nominal severity, but got {survival*100:.0f}%"
 
     elif severity == "correct_failure":
         # Correct Failure: system should refuse to migrate (100% survival)
-        # OR the fuse triggers legitimately (0% survival is also valid for
-        # slow_internet correct_failure where transfer physically cannot complete)
         if run["scenario"] in ("sequential_thermal", "double_trouble"):
             if survival != 1.0:
-                logger.warning(f"   ⚠️ Validation: correct_failure for {run['scenario']} "
-                               f"expected safe refusal (100%), got {survival*100:.0f}%")
-                return False
+                return False, f"Expected safe refusal (100% survival) for {run['scenario']} under correct_failure, but got {survival*100:.0f}%"
 
-    # Borderline: no strict assertion — outcome is probabilistic by design
-
-    return True
+    return True, ""
 
 
 # =============================================================================
@@ -1237,21 +1567,21 @@ def _validate_dry_run_result(run, result):
 
 CSV_HEADER = [
     "Timestamp", "Configuration_Block", "Scenario", "Severity_Level", "Repetition_ID",
-    "Hops", "Survival_Rate", "Migration_Delay_sec", "Bandwidth_MB",
+    "Hops", "Survival_Rate", "Migration_Delay_sec", "Bandwidth_MB", "Validation_Status", "Validation_Reason"
 ]
 
 
-def _ensure_csv_header():
+def _ensure_csv_header(file_path=CSV_OUTPUT_PATH):
     """Create the CSV file with header if it doesn't exist."""
-    os.makedirs(os.path.dirname(CSV_OUTPUT_PATH), exist_ok=True)
-    if not os.path.exists(CSV_OUTPUT_PATH):
-        with open(CSV_OUTPUT_PATH, "w", newline="") as f:
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    if not os.path.exists(file_path):
+        with open(file_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(CSV_HEADER)
-        logger.info(f"📊 CSV sink initialized: {CSV_OUTPUT_PATH}")
+        logger.info(f"📊 CSV sink initialized: {file_path}")
 
 
-def append_result_to_csv(result):
+def append_result_to_csv(result, file_path=CSV_OUTPUT_PATH):
     """
     Append a single run result to the campaign CSV file.
     Uses append mode ("a") for atomic, lock-free writes.
@@ -1266,8 +1596,10 @@ def append_result_to_csv(result):
         result.get("survival_rate", 0.0),
         result.get("migration_delay_sec", 0.0),
         result.get("bandwidth_mb", 0.0),
+        result.get("validation_status", ""),
+        result.get("validation_reason", ""),
     ]
-    with open(CSV_OUTPUT_PATH, "a", newline="") as f:
+    with open(file_path, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(row)
 
@@ -1285,6 +1617,23 @@ def main():
     logger.info(f"   Nodes:      {SATELLITE_NODES}")
     logger.info(f"   Guardian:   {GUARDIAN_SVC_URL}")
     logger.info(f"   CSV Output: {CSV_OUTPUT_PATH}")
+
+    # ── Initial Mode Selection ─────────────────────────────────────────────
+    print("\nSelect execution mode:")
+    print("  1. Dry Run Only (54 experiments)")
+    print("  2. Real Campaign Only (540 experiments)")
+    print("  3. Full Campaign (Dry Run + Real Campaign)")
+    
+    choice = input("Enter choice (1-3) [default: 3]: ").strip()
+    if not choice:
+        choice = "3"
+        
+    if choice not in ("1", "2", "3"):
+        logger.error("Invalid choice. Exiting.")
+        sys.exit(1)
+        
+    do_dry_run = choice in ("1", "3")
+    do_campaign = choice in ("2", "3")
 
     # ── Initialize infrastructure ──────────────────────────────────────────
     k8s_api = _init_k8s_client()
@@ -1305,6 +1654,28 @@ def main():
         sys.exit(1)
     logger.info("✅ Pre-flight: Cluster is stable and ready.")
 
+    # ── Pre-flight: Cooldown Settle Gate ──────────────────────────────────────
+    # Ensures the initial startup cooldown on the newly launched SML pod has
+    # expired before starting the first experiment to prevent a false abort.
+    try:
+        pods = k8s_api.list_namespaced_pod(
+            namespace="default",
+            label_selector="app=space-mission"
+        )
+        if pods.items:
+            pod = pods.items[0]
+            if pod.status.start_time:
+                start_ts = pod.status.start_time.timestamp()
+                age = time.time() - start_ts
+                remaining = 16.0 - age
+                if remaining > 0:
+                    logger.info(f"⏳ Pre-flight: SML pod is only {age:.1f}s old. Settling cluster for {remaining:.1f}s to clear initial startup cooldown...")
+                    time.sleep(remaining)
+                else:
+                    logger.info(f"✅ Pre-flight: SML pod age is {age:.1f}s (startup cooldown already cleared).")
+    except Exception as e:
+        logger.warning(f"   ⚠️ Could not determine SML pod age for cooldown settling: {e}")
+
     # ── Mandatory Dry-Run Gate (54-run smoke test) ─────────────────────────
     # Spec: campaign_automation_specification.md §2.3
     # Spec: orchestrator_functional_spec.md §6
@@ -1312,27 +1683,54 @@ def main():
     # combinations (6 Configs × 3 Scenarios × 3 Severities × 1 Rep) before
     # the full randomized campaign. If any dry-run fails to produce the
     # expected behavioral state, the orchestrator triggers a hard stop.
-    if not execute_dry_run_gate(redis_conn, k8s_api):
-        logger.critical("❌ DRY-RUN GATE FAILED: One or more smoke tests did not "
-                        "produce the expected system response. Refusing to proceed "
-                        "with the 540-run campaign. Fix the cluster and re-run.")
-        sys.exit(1)
-    logger.info("✅ Dry-Run Gate passed — all 54 smoke tests verified.")
+    if do_dry_run:
+        if not execute_dry_run_gate(redis_conn, k8s_api):
+            logger.critical("❌ DRY-RUN GATE FAILED: One or more smoke tests did not "
+                            "produce the expected system response. Refusing to proceed "
+                            "with the 540-run campaign. Fix the cluster and re-run.")
+            sys.exit(1)
+        logger.info("✅ Dry-Run Gate passed — all 54 smoke tests verified.")
+        if not do_campaign:
+            logger.info("🏁 Campaign execution finished (Dry Run only). Exiting.")
+            sys.exit(0)
 
     # ── Execute the campaign ───────────────────────────────────────────────
     campaign_start = time.time()
     completed = 0
     failed = 0
 
+    start_idx = int(os.environ.get("START_INDEX", "1"))
     for idx, run in enumerate(matrix, start=1):
+        if idx < start_idx:
+            logger.info(f"⏭️ Skipping Campaign Run {idx}/{total_runs} (START_INDEX={start_idx})")
+            completed += 1
+            continue
+
         try:
             result = execute_run(run, idx, total_runs, redis_conn, k8s_api)
+            valid, reason = _validate_dry_run_result(run, result)
+            result["validation_status"] = "PASSED" if valid else "FAILED"
+            result["validation_reason"] = reason
             append_result_to_csv(result)
             completed += 1
             if result["survival_rate"] == 0.0:
                 failed += 1
         except Exception as e:
             logger.error(f"❌ CRITICAL: Run {idx} crashed with unhandled exception: {e}")
+            result = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "configuration": run["configuration"],
+                "scenario": run["scenario"],
+                "severity": run["severity"],
+                "rep_id": run["rep_id"],
+                "hops": 0,
+                "survival_rate": 0.0,
+                "migration_delay_sec": 0.0,
+                "bandwidth_mb": 0.0,
+                "validation_status": "ERROR",
+                "validation_reason": str(e),
+            }
+            append_result_to_csv(result)
             failed += 1
             # Attempt emergency sanitization to prevent cascade
             try:

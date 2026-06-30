@@ -68,7 +68,7 @@ data:
 
   # Temperature thresholds (°C)
   T_SAFE: "80.0"     # Below this → no thermal threat (predictive trigger zone)
-  T_FUSE: "120.0"    # At or above this → critical danger (reactive hard fuse)
+  T_FUSE: "95.0"    # At or above this → critical danger (reactive hard fuse)
 
   # Battery thresholds (%)
   B_SAFE: "15.0"     # Below this → predictive energy threat

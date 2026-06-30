@@ -101,19 +101,20 @@ kubectl apply -f k8s/floating-master.yaml
 # Dashboard K8s Service + UDP NodePort for Telemetry (V7.1)
 kubectl apply -f k8s/service-dashboard.yaml
 
+# Campaign Ablation ConfigMap
+kubectl apply -f k8s/campaign-ablation-config.yaml
+
 # Node Agent DaemonSet — one agent per satellite
 kubectl apply -f infrastructure/daemonset-agent.yaml
 
 # Mission Pod — Guardian sidecar + tinySML Phoenix
-kubectl apply -f k8s/pod-dual-container.yaml
-
-# Campaign Mode K8s Injection (Phase 2, Step 2.4)
-# If --campaign was passed, patch the payload-phoenix container's CAMPAIGN_MODE
-# env var from "False" to "True" so the worker enters its idle gate in-cluster.
 if [ "$CAMPAIGN_MODE_FLAG" = "True" ]; then
-    echo -e "${YELLOW}🧪 Patching space-mission deployment for Campaign Mode...${NC}"
-    kubectl set env deployment/space-mission CAMPAIGN_MODE=True -c payload-phoenix
+    echo -e "${YELLOW}🧪 Injecting Campaign Mode env and deploying space-mission...${NC}"
+    sed 's/value: "False"/value: "True"/' k8s/pod-dual-container.yaml | kubectl apply -f -
+else
+    kubectl apply -f k8s/pod-dual-container.yaml
 fi
+
 
 # =============================================================================
 # BLOCK 4: WAIT FOR REDIS BUSES TO BE READY
@@ -164,13 +165,17 @@ echo -e "${YELLOW}[4/6] Opening communication uplinks...${NC}"
 # =============================================================================
 # BLOCK 6: LOCAL GROUND STATION PROCESSES
 # =============================================================================
-echo -e "${YELLOW}[5/6] Launching Digital Twin (Environment Simulator)...${NC}"
-python3 infrastructure/environment_sim.py > /dev/null 2>&1 &
-sleep 2
+if [ "$CAMPAIGN_MODE_FLAG" != "True" ]; then
+    echo -e "${YELLOW}[5/6] Launching Digital Twin (Environment Simulator)...${NC}"
+    python3 infrastructure/environment_sim.py > /dev/null 2>&1 &
+    sleep 2
 
-echo -e "${YELLOW}[6/6] Launching UDP Data Streamer (Ground Station V7.1)...${NC}"
-# Avvia la Ground Station aggiornata puntando alla cartella corretta 3_ground_station
-python3 ../3_ground_station/data_streamer.py &
+    echo -e "${YELLOW}[6/6] Launching UDP Data Streamer (Ground Station V7.1)...${NC}"
+    # Avvia la Ground Station aggiornata puntando alla cartella corretta 3_ground_station
+    python3 ../3_ground_station/data_streamer.py &
+else
+    echo -e "${YELLOW}[5/6] Skipping Environment Sim and Data Streamer (Campaign Mode Active)...${NC}"
+fi
 
 echo -e "${GREEN}[+] Launching Global Swarm Dashboard (port 8090)...${NC}"
 python3 infrastructure/global_dashboard.py &

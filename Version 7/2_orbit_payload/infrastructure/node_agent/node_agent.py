@@ -797,10 +797,18 @@ def relay_receiver_loop():
             # Binary Inspection Demultiplexer
             is_master = False
             try:
-                subprocess.check_call(f"grep -a 'topology-redis' {tar_path}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                is_master = True
-            except subprocess.CalledProcessError:
-                is_master = False
+                import tarfile
+                with tarfile.open(tar_path, "r") as tf:
+                    for member in tf.getmembers():
+                        if member.name.endswith("definition.json"):
+                            f = tf.extractfile(member)
+                            if f:
+                                content = f.read().decode("utf-8", errors="ignore")
+                                if "topology-redis" in content:
+                                    is_master = True
+                                break
+            except Exception as e:
+                print(f"⚠️  Demux metadata read error: {e}", flush=True)
 
             if is_master: _rebuild_and_deploy_master(tar_path)
             else: _rebuild_and_deploy(tar_path)

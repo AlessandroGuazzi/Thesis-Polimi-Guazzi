@@ -14,6 +14,14 @@ const path = require('path');
 const zlib = require('zlib');
 const bodyParser = require('body-parser');
 
+// Global exception and rejection handlers to prevent Node process crashes
+process.on('unhandledRejection', (reason, promise) => {
+    console.log('⚠️ Global Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.log('⚠️ Global Uncaught Exception:', err);
+});
+
 const app = express();
 const PORT = 80;
 
@@ -69,7 +77,7 @@ let payloadLastLandedTime = 0;
 // ---------------------------------------------------------------------------
 function initRedisSub() {
     if (redisSubscriber) {
-        redisSubscriber.quit();
+        redisSubscriber.disconnect().catch(() => { });
     }
     const redisHost = process.env.GROUND_REDIS_SERVICE_HOST || 'ground-redis.default.svc.cluster.local';
     const redisPort = process.env.GROUND_REDIS_SERVICE_PORT || '6379';
@@ -303,7 +311,7 @@ function setupWatcher() {
                 activeSockets.clear();
                 sseClients = []; // CLEAR DEAD SSE CLIENTS!
                 if (redisSubscriber) {
-                    redisSubscriber.quit();
+                    redisSubscriber.disconnect().catch(() => { });
                     redisSubscriber = null;
                 }
 
@@ -366,7 +374,7 @@ setInterval(() => {
             agentState.fire_pixel_count = fleetMemory[lastUpdatedFireId].fire_pixel_count || 0;
         }
 
-        fs.writeFile('/tmp/payload_state.json', JSON.stringify(agentState), (err) => { });
+        fs.writeFileSync('/tmp/payload_state.json', JSON.stringify(agentState));
 
         if (fs.existsSync('/tmp/flush_state')) {
             console.log("🚨 GUARDIAN: Node Agent requested pre-freeze flush. Auto-acknowledging instantly.");

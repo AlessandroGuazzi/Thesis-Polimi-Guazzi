@@ -665,6 +665,14 @@ def sanitize_run(redis_conn, k8s_api):
     logger.debug("🧹 SANITIZE [3/3]: Asserting cluster stability...")
     _assert_cluster_stability(k8s_api)
 
+    # ── 4. Telemetry Reset ───────────────────────────────────────────────────
+    # Publish sterile baseline to all nodes to clear any active crisis/failsafe triggers
+    logger.debug("🧹 SANITIZE: Resetting cluster telemetry to sterile baseline...")
+    try:
+        sterilize_cluster(redis_conn, k8s_api)
+    except Exception as e:
+        logger.warning(f"   ⚠️ Telemetry reset failed: {e}")
+
     logger.debug("🧹 SANITIZE: Cleanup complete — cluster is pristine.")
 
 
